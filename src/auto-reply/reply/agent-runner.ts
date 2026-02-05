@@ -36,6 +36,12 @@ import { appendUsageLine, formatResponseUsageLine } from "./agent-runner-utils.j
 import { createAudioAsVoiceBuffer, createBlockReplyPipeline } from "./block-reply-pipeline.js";
 import { resolveBlockStreamingCoalescing } from "./block-streaming.js";
 import { createFollowupRunner } from "./followup-runner.js";
+import {
+  isGroupLike,
+  isSensitiveTurn,
+  memuMemorizeSummary,
+  memuRetrieveContext,
+} from "./memu-integration.js";
 import { enqueueFollowupRun, type FollowupRun, type QueueSettings } from "./queue.js";
 import { createReplyToModeFilterForChannel, resolveReplyToMode } from "./reply-threading.js";
 import { incrementCompactionCount } from "./session-updates.js";
@@ -101,6 +107,34 @@ export async function runReplyAgent(params: {
     shouldInjectGroupIntro,
     typingMode,
   } = params;
+
+  const workspaceDir = followupRun.run.workspaceDir;
+  const scopeUserId =
+    sessionCtx.SenderId ||
+    sessionCtx.SenderE164 ||
+    sessionKey ||
+    followupRun.run.sessionKey ||
+    followupRun.run.sessionId;
+
+  const groupLike = isGroupLike(sessionCtx);
+  const sensitiveTurn = isSensitiveTurn({ commandBody, workspaceDir });
+
+  // Inject memU context (DM-only; summaries only; skip sensitive turns)
+  let augmentedCommandBody = commandBody;
+  if (!groupLike && !sensitiveTurn) {
+    const memuContext = await memuRetrieveContext({
+      commandBody,
+      scopeUserId,
+    });
+    if (memuContext) {
+      augmentedCommandBody = [
+        "## memU memory context (summaries; local)",
+        memuContext,
+        "\n---\n",
+        commandBody,
+      ].join("\n");
+    }
+  }
 
   let activeSessionEntry = sessionEntry;
   const activeSessionStore = sessionStore;
@@ -308,7 +342,7 @@ export async function runReplyAgent(params: {
   try {
     const runStartedAt = Date.now();
     const runOutcome = await runAgentTurnWithFallback({
-      commandBody,
+      commandBody: augmentedCommandBody,
       followupRun,
       sessionCtx,
       opts,
@@ -332,6 +366,40 @@ export async function runReplyAgent(params: {
     });
 
     if (runOutcome.kind === "final") {
+      // Best-effort memorize: DM-only + not sensitive.
+      if (!groupLike && !sensitiveTurn) {
+        const payloadValue: unknown = runOutcome.payload;
+        let raw = "";
+        if (typeof payloadValue === "string") {
+          raw = payloadValue;
+        } else if (Array.isArray(payloadValue)) {
+          raw = payloadValue
+            .map((p) => {
+              if (!p || typeof p !== "object") {
+                return "";
+              }
+              const rec = p as Record<string, unknown>;
+              return typeof rec.text === "string" ? rec.text : "";
+            })
+            .filter(Boolean)
+            .join("\n\n");
+        } else if (payloadValue && typeof payloadValue === "object") {
+          const rec = payloadValue as Record<string, unknown>;
+          raw = typeof rec.text === "string" ? rec.text : "";
+        }
+        const summary = raw.trim();
+        if (summary) {
+          void memuMemorizeSummary({
+            text: summary,
+            scopeUserId,
+            meta: {
+              channel: sessionCtx.OriginatingChannel ?? sessionCtx.Provider ?? null,
+              chatType: sessionCtx.ChatType ?? null,
+              sessionKey: sessionKey ?? null,
+            },
+          });
+        }
+      }
       return finalizeWithFollowup(runOutcome.payload, queueKey, runFollowupTurn);
     }
 
@@ -362,6 +430,26 @@ export async function runReplyAgent(params: {
     }
 
     const payloadArray = runResult.payloads ?? [];
+
+    // Best-effort memorize: DM-only + not sensitive.
+    if (!groupLike && !sensitiveTurn && payloadArray.length > 0) {
+      const raw = payloadArray
+        .map((p) => (typeof p?.text === "string" ? p.text : ""))
+        .filter(Boolean)
+        .join("\n\n")
+        .trim();
+      if (raw) {
+        void memuMemorizeSummary({
+          text: raw,
+          scopeUserId,
+          meta: {
+            channel: sessionCtx.OriginatingChannel ?? sessionCtx.Provider ?? null,
+            chatType: sessionCtx.ChatType ?? null,
+            sessionKey: sessionKey ?? null,
+          },
+        });
+      }
+    }
 
     if (blockReplyPipeline) {
       await blockReplyPipeline.flush({ force: true });
