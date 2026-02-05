@@ -96,3 +96,9 @@ USER.md
 *.tgz
 .serena/
 bin/
+# Research outputs (do not commit)
+report_*.md
+report_*.pdf
+research_notes.md
+sources.md
+sec-edgar-filings/
