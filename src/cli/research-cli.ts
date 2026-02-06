@@ -34,6 +34,13 @@ import {
 import { learningReport, logTaskOutcome, runLearningCalibration } from "../research/learning.js";
 import { generateMemoAsync } from "../research/memo.js";
 import { monitorTicker, monitorTickers } from "../research/monitor.js";
+import {
+  listPolicyVariants,
+  policyPerformanceReport,
+  registerPolicyVariant,
+  routePolicyAssignment,
+  runPolicyGovernance,
+} from "../research/policy.js";
 import { computePortfolioPlan } from "../research/portfolio.js";
 import { indexRepo } from "../research/repo-index.js";
 import { computeValuation, resolveMatureForecasts } from "../research/valuation.js";
@@ -81,6 +88,17 @@ const parseOptionalNumber = (value: unknown): number | undefined => {
   if (typeof value !== "string" || !value.trim()) return undefined;
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const parseOptionalJsonObject = (value: unknown): Record<string, unknown> | undefined => {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    return parsed as Record<string, unknown>;
+  } catch {
+    throw new Error("Invalid JSON object");
+  }
 };
 
 const parseBooleanOption = (value: string): boolean => {
@@ -653,6 +671,9 @@ export function registerResearchCli(program: Command) {
     .option("--id <n>", "Existing task outcome id to update")
     .option("--task-type <kind>", "investment|coding|other")
     .option("--archetype <name>", "Task archetype (e.g., sector-deep-dive, bugfix-hotpath)")
+    .option("--policy <name>", "Policy/variant name used for this run")
+    .option("--policy-role <kind>", "primary|shadow", "primary")
+    .option("--experiment-group <name>", "Experiment group identifier")
     .option("--ticker <symbol>", "Ticker (investment tasks)")
     .option("--repo-root <path>", "Repo path (coding tasks)")
     .option("--input <text>", "Input summary")
@@ -700,6 +721,9 @@ export function registerResearchCli(program: Command) {
           id: typeof id === "number" ? Math.round(id) : undefined,
           taskType: opts["taskType"] as string | undefined,
           taskArchetype: opts.archetype as string | undefined,
+          policyName: opts.policy as string | undefined,
+          policyRole: opts["policyRole"] as string | undefined,
+          experimentGroup: opts["experimentGroup"] as string | undefined,
           ticker: opts.ticker as string | undefined,
           repoRoot: opts["repoRoot"] as string | undefined,
           inputSummary: opts.input as string | undefined,
@@ -806,6 +830,166 @@ export function registerResearchCli(program: Command) {
         defaultRuntime.log(
           `learning tasks=${result.report.totalTasks} avg_score=${typeof result.report.avgGraderScore === "number" ? result.report.avgGraderScore.toFixed(3) : "n/a"} trusted_rate=${typeof result.report.trustedRate === "number" ? `${(result.report.trustedRate * 100).toFixed(1)}%` : "n/a"}`,
         );
+      });
+    });
+
+  research
+    .command("policy-register")
+    .description("Register or update a champion/challenger policy variant")
+    .requiredOption("--task-type <kind>", "investment|coding|other")
+    .option("--archetype <name>", "Task archetype", "")
+    .requiredOption("--policy <name>", "Policy/variant name")
+    .option("--status <kind>", "champion|challenger|retired", "challenger")
+    .option("--active <bool>", "true|false", "true")
+    .option("--traffic <n>", "Primary traffic weight [0-1]")
+    .option("--shadow <n>", "Shadow traffic weight [0-1]")
+    .option("--min-samples <n>", "Minimum samples for promotion", "25")
+    .option("--min-lift <n>", "Required score lift for promotion", "0.03")
+    .option("--max-quarantine-rate <n>", "Guardrail quarantine rate [0-1]", "0.2")
+    .option("--max-calibration-error <n>", "Guardrail calibration error [0-1]", "0.25")
+    .option("--metadata <json>", "JSON metadata for prompt/retrieval/workflow profile")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const variant = registerPolicyVariant({
+          taskType: opts["taskType"] as string,
+          taskArchetype: opts.archetype as string,
+          policyName: opts.policy as string,
+          status: opts.status as "champion" | "challenger" | "retired",
+          active: parseBooleanOption(opts.active as string),
+          trafficWeight: parseOptionalNumber(opts.traffic),
+          shadowWeight: parseOptionalNumber(opts.shadow),
+          minSamples: Number.parseInt(opts["minSamples"] as string, 10) || 25,
+          minLift: parseOptionalNumber(opts["minLift"]),
+          maxQuarantineRate: parseOptionalNumber(opts["maxQuarantineRate"]),
+          maxCalibrationError: parseOptionalNumber(opts["maxCalibrationError"]),
+          metadata: parseOptionalJsonObject(opts.metadata),
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `policy=${variant.policyName} status=${variant.status} active=${variant.active ? 1 : 0} traffic=${variant.trafficWeight.toFixed(2)} shadow=${variant.shadowWeight.toFixed(2)}`,
+        );
+      });
+    });
+
+  research
+    .command("policy-list")
+    .description("List policy variants for a task type/archetype")
+    .requiredOption("--task-type <kind>", "investment|coding|other")
+    .option("--archetype <name>", "Task archetype", "")
+    .option("--include-retired", "Include retired variants", false)
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const variants = listPolicyVariants({
+          taskType: opts["taskType"] as string,
+          taskArchetype: opts.archetype as string,
+          includeRetired: Boolean(opts["includeRetired"]),
+          dbPath: opts.db as string,
+        });
+        if (!variants.length) {
+          defaultRuntime.log("No policy variants found.");
+          return;
+        }
+        variants.forEach((variant) => {
+          defaultRuntime.log(
+            `policy=${variant.policyName} status=${variant.status} active=${variant.active ? 1 : 0} traffic=${variant.trafficWeight.toFixed(2)} shadow=${variant.shadowWeight.toFixed(2)} min_samples=${variant.minSamples} min_lift=${variant.minLift.toFixed(3)}`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("policy-route")
+    .description("Route a task to primary + shadow policy variants")
+    .requiredOption("--task-type <kind>", "investment|coding|other")
+    .option("--archetype <name>", "Task archetype", "")
+    .option("--seed <value>", "Deterministic routing seed")
+    .option("--exploration-rate <n>", "Exploration rate [0-1]", "0.15")
+    .option("--max-shadows <n>", "Max shadow variants", "2")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const route = routePolicyAssignment({
+          taskType: opts["taskType"] as string,
+          taskArchetype: opts.archetype as string,
+          seed: opts.seed as string | undefined,
+          explorationRate: parseOptionalNumber(opts["explorationRate"]) ?? 0.15,
+          maxShadows: Number.parseInt(opts["maxShadows"] as string, 10) || 2,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(`experiment_group=${route.experimentGroup}`);
+        defaultRuntime.log(`primary=${route.primary?.policyName ?? "none"}`);
+        if (route.shadows.length) {
+          defaultRuntime.log(
+            `shadows=${route.shadows.map((variant) => variant.policyName).join(",")}`,
+          );
+        } else {
+          defaultRuntime.log("shadows=none");
+        }
+      });
+    });
+
+  research
+    .command("policy-report")
+    .description("Show champion/challenger performance report")
+    .requiredOption("--task-type <kind>", "investment|coding|other")
+    .option("--archetype <name>", "Task archetype", "")
+    .option("--days <n>", "Lookback window in days", "60")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const report = policyPerformanceReport({
+          taskType: opts["taskType"] as string,
+          taskArchetype: opts.archetype as string,
+          days: Number.parseInt(opts.days as string, 10) || 60,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `policy_report task_type=${report.taskType} archetype=${report.taskArchetype || "default"} champion=${report.champion ?? "none"} lookback_days=${report.lookbackDays}`,
+        );
+        report.variants.forEach((variant) => {
+          defaultRuntime.log(
+            `policy=${variant.policyName} status=${variant.status} samples=${variant.sampleCount} primary=${variant.primarySampleCount} shadow=${variant.shadowSampleCount} score=${typeof variant.score === "number" ? variant.score.toFixed(3) : "n/a"} win=${typeof variant.winRate === "number" ? `${(variant.winRate * 100).toFixed(1)}%` : "n/a"} quarantine=${typeof variant.quarantineRate === "number" ? `${(variant.quarantineRate * 100).toFixed(1)}%` : "n/a"} calibration=${typeof variant.calibrationError === "number" ? variant.calibrationError.toFixed(3) : "n/a"}`,
+          );
+        });
+        if (report.recentDecisions.length) {
+          report.recentDecisions.slice(0, 10).forEach((decision) => {
+            defaultRuntime.log(
+              `${new Date(decision.createdAt).toISOString()} decision=${decision.decisionType} before=${decision.championBefore || "none"} after=${decision.championAfter || "none"} challenger=${decision.challenger || "none"} reason=${decision.reason}`,
+            );
+          });
+        }
+      });
+    });
+
+  research
+    .command("policy-govern")
+    .description("Run automatic champion/challenger promotion and rollback governance")
+    .option("--task-type <kind>", "investment|coding|other")
+    .option("--archetype <name>", "Task archetype", "")
+    .option("--days <n>", "Baseline lookback days", "60")
+    .option("--recent-days <n>", "Recent degradation window days", "14")
+    .option("--min-samples <n>", "Minimum sample count", "25")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const result = runPolicyGovernance({
+          taskType: opts["taskType"] as string | undefined,
+          taskArchetype: opts.archetype as string,
+          days: Number.parseInt(opts.days as string, 10) || 60,
+          recentDays: Number.parseInt(opts["recentDays"] as string, 10) || 14,
+          minSamples: Number.parseInt(opts["minSamples"] as string, 10) || 25,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `governance promoted=${result.promoted} rolled_back=${result.rolledBack} held=${result.held}`,
+        );
+        result.decisions.slice(0, 20).forEach((decision) => {
+          defaultRuntime.log(
+            `${new Date(decision.createdAt).toISOString()} decision=${decision.decisionType} task=${decision.taskType}:${decision.taskArchetype || "default"} before=${decision.championBefore || "none"} after=${decision.championAfter || "none"} reason=${decision.reason}`,
+          );
+        });
       });
     });
 

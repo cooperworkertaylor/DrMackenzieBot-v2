@@ -12,6 +12,9 @@ export type TaskOutcomeRecord = {
   id: number;
   taskType: LearningTaskType;
   taskArchetype: string;
+  policyName: string;
+  policyRole: "primary" | "shadow";
+  experimentGroup: string;
   ticker: string;
   repoRoot: string;
   inputSummary: string;
@@ -37,6 +40,9 @@ export type LogTaskOutcomeParams = {
   id?: number;
   taskType?: LearningTaskType | string;
   taskArchetype?: string;
+  policyName?: string;
+  policyRole?: "primary" | "shadow" | string;
+  experimentGroup?: string;
   ticker?: string;
   repoRoot?: string;
   inputSummary?: string;
@@ -121,6 +127,12 @@ const normalizeTaskType = (taskType?: string): LearningTaskType => {
   if (normalized === "investment") return "investment";
   if (normalized === "coding") return "coding";
   return "other";
+};
+
+const normalizePolicyRole = (policyRole?: string): "primary" | "shadow" => {
+  const normalized = policyRole?.trim().toLowerCase();
+  if (normalized === "shadow") return "shadow";
+  return "primary";
 };
 
 const normalizeScore = (value?: number): number | undefined => {
@@ -350,6 +362,9 @@ const parseTaskOutcomeRow = (row: {
   id: number;
   task_type: string;
   task_archetype: string;
+  policy_name: string;
+  policy_role: string;
+  experiment_group: string;
   ticker: string;
   repo_root: string;
   input_summary: string;
@@ -373,6 +388,9 @@ const parseTaskOutcomeRow = (row: {
   id: row.id,
   taskType: normalizeTaskType(row.task_type),
   taskArchetype: row.task_archetype,
+  policyName: row.policy_name,
+  policyRole: normalizePolicyRole(row.policy_role),
+  experimentGroup: row.experiment_group,
   ticker: row.ticker,
   repoRoot: row.repo_root,
   inputSummary: row.input_summary,
@@ -399,7 +417,8 @@ const loadTaskOutcome = (id: number, dbPath?: string): TaskOutcomeRecord | undef
   const row = db
     .prepare(
       `SELECT
-         id, task_type, task_archetype, ticker, repo_root, input_summary, output_hash,
+         id, task_type, task_archetype, policy_name, policy_role, experiment_group,
+         ticker, repo_root, input_summary, output_hash,
          confidence, citation_count, latency_ms, user_score, realized_outcome_score, outcome_label,
          source_mix, grading_metrics, grader_score, grader_details, grader_version,
          status, status_reason, created_at, updated_at
@@ -411,6 +430,9 @@ const loadTaskOutcome = (id: number, dbPath?: string): TaskOutcomeRecord | undef
         id: number;
         task_type: string;
         task_archetype: string;
+        policy_name: string;
+        policy_role: string;
+        experiment_group: string;
         ticker: string;
         repo_root: string;
         input_summary: string;
@@ -477,6 +499,9 @@ export const logTaskOutcome = (
 
   const taskType = normalizeTaskType(params.taskType ?? existing?.taskType);
   const taskArchetype = (params.taskArchetype ?? existing?.taskArchetype ?? "").trim();
+  const policyName = (params.policyName ?? existing?.policyName ?? "default").trim() || "default";
+  const policyRole = normalizePolicyRole(params.policyRole ?? existing?.policyRole);
+  const experimentGroup = (params.experimentGroup ?? existing?.experimentGroup ?? "").trim();
   const ticker = (params.ticker ?? existing?.ticker ?? "").trim().toUpperCase();
   const repoRoot = (params.repoRoot ?? existing?.repoRoot ?? "").trim();
   const inputSummary = (params.inputSummary ?? existing?.inputSummary ?? "").trim();
@@ -509,6 +534,9 @@ export const logTaskOutcome = (
       `UPDATE task_outcomes
        SET task_type=?,
            task_archetype=?,
+           policy_name=?,
+           policy_role=?,
+           experiment_group=?,
            ticker=?,
            repo_root=?,
            input_summary=?,
@@ -531,6 +559,9 @@ export const logTaskOutcome = (
     ).run(
       taskType,
       taskArchetype,
+      policyName,
+      policyRole,
+      experimentGroup,
       ticker,
       repoRoot,
       inputSummary,
@@ -563,12 +594,14 @@ export const logTaskOutcome = (
   const row = db
     .prepare(
       `INSERT INTO task_outcomes (
-         task_type, task_archetype, ticker, repo_root, input_summary, output_hash,
+         task_type, task_archetype, policy_name, policy_role, experiment_group,
+         ticker, repo_root, input_summary, output_hash,
          confidence, citation_count, latency_ms, user_score, realized_outcome_score, outcome_label,
          source_mix, grading_metrics, grader_score, grader_details, grader_version,
          status, status_reason, created_at, updated_at
        ) VALUES (
-         ?, ?, ?, ?, ?, ?,
+         ?, ?, ?, ?, ?,
+         ?, ?, ?, ?,
          ?, ?, ?, ?, ?, ?,
          ?, ?, ?, ?, 'v1',
          ?, ?, ?, ?
@@ -578,6 +611,9 @@ export const logTaskOutcome = (
     .get(
       taskType,
       taskArchetype,
+      policyName,
+      policyRole,
+      experimentGroup,
       ticker,
       repoRoot,
       inputSummary,
@@ -718,7 +754,8 @@ const loadRecentTaskOutcomes = (params: LearningReportParams): TaskOutcomeRecord
   const rows = db
     .prepare(
       `SELECT
-         id, task_type, task_archetype, ticker, repo_root, input_summary, output_hash,
+         id, task_type, task_archetype, policy_name, policy_role, experiment_group,
+         ticker, repo_root, input_summary, output_hash,
          confidence, citation_count, latency_ms, user_score, realized_outcome_score, outcome_label,
          source_mix, grading_metrics, grader_score, grader_details, grader_version,
          status, status_reason, created_at, updated_at
@@ -735,6 +772,9 @@ const loadRecentTaskOutcomes = (params: LearningReportParams): TaskOutcomeRecord
     id: number;
     task_type: string;
     task_archetype: string;
+    policy_name: string;
+    policy_role: string;
+    experiment_group: string;
     ticker: string;
     repo_root: string;
     input_summary: string;

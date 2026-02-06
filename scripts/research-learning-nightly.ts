@@ -1,5 +1,6 @@
 import { runDecisionEval } from "../src/research/eval.js";
 import { runLearningCalibration } from "../src/research/learning.js";
+import { runPolicyGovernance } from "../src/research/policy.js";
 
 const run = async () => {
   const decision = await runDecisionEval();
@@ -24,6 +25,20 @@ const run = async () => {
       );
     });
   }
+
+  const governance = runPolicyGovernance({
+    days: 60,
+    recentDays: 14,
+    minSamples: 25,
+  });
+  console.log(
+    `policy governance: promoted=${governance.promoted} rolled_back=${governance.rolledBack} held=${governance.held}`,
+  );
+  governance.decisions.slice(0, 10).forEach((decision) => {
+    console.log(
+      `${new Date(decision.createdAt).toISOString()} ${decision.decisionType} ${decision.taskType}:${decision.taskArchetype || "default"} ${decision.championBefore || "none"} -> ${decision.championAfter || "none"} (${decision.reason})`,
+    );
+  });
 };
 
 run().catch((err) => {

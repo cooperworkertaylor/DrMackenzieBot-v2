@@ -245,6 +245,9 @@ const migrate = (db: ResearchDb) => {
       id integer primary key,
       task_type text not null,
       task_archetype text not null default '',
+      policy_name text not null default '',
+      policy_role text not null default 'primary',
+      experiment_group text not null default '',
       ticker text not null default '',
       repo_root text not null default '',
       input_summary text not null default '',
@@ -264,6 +267,38 @@ const migrate = (db: ResearchDb) => {
       status_reason text not null default '',
       created_at integer not null,
       updated_at integer not null
+    );
+
+    create table if not exists policy_variants (
+      id integer primary key,
+      task_type text not null,
+      task_archetype text not null default '',
+      policy_name text not null,
+      status text not null default 'challenger',
+      active integer not null default 1,
+      traffic_weight real not null default 0.0,
+      shadow_weight real not null default 0.0,
+      min_samples integer not null default 25,
+      min_lift real not null default 0.03,
+      max_quarantine_rate real not null default 0.2,
+      max_calibration_error real not null default 0.25,
+      metadata text not null default '{}',
+      created_at integer not null,
+      updated_at integer not null,
+      unique (task_type, task_archetype, policy_name)
+    );
+
+    create table if not exists policy_decisions (
+      id integer primary key,
+      task_type text not null,
+      task_archetype text not null default '',
+      decision_type text not null,
+      champion_before text not null default '',
+      champion_after text not null default '',
+      challenger text not null default '',
+      reason text not null default '',
+      metrics text not null default '{}',
+      created_at integer not null
     );
 
     create table if not exists chunks (
@@ -364,6 +399,15 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_task_outcomes_hash
       on task_outcomes (output_hash, created_at desc);
+
+    create index if not exists idx_task_outcomes_policy
+      on task_outcomes (task_type, task_archetype, policy_name, policy_role, created_at desc);
+
+    create index if not exists idx_policy_variants_lookup
+      on policy_variants (task_type, task_archetype, status, active, updated_at desc);
+
+    create index if not exists idx_policy_decisions_lookup
+      on policy_decisions (task_type, task_archetype, created_at desc);
   `);
 
   ensureColumn(db, "filings", "accession_raw", "TEXT");
@@ -374,6 +418,9 @@ const migrate = (db: ResearchDb) => {
   ensureColumn(db, "filings", "filing_hash", "TEXT");
   ensureColumn(db, "research_vectors", "provider", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "research_vectors", "model", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "task_outcomes", "policy_name", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "task_outcomes", "policy_role", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn(db, "task_outcomes", "experiment_group", "TEXT NOT NULL DEFAULT ''");
 };
 
 const ensureColumn = (db: ResearchDb, table: string, column: string, definition: string) => {
