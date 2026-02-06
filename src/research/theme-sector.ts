@@ -91,6 +91,7 @@ export type SectorResearchResult = {
   metrics: CrossSectionMetrics;
   factorDecomposition: FactorDecomposition;
   catalystCalendar: CatalystCalendarMetrics;
+  factorAttribution?: CrossSectionFactorAttribution;
   leaders: CrossSectionConstituentSnapshot[];
   laggards: CrossSectionConstituentSnapshot[];
   constituents: CrossSectionConstituentSnapshot[];
@@ -105,6 +106,7 @@ export type ThemeResearchResult = {
   usedThemeRegistry: boolean;
   membershipMinScore?: number;
   benchmarkRelative?: ThemeBenchmarkRelativeMetrics;
+  factorAttribution?: CrossSectionFactorAttribution;
   tickers: string[];
   lookbackDays: number;
   metrics: CrossSectionMetrics;
@@ -189,6 +191,30 @@ export type CatalystCalendarMetrics = {
   maxSameDayEvents: number;
   topEventWindows: CatalystCalendarWindow[];
   tickerLoad: CatalystCalendarTickerLoad[];
+};
+
+export type CrossSectionFactorAttribution = {
+  benchmarkTicker: string;
+  sampleSize: number;
+  annualizedActiveReturnPct: number;
+  annualizedAlphaPct: number;
+  annualizedResidualPct: number;
+  rSquared: number;
+  factorBetas: {
+    benchmark: number;
+    momentum: number;
+    value: number;
+    quality: number;
+    size: number;
+  };
+  annualizedContributionPct: {
+    benchmark: number;
+    momentum: number;
+    value: number;
+    quality: number;
+    size: number;
+  };
+  dominantContributionFactor: "benchmark" | CrossSectionFactor;
 };
 
 const clamp = (value: number, min: number, max: number): number =>
@@ -800,6 +826,237 @@ const computeFactorDecomposition = (
   };
 };
 
+const buildThemeReturnByDate = (rows: CrossSectionConstituentInternal[]): Map<string, number> => {
+  const bucket = new Map<string, number[]>();
+  for (const row of rows) {
+    for (const [date, value] of row.returnsByDateLookback) {
+      const existing = bucket.get(date) ?? [];
+      existing.push(value);
+      bucket.set(date, existing);
+    }
+  }
+  const out = new Map<string, number>();
+  for (const [date, values] of bucket) {
+    if (!values.length) continue;
+    out.set(date, mean(values));
+  }
+  return out;
+};
+
+const factorExposureZByTicker = (
+  rows: CrossSectionConstituentInternal[],
+  factor: CrossSectionFactor,
+): Map<string, number> => {
+  const raw = rows.map((row) => factorRawValue(row, factor));
+  const rawMean = mean(raw);
+  const rawStd = stddev(raw) ?? 0;
+  const out = new Map<string, number>();
+  rows.forEach((row, index) => {
+    const value = raw[index] ?? 0;
+    const z = rawStd > 1e-9 ? (value - rawMean) / rawStd : 0;
+    out.set(row.ticker, z);
+  });
+  return out;
+};
+
+const buildFactorProxyReturnByDate = (
+  rows: CrossSectionConstituentInternal[],
+  factor: CrossSectionFactor,
+): Map<string, number> => {
+  const exposureByTicker = factorExposureZByTicker(rows, factor);
+  const allDates = new Set<string>();
+  const numerators = new Map<string, number>();
+  const denominators = new Map<string, number>();
+  for (const row of rows) {
+    const z = exposureByTicker.get(row.ticker) ?? 0;
+    for (const [date, ret] of row.returnsByDateLookback) {
+      allDates.add(date);
+      if (!Number.isFinite(z) || Math.abs(z) <= 1e-9) continue;
+      numerators.set(date, (numerators.get(date) ?? 0) + z * ret);
+      denominators.set(date, (denominators.get(date) ?? 0) + Math.abs(z));
+    }
+  }
+  const out = new Map<string, number>();
+  for (const date of allDates) {
+    const numerator = numerators.get(date) ?? 0;
+    const denom = denominators.get(date) ?? 0;
+    out.set(date, denom > 1e-9 ? numerator / denom : 0);
+  }
+  return out;
+};
+
+const solveLinearSystem = (matrix: number[][], vector: number[]): number[] | undefined => {
+  const n = matrix.length;
+  if (!n || vector.length !== n || matrix.some((row) => row.length !== n)) return undefined;
+  const augmented = matrix.map((row, index) => [...row, vector[index] ?? 0]);
+  for (let pivot = 0; pivot < n; pivot += 1) {
+    let best = pivot;
+    let bestAbs = Math.abs(augmented[pivot]?.[pivot] ?? 0);
+    for (let row = pivot + 1; row < n; row += 1) {
+      const abs = Math.abs(augmented[row]?.[pivot] ?? 0);
+      if (abs > bestAbs) {
+        best = row;
+        bestAbs = abs;
+      }
+    }
+    if (bestAbs <= 1e-12) return undefined;
+    if (best !== pivot) {
+      const temp = augmented[pivot];
+      augmented[pivot] = augmented[best]!;
+      augmented[best] = temp!;
+    }
+    const pivotValue = augmented[pivot]?.[pivot] ?? 0;
+    for (let col = pivot; col <= n; col += 1) {
+      augmented[pivot]![col] = (augmented[pivot]?.[col] ?? 0) / pivotValue;
+    }
+    for (let row = 0; row < n; row += 1) {
+      if (row === pivot) continue;
+      const factor = augmented[row]?.[pivot] ?? 0;
+      if (Math.abs(factor) <= 1e-12) continue;
+      for (let col = pivot; col <= n; col += 1) {
+        augmented[row]![col] =
+          (augmented[row]?.[col] ?? 0) - factor * (augmented[pivot]?.[col] ?? 0);
+      }
+    }
+  }
+  return augmented.map((row) => row[n] ?? 0);
+};
+
+const runOls = (
+  y: number[],
+  predictors: number[][],
+): { coefficients: number[]; rSquared: number; residuals: number[] } | undefined => {
+  const n = y.length;
+  if (!n || predictors.some((series) => series.length !== n)) return undefined;
+  const p = predictors.length + 1;
+  const xtx = Array.from({ length: p }, () => Array.from({ length: p }, () => 0));
+  const xty = Array.from({ length: p }, () => 0);
+  for (let row = 0; row < n; row += 1) {
+    const xRow = [1, ...predictors.map((series) => series[row] ?? 0)];
+    const target = y[row] ?? 0;
+    for (let i = 0; i < p; i += 1) {
+      xty[i] = (xty[i] ?? 0) + (xRow[i] ?? 0) * target;
+      for (let j = 0; j < p; j += 1) {
+        xtx[i]![j] = (xtx[i]?.[j] ?? 0) + (xRow[i] ?? 0) * (xRow[j] ?? 0);
+      }
+    }
+  }
+  for (let i = 1; i < p; i += 1) {
+    xtx[i]![i] = (xtx[i]?.[i] ?? 0) + 1e-6;
+  }
+  const coefficients = solveLinearSystem(xtx, xty);
+  if (!coefficients) return undefined;
+  const residuals: number[] = [];
+  const predictions: number[] = [];
+  for (let row = 0; row < n; row += 1) {
+    let prediction = coefficients[0] ?? 0;
+    for (let col = 1; col < p; col += 1) {
+      prediction += (coefficients[col] ?? 0) * (predictors[col - 1]?.[row] ?? 0);
+    }
+    predictions.push(prediction);
+    residuals.push((y[row] ?? 0) - prediction);
+  }
+  const yMean = mean(y);
+  const sse = residuals.reduce((sum, value) => sum + value ** 2, 0);
+  const sst = y.reduce((sum, value) => sum + (value - yMean) ** 2, 0);
+  const rSquared = sst > 1e-12 ? clamp01(1 - sse / sst) : 0;
+  return {
+    coefficients,
+    rSquared,
+    residuals,
+  };
+};
+
+const computeCrossSectionFactorAttribution = (params: {
+  rows: CrossSectionConstituentInternal[];
+  benchmarkTicker: string;
+  lookbackDays: number;
+  dbPath?: string;
+}): CrossSectionFactorAttribution | undefined => {
+  const benchmarkTicker = normalizeTicker(params.benchmarkTicker);
+  if (!benchmarkTicker || params.rows.length < 2) return undefined;
+  const themeByDate = buildThemeReturnByDate(params.rows);
+  if (!themeByDate.size) return undefined;
+  const benchmarkByDate = derivePriceSignals(
+    loadPrices({
+      ticker: benchmarkTicker,
+      lookbackDays: params.lookbackDays,
+      dbPath: params.dbPath,
+    }),
+  ).returnsByDateLookback;
+  if (!benchmarkByDate.size) return undefined;
+  const momentumByDate = buildFactorProxyReturnByDate(params.rows, "momentum");
+  const valueByDate = buildFactorProxyReturnByDate(params.rows, "value");
+  const qualityByDate = buildFactorProxyReturnByDate(params.rows, "quality");
+  const sizeByDate = buildFactorProxyReturnByDate(params.rows, "size");
+  const dates = Array.from(themeByDate.keys())
+    .filter((date) => benchmarkByDate.has(date))
+    .sort((left, right) => left.localeCompare(right));
+  if (dates.length < 30) return undefined;
+  const themeSeries = dates.map((date) => themeByDate.get(date) ?? 0);
+  const benchmarkSeries = dates.map((date) => benchmarkByDate.get(date) ?? 0);
+  const momentumSeries = dates.map((date) => momentumByDate.get(date) ?? 0);
+  const valueSeries = dates.map((date) => valueByDate.get(date) ?? 0);
+  const qualitySeries = dates.map((date) => qualityByDate.get(date) ?? 0);
+  const sizeSeries = dates.map((date) => sizeByDate.get(date) ?? 0);
+  const activeSeries = themeSeries.map((value, index) => value - (benchmarkSeries[index] ?? 0));
+  const regression = runOls(activeSeries, [
+    benchmarkSeries,
+    momentumSeries,
+    valueSeries,
+    qualitySeries,
+    sizeSeries,
+  ]);
+  if (!regression) return undefined;
+  const alphaDaily = regression.coefficients[0] ?? 0;
+  const betaBenchmark = regression.coefficients[1] ?? 0;
+  const betaMomentum = regression.coefficients[2] ?? 0;
+  const betaValue = regression.coefficients[3] ?? 0;
+  const betaQuality = regression.coefficients[4] ?? 0;
+  const betaSize = regression.coefficients[5] ?? 0;
+  const annualizedBenchmark = betaBenchmark * mean(benchmarkSeries) * 252 * 100;
+  const annualizedMomentum = betaMomentum * mean(momentumSeries) * 252 * 100;
+  const annualizedValue = betaValue * mean(valueSeries) * 252 * 100;
+  const annualizedQuality = betaQuality * mean(qualitySeries) * 252 * 100;
+  const annualizedSize = betaSize * mean(sizeSeries) * 252 * 100;
+  const annualizedActiveReturnPct = mean(activeSeries) * 252 * 100;
+  const annualizedAlphaPct = alphaDaily * 252 * 100;
+  const annualizedResidualPct = mean(regression.residuals) * 252 * 100;
+  const dominantEntries: Array<["benchmark" | CrossSectionFactor, number]> = [
+    ["benchmark", annualizedBenchmark],
+    ["momentum", annualizedMomentum],
+    ["value", annualizedValue],
+    ["quality", annualizedQuality],
+    ["size", annualizedSize],
+  ];
+  const dominantContributionFactor =
+    dominantEntries.sort((left, right) => Math.abs(right[1]) - Math.abs(left[1]))[0]?.[0] ??
+    "benchmark";
+  return {
+    benchmarkTicker,
+    sampleSize: dates.length,
+    annualizedActiveReturnPct,
+    annualizedAlphaPct,
+    annualizedResidualPct,
+    rSquared: regression.rSquared,
+    factorBetas: {
+      benchmark: betaBenchmark,
+      momentum: betaMomentum,
+      value: betaValue,
+      quality: betaQuality,
+      size: betaSize,
+    },
+    annualizedContributionPct: {
+      benchmark: annualizedBenchmark,
+      momentum: annualizedMomentum,
+      value: annualizedValue,
+      quality: annualizedQuality,
+      size: annualizedSize,
+    },
+    dominantContributionFactor,
+  };
+};
+
 const loadOpenCatalystEvents = (params: {
   tickers: string[];
   dbPath?: string;
@@ -991,6 +1248,7 @@ const buildRiskFlags = (params: {
   rows: CrossSectionConstituentInternal[];
   factorDecomposition?: FactorDecomposition;
   catalystCalendar?: CatalystCalendarMetrics;
+  factorAttribution?: CrossSectionFactorAttribution;
   benchmarkRelative?: ThemeBenchmarkRelativeMetrics;
 }): string[] => {
   const out: string[] = [];
@@ -1073,6 +1331,24 @@ const buildRiskFlags = (params: {
       );
     }
   }
+  if (params.factorAttribution) {
+    if (
+      params.factorAttribution.rSquared >= 0.72 &&
+      Math.abs(params.factorAttribution.annualizedAlphaPct) <= 3
+    ) {
+      out.push(
+        "Active return is largely explained by benchmark/style betas with limited stock-picking alpha.",
+      );
+    }
+    if (
+      params.factorAttribution.factorBetas.benchmark >= 0.25 &&
+      params.factorAttribution.annualizedContributionPct.benchmark < 0
+    ) {
+      out.push(
+        "Benchmark beta drift contributed negatively; hedge ratio and beta targeting need tightening.",
+      );
+    }
+  }
   if (params.benchmarkRelative) {
     const relative = params.benchmarkRelative;
     if (relative.relativeReturnPct <= -8) {
@@ -1112,6 +1388,7 @@ const buildInsightSummary = (params: {
   riskFlags: string[];
   factorDecomposition?: FactorDecomposition;
   catalystCalendar?: CatalystCalendarMetrics;
+  factorAttribution?: CrossSectionFactorAttribution;
   benchmarkRelative?: ThemeBenchmarkRelativeMetrics;
 }): string[] => {
   const out: string[] = [];
@@ -1151,6 +1428,12 @@ const buildInsightSummary = (params: {
   if (params.catalystCalendar && params.catalystCalendar.totalOpenEvents > 0) {
     out.push(
       `Catalyst calendar ${params.catalystCalendar.horizonDays}d: events=${params.catalystCalendar.eventsInHorizon}/${params.catalystCalendar.totalOpenEvents}, near_term=${params.catalystCalendar.nearTermEvents}, net_expected_impact=${params.catalystCalendar.weightedExpectedImpactBps.toFixed(1)}bps, downside_share=${params.catalystCalendar.weightedDownsideSharePct.toFixed(1)}%, crowding=${params.catalystCalendar.crowdingScore.toFixed(2)}.`,
+    );
+  }
+  if (params.factorAttribution) {
+    const attr = params.factorAttribution;
+    out.push(
+      `Attribution vs ${attr.benchmarkTicker}: alpha=${attr.annualizedAlphaPct.toFixed(1)}% ann, R2=${attr.rSquared.toFixed(2)}, dominant_driver=${attr.dominantContributionFactor}, beta_mkt=${attr.factorBetas.benchmark.toFixed(2)}.`,
     );
   }
   if (params.benchmarkRelative) {
@@ -1347,6 +1630,7 @@ const computeThemeBenchmarkRelative = (params: {
 export const computeSectorResearch = (params: {
   sector: string;
   tickers?: string[];
+  benchmarkTicker?: string;
   lookbackDays?: number;
   topN?: number;
   dbPath?: string;
@@ -1355,6 +1639,7 @@ export const computeSectorResearch = (params: {
   if (!sector) throw new Error("sector is required");
   const lookbackDays = Math.max(90, Math.round(params.lookbackDays ?? 365));
   const topN = Math.max(1, Math.round(params.topN ?? 5));
+  const benchmarkTicker = params.benchmarkTicker ? normalizeTicker(params.benchmarkTicker) : "";
   const rows = deriveConstituentSet({
     sector,
     tickers: params.tickers,
@@ -1368,6 +1653,15 @@ export const computeSectorResearch = (params: {
     dbPath: params.dbPath,
     horizonDays: 90,
   });
+  const factorAttribution =
+    benchmarkTicker && benchmarkTicker.length
+      ? computeCrossSectionFactorAttribution({
+          rows,
+          benchmarkTicker,
+          lookbackDays,
+          dbPath: params.dbPath,
+        })
+      : undefined;
   const sorted = [...rows].sort((left, right) => right.compositeScore - left.compositeScore);
   const leaders = sorted.slice(0, Math.min(topN, sorted.length));
   const laggards = [...sorted].reverse().slice(0, Math.min(topN, sorted.length));
@@ -1376,6 +1670,7 @@ export const computeSectorResearch = (params: {
     rows,
     factorDecomposition,
     catalystCalendar,
+    factorAttribution,
   });
   const insightSummary = buildInsightSummary({
     label: `Sector ${sector}`,
@@ -1385,6 +1680,7 @@ export const computeSectorResearch = (params: {
     riskFlags,
     factorDecomposition,
     catalystCalendar,
+    factorAttribution,
   });
   try {
     appendProvenanceEvent({
@@ -1401,6 +1697,9 @@ export const computeSectorResearch = (params: {
         factor_concentration: factorDecomposition.concentration,
         catalyst_events_horizon: catalystCalendar.eventsInHorizon,
         catalyst_downside_share_pct: catalystCalendar.weightedDownsideSharePct,
+        benchmark_ticker: benchmarkTicker || null,
+        factor_attribution_alpha_pct: factorAttribution?.annualizedAlphaPct ?? null,
+        factor_attribution_r2: factorAttribution?.rSquared ?? null,
       },
       metadata: {
         lookback_days: lookbackDays,
@@ -1418,6 +1717,7 @@ export const computeSectorResearch = (params: {
     metrics,
     factorDecomposition,
     catalystCalendar,
+    factorAttribution,
     leaders: leaders.map(toPublicSnapshot),
     laggards: laggards.map(toPublicSnapshot),
     constituents: sorted.map(toPublicSnapshot),
@@ -1489,6 +1789,15 @@ export const computeThemeResearch = (params: {
           dbPath: params.dbPath,
         })
       : undefined;
+  const factorAttribution =
+    benchmarkTicker && benchmarkTicker.length
+      ? computeCrossSectionFactorAttribution({
+          rows,
+          benchmarkTicker,
+          lookbackDays,
+          dbPath: params.dbPath,
+        })
+      : undefined;
   const metrics = computeCrossSectionMetrics(rows);
   const factorDecomposition = computeFactorDecomposition(rows);
   const catalystCalendar = computeCatalystCalendar({
@@ -1518,6 +1827,7 @@ export const computeThemeResearch = (params: {
     rows,
     factorDecomposition,
     catalystCalendar,
+    factorAttribution,
     benchmarkRelative,
   });
   const insightSummary = buildInsightSummary({
@@ -1528,6 +1838,7 @@ export const computeThemeResearch = (params: {
     riskFlags,
     factorDecomposition,
     catalystCalendar,
+    factorAttribution,
     benchmarkRelative,
   });
   try {
@@ -1549,6 +1860,8 @@ export const computeThemeResearch = (params: {
         factor_concentration: factorDecomposition.concentration,
         catalyst_events_horizon: catalystCalendar.eventsInHorizon,
         catalyst_downside_share_pct: catalystCalendar.weightedDownsideSharePct,
+        factor_attribution_alpha_pct: factorAttribution?.annualizedAlphaPct ?? null,
+        factor_attribution_r2: factorAttribution?.rSquared ?? null,
       },
       metadata: {
         lookback_days: lookbackDays,
@@ -1569,6 +1882,7 @@ export const computeThemeResearch = (params: {
     usedThemeRegistry,
     membershipMinScore: params.minMembershipScore,
     benchmarkRelative,
+    factorAttribution,
     tickers: rows.map((row) => row.ticker),
     lookbackDays,
     metrics,

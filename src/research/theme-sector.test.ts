@@ -104,10 +104,22 @@ describe("theme and sector research", () => {
       drift: -0.0001,
       phase: 8,
     });
+    seedTicker({
+      dbPath,
+      ticker: "QQQ",
+      name: "Invesco QQQ Trust",
+      sector: "ETF",
+      industry: "Index Fund",
+      dates,
+      basePrice: 300,
+      drift: 0.0007,
+      phase: 6,
+    });
 
     const result = computeSectorResearch({
       sector: "Technology",
-      lookbackDays: 240,
+      benchmarkTicker: "QQQ",
+      lookbackDays: 1200,
       topN: 2,
       dbPath,
     });
@@ -122,6 +134,9 @@ describe("theme and sector research", () => {
     expect(result.metrics.evidenceCoverageScore).toBeLessThanOrEqual(1);
     expect(result.factorDecomposition.exposures).toHaveLength(4);
     expect(result.catalystCalendar.totalOpenEvents).toBe(0);
+    expect(result.factorAttribution?.benchmarkTicker).toBe("QQQ");
+    expect(result.factorAttribution?.sampleSize).toBeGreaterThanOrEqual(40);
+    expect(result.factorAttribution?.factorBetas.benchmark).toBeTypeOf("number");
     expect(result.insightSummary.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -237,6 +252,9 @@ describe("theme and sector research", () => {
     expect(result.catalystCalendar.totalOpenEvents).toBeGreaterThanOrEqual(3);
     expect(result.catalystCalendar.eventsInHorizon).toBeGreaterThanOrEqual(2);
     expect(result.catalystCalendar.weightedDownsideSharePct).toBeGreaterThan(0);
+    expect(result.factorAttribution?.benchmarkTicker).toBe("QQQ");
+    expect(result.factorAttribution?.sampleSize).toBeGreaterThanOrEqual(40);
+    expect(result.factorAttribution?.annualizedAlphaPct).toBeTypeOf("number");
     expect(result.sectorExposure.length).toBeGreaterThanOrEqual(2);
     expect(result.sectorExposure.reduce((sum, row) => sum + row.sharePct, 0)).toBeCloseTo(1, 5);
     expect(result.leaders.length).toBeGreaterThan(0);

@@ -1186,6 +1186,7 @@ export function registerResearchCli(program: Command) {
     .description("Generate institutional sector cross-sectional research")
     .requiredOption("--sector <name>", "Sector name")
     .option("--tickers <csv>", "Optional explicit ticker universe override")
+    .option("--benchmark <ticker>", "Optional benchmark ticker for factor attribution")
     .option("--lookback-days <n>", "Price lookback window", "365")
     .option("--top <n>", "Leaders/laggards count", "5")
     .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
@@ -1198,6 +1199,7 @@ export function registerResearchCli(program: Command) {
         const result = computeSectorResearch({
           sector: opts.sector as string,
           tickers: overrideTickers,
+          benchmarkTicker: opts.benchmark as string | undefined,
           lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 365,
           topN: parseOptionalNumber(opts.top) ?? 5,
           dbPath: opts.db as string,
@@ -1224,6 +1226,17 @@ export function registerResearchCli(program: Command) {
             `catalyst_window date=${window.date} event_count=${window.eventCount} weighted_expected_impact_bps=${window.weightedExpectedImpactBps.toFixed(1)}`,
           );
         });
+        if (result.factorAttribution) {
+          defaultRuntime.log(
+            `factor_attribution benchmark=${result.factorAttribution.benchmarkTicker} sample_size=${result.factorAttribution.sampleSize} active_return_ann_pct=${result.factorAttribution.annualizedActiveReturnPct.toFixed(2)} alpha_ann_pct=${result.factorAttribution.annualizedAlphaPct.toFixed(2)} residual_ann_pct=${result.factorAttribution.annualizedResidualPct.toFixed(2)} r2=${result.factorAttribution.rSquared.toFixed(2)} dominant_driver=${result.factorAttribution.dominantContributionFactor}`,
+          );
+          defaultRuntime.log(
+            `factor_betas benchmark=${result.factorAttribution.factorBetas.benchmark.toFixed(3)} momentum=${result.factorAttribution.factorBetas.momentum.toFixed(3)} value=${result.factorAttribution.factorBetas.value.toFixed(3)} quality=${result.factorAttribution.factorBetas.quality.toFixed(3)} size=${result.factorAttribution.factorBetas.size.toFixed(3)}`,
+          );
+          defaultRuntime.log(
+            `factor_contrib_ann_pct benchmark=${result.factorAttribution.annualizedContributionPct.benchmark.toFixed(2)} momentum=${result.factorAttribution.annualizedContributionPct.momentum.toFixed(2)} value=${result.factorAttribution.annualizedContributionPct.value.toFixed(2)} quality=${result.factorAttribution.annualizedContributionPct.quality.toFixed(2)} size=${result.factorAttribution.annualizedContributionPct.size.toFixed(2)}`,
+          );
+        }
         result.insightSummary.forEach((line, index) => {
           defaultRuntime.log(`insight_${index + 1}=${line}`);
         });
@@ -1295,6 +1308,17 @@ export function registerResearchCli(program: Command) {
         if (result.benchmarkRelative) {
           defaultRuntime.log(
             `benchmark ticker=${result.benchmarkRelative.benchmarkTicker} sample_size=${result.benchmarkRelative.sampleSize} relative_return_pct=${result.benchmarkRelative.relativeReturnPct.toFixed(2)} theme_return_pct=${result.benchmarkRelative.themeReturnPct.toFixed(2)} benchmark_return_pct=${result.benchmarkRelative.benchmarkReturnPct.toFixed(2)} beta=${typeof result.benchmarkRelative.beta === "number" ? result.benchmarkRelative.beta.toFixed(2) : "n/a"} tracking_error_pct=${typeof result.benchmarkRelative.trackingErrorPct === "number" ? result.benchmarkRelative.trackingErrorPct.toFixed(2) : "n/a"} info_ratio=${typeof result.benchmarkRelative.informationRatio === "number" ? result.benchmarkRelative.informationRatio.toFixed(2) : "n/a"} upside_capture_pct=${typeof result.benchmarkRelative.upsideCapturePct === "number" ? result.benchmarkRelative.upsideCapturePct.toFixed(1) : "n/a"} downside_capture_pct=${typeof result.benchmarkRelative.downsideCapturePct === "number" ? result.benchmarkRelative.downsideCapturePct.toFixed(1) : "n/a"}`,
+          );
+        }
+        if (result.factorAttribution) {
+          defaultRuntime.log(
+            `factor_attribution benchmark=${result.factorAttribution.benchmarkTicker} sample_size=${result.factorAttribution.sampleSize} active_return_ann_pct=${result.factorAttribution.annualizedActiveReturnPct.toFixed(2)} alpha_ann_pct=${result.factorAttribution.annualizedAlphaPct.toFixed(2)} residual_ann_pct=${result.factorAttribution.annualizedResidualPct.toFixed(2)} r2=${result.factorAttribution.rSquared.toFixed(2)} dominant_driver=${result.factorAttribution.dominantContributionFactor}`,
+          );
+          defaultRuntime.log(
+            `factor_betas benchmark=${result.factorAttribution.factorBetas.benchmark.toFixed(3)} momentum=${result.factorAttribution.factorBetas.momentum.toFixed(3)} value=${result.factorAttribution.factorBetas.value.toFixed(3)} quality=${result.factorAttribution.factorBetas.quality.toFixed(3)} size=${result.factorAttribution.factorBetas.size.toFixed(3)}`,
+          );
+          defaultRuntime.log(
+            `factor_contrib_ann_pct benchmark=${result.factorAttribution.annualizedContributionPct.benchmark.toFixed(2)} momentum=${result.factorAttribution.annualizedContributionPct.momentum.toFixed(2)} value=${result.factorAttribution.annualizedContributionPct.value.toFixed(2)} quality=${result.factorAttribution.annualizedContributionPct.quality.toFixed(2)} size=${result.factorAttribution.annualizedContributionPct.size.toFixed(2)}`,
           );
         }
         result.sectorExposure.forEach((row) => {
