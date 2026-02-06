@@ -312,6 +312,10 @@ const migrate = (db: ResearchDb) => {
       gating_min_lift real not null default 0.03,
       gating_max_risk_breaches integer not null default 0,
       canary_drop_threshold real not null default 0.07,
+      reliability_min_completion real not null default 0.9,
+      reliability_max_timeout_rate real not null default 0.1,
+      reliability_min_reproducibility real not null default 0.8,
+      reliability_max_avg_retries real not null default 1.5,
       metadata text not null default '{}',
       created_at integer not null,
       updated_at integer not null,
@@ -362,6 +366,47 @@ const migrate = (db: ResearchDb) => {
       metrics text not null default '{}',
       created_at integer not null,
       unique (run_id, case_id, policy_name, policy_role)
+    );
+
+    create table if not exists execution_traces (
+      id integer primary key,
+      task_type text not null,
+      task_archetype text not null default '',
+      policy_name text not null default '',
+      policy_role text not null default 'primary',
+      experiment_group text not null default '',
+      ticker text not null default '',
+      repo_root text not null default '',
+      seed text not null default '',
+      trace_hash text not null default '',
+      output_hash text not null default '',
+      success integer not null default 0,
+      step_count integer not null default 0,
+      retry_count integer not null default 0,
+      error_count integer not null default 0,
+      timeout_count integer not null default 0,
+      total_latency_ms integer not null default 0,
+      metadata text not null default '{}',
+      started_at integer not null,
+      completed_at integer not null,
+      created_at integer not null
+    );
+
+    create table if not exists execution_trace_steps (
+      id integer primary key,
+      trace_id integer not null,
+      seq integer not null,
+      tool_name text not null,
+      action text not null default '',
+      status text not null,
+      latency_ms integer not null default 0,
+      retries integer not null default 0,
+      error_type text not null default '',
+      input_hash text not null default '',
+      output_hash text not null default '',
+      details text not null default '{}',
+      created_at integer not null,
+      unique (trace_id, seq)
     );
 
     create table if not exists chunks (
@@ -483,6 +528,15 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_benchmark_results_lookup
       on benchmark_results (run_id, task_type, task_archetype, policy_name, score desc);
+
+    create index if not exists idx_execution_traces_lookup
+      on execution_traces (task_type, task_archetype, policy_name, created_at desc);
+
+    create index if not exists idx_execution_traces_seed
+      on execution_traces (task_type, task_archetype, policy_name, seed, output_hash, created_at desc);
+
+    create index if not exists idx_execution_trace_steps_lookup
+      on execution_trace_steps (trace_id, seq);
   `);
 
   ensureColumn(db, "filings", "accession_raw", "TEXT");
@@ -496,6 +550,15 @@ const migrate = (db: ResearchDb) => {
   ensureColumn(db, "task_outcomes", "policy_name", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "task_outcomes", "policy_role", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn(db, "task_outcomes", "experiment_group", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "benchmark_suites", "reliability_min_completion", "REAL NOT NULL DEFAULT 0.9");
+  ensureColumn(db, "benchmark_suites", "reliability_max_timeout_rate", "REAL NOT NULL DEFAULT 0.1");
+  ensureColumn(
+    db,
+    "benchmark_suites",
+    "reliability_min_reproducibility",
+    "REAL NOT NULL DEFAULT 0.8",
+  );
+  ensureColumn(db, "benchmark_suites", "reliability_max_avg_retries", "REAL NOT NULL DEFAULT 1.5");
 };
 
 const ensureColumn = (db: ResearchDb, table: string, column: string, definition: string) => {

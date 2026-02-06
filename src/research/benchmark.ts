@@ -1,5 +1,9 @@
 import type { LearningTaskType } from "./learning.js";
 import { openResearchDb } from "./db.js";
+import {
+  executionReliabilitySummary,
+  type ExecutionReliabilitySummary,
+} from "./execution-trace.js";
 
 export type BenchmarkRunMode = "champion_vs_challenger" | "all_policies" | "champion_only";
 
@@ -14,6 +18,10 @@ export type BenchmarkSuite = {
   gatingMinLift: number;
   gatingMaxRiskBreaches: number;
   canaryDropThreshold: number;
+  reliabilityMinCompletion: number;
+  reliabilityMaxTimeoutRate: number;
+  reliabilityMinReproducibility: number;
+  reliabilityMaxAvgRetries: number;
   metadata: Record<string, unknown>;
   createdAt: number;
   updatedAt: number;
@@ -65,6 +73,11 @@ export type BenchmarkPolicySummary = {
   weightedWinRate: number;
   riskBreaches: number;
   totalSamples: number;
+  reliabilityTraceCount: number;
+  reliabilityCompletionRate?: number;
+  reliabilityTimeoutRate?: number;
+  reliabilityReproducibility?: number;
+  reliabilityAvgRetries?: number;
   avgCalibrationError?: number;
   avgGraderScore?: number;
   avgOutcomeSignal?: number;
@@ -75,8 +88,12 @@ export type BenchmarkGate = {
   promoteCandidate?: string;
   promoteAllowed: boolean;
   promoteReason: string;
+  promoteReliabilityPass: boolean;
+  promoteReliabilityReason: string;
   canaryBreach: boolean;
   canaryDrop?: number;
+  canaryReliabilityBreach: boolean;
+  canaryReliabilityReason: string;
   rollbackCandidate?: string;
   rollbackReason: string;
 };
@@ -171,6 +188,10 @@ const parseSuiteRow = (row: {
   gating_min_lift: number;
   gating_max_risk_breaches: number;
   canary_drop_threshold: number;
+  reliability_min_completion: number;
+  reliability_max_timeout_rate: number;
+  reliability_min_reproducibility: number;
+  reliability_max_avg_retries: number;
   metadata?: string;
   created_at: number;
   updated_at: number;
@@ -185,6 +206,10 @@ const parseSuiteRow = (row: {
   gatingMinLift: Math.max(0, row.gating_min_lift),
   gatingMaxRiskBreaches: Math.max(0, Math.round(row.gating_max_risk_breaches)),
   canaryDropThreshold: clamp(row.canary_drop_threshold, 0, 1),
+  reliabilityMinCompletion: clamp(row.reliability_min_completion, 0, 1),
+  reliabilityMaxTimeoutRate: clamp(row.reliability_max_timeout_rate, 0, 1),
+  reliabilityMinReproducibility: clamp(row.reliability_min_reproducibility, 0, 1),
+  reliabilityMaxAvgRetries: Math.max(0, row.reliability_max_avg_retries),
   metadata: parseJsonObject<Record<string, unknown>>(row.metadata, {}),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -267,6 +292,8 @@ const resolveSuite = (params: {
       `SELECT
          id, name, task_type, task_archetype, description, active,
          gating_min_samples, gating_min_lift, gating_max_risk_breaches, canary_drop_threshold,
+         reliability_min_completion, reliability_max_timeout_rate,
+         reliability_min_reproducibility, reliability_max_avg_retries,
          metadata, created_at, updated_at
        FROM benchmark_suites
        WHERE name=?
@@ -286,6 +313,10 @@ const resolveSuite = (params: {
         gating_min_lift: number;
         gating_max_risk_breaches: number;
         canary_drop_threshold: number;
+        reliability_min_completion: number;
+        reliability_max_timeout_rate: number;
+        reliability_min_reproducibility: number;
+        reliability_max_avg_retries: number;
         metadata?: string;
         created_at: number;
         updated_at: number;
@@ -341,6 +372,10 @@ export const upsertBenchmarkSuite = (params: {
   gatingMinLift?: number;
   gatingMaxRiskBreaches?: number;
   canaryDropThreshold?: number;
+  reliabilityMinCompletion?: number;
+  reliabilityMaxTimeoutRate?: number;
+  reliabilityMinReproducibility?: number;
+  reliabilityMaxAvgRetries?: number;
   metadata?: Record<string, unknown>;
   dbPath?: string;
 }): BenchmarkSuite => {
@@ -354,8 +389,10 @@ export const upsertBenchmarkSuite = (params: {
     `INSERT INTO benchmark_suites (
        name, task_type, task_archetype, description, active,
        gating_min_samples, gating_min_lift, gating_max_risk_breaches, canary_drop_threshold,
+       reliability_min_completion, reliability_max_timeout_rate,
+       reliability_min_reproducibility, reliability_max_avg_retries,
        metadata, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(name, task_type, task_archetype) DO UPDATE SET
        description=excluded.description,
        active=excluded.active,
@@ -363,6 +400,10 @@ export const upsertBenchmarkSuite = (params: {
        gating_min_lift=excluded.gating_min_lift,
        gating_max_risk_breaches=excluded.gating_max_risk_breaches,
        canary_drop_threshold=excluded.canary_drop_threshold,
+       reliability_min_completion=excluded.reliability_min_completion,
+       reliability_max_timeout_rate=excluded.reliability_max_timeout_rate,
+       reliability_min_reproducibility=excluded.reliability_min_reproducibility,
+       reliability_max_avg_retries=excluded.reliability_max_avg_retries,
        metadata=excluded.metadata,
        updated_at=excluded.updated_at`,
   ).run(
@@ -375,6 +416,10 @@ export const upsertBenchmarkSuite = (params: {
     Math.max(0, params.gatingMinLift ?? 0.03),
     Math.max(0, Math.round(params.gatingMaxRiskBreaches ?? 0)),
     clamp(params.canaryDropThreshold ?? 0.07, 0, 1),
+    clamp(params.reliabilityMinCompletion ?? 0.9, 0, 1),
+    clamp(params.reliabilityMaxTimeoutRate ?? 0.1, 0, 1),
+    clamp(params.reliabilityMinReproducibility ?? 0.8, 0, 1),
+    Math.max(0, params.reliabilityMaxAvgRetries ?? 1.5),
     JSON.stringify(params.metadata ?? {}),
     now,
     now,
@@ -403,6 +448,8 @@ export const listBenchmarkSuites = (
       `SELECT
          id, name, task_type, task_archetype, description, active,
          gating_min_samples, gating_min_lift, gating_max_risk_breaches, canary_drop_threshold,
+         reliability_min_completion, reliability_max_timeout_rate,
+         reliability_min_reproducibility, reliability_max_avg_retries,
          metadata, created_at, updated_at
        FROM benchmark_suites
        WHERE (? = '' OR task_type = ?)
@@ -427,6 +474,10 @@ export const listBenchmarkSuites = (
     gating_min_lift: number;
     gating_max_risk_breaches: number;
     canary_drop_threshold: number;
+    reliability_min_completion: number;
+    reliability_max_timeout_rate: number;
+    reliability_min_reproducibility: number;
+    reliability_max_avg_retries: number;
     metadata?: string;
     created_at: number;
     updated_at: number;
@@ -606,6 +657,41 @@ const expectedNumber = (expected: Record<string, unknown>, key: string): number 
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 };
 
+const reliabilityThresholdsForCase = (params: {
+  suite: BenchmarkSuite;
+  benchmarkCase: BenchmarkCase;
+}) => ({
+  minCompletion:
+    expectedNumber(params.benchmarkCase.expected, "min_completion_rate") ??
+    params.suite.reliabilityMinCompletion,
+  maxTimeoutRate:
+    expectedNumber(params.benchmarkCase.expected, "max_timeout_rate") ??
+    params.suite.reliabilityMaxTimeoutRate,
+  minReproducibility:
+    expectedNumber(params.benchmarkCase.expected, "min_reproducibility") ??
+    params.suite.reliabilityMinReproducibility,
+  maxAvgRetries:
+    expectedNumber(params.benchmarkCase.expected, "max_avg_retries") ??
+    params.suite.reliabilityMaxAvgRetries,
+});
+
+const reliabilityCompositeScore = (params: {
+  reliability: ExecutionReliabilitySummary;
+  maxAvgRetries: number;
+}): number => {
+  if (params.reliability.traceCount <= 0) return 0;
+  const retriesCap = Math.max(0.25, params.maxAvgRetries);
+  const retriesScore = clamp(1 - params.reliability.avgRetries / retriesCap, 0, 1);
+  return clamp(
+    0.35 * params.reliability.completionRate +
+      0.2 * (1 - params.reliability.timeoutRate) +
+      0.3 * params.reliability.reproducibilityScore +
+      0.15 * retriesScore,
+    0,
+    1,
+  );
+};
+
 const scoreCaseForPolicy = (params: {
   suite: BenchmarkSuite;
   benchmarkCase: BenchmarkCase;
@@ -619,6 +705,21 @@ const scoreCaseForPolicy = (params: {
     policyName: params.policy.policyName,
     lookbackDays: params.lookbackDays,
     dbPath: params.dbPath,
+  });
+  const traceArchetype =
+    params.benchmarkCase.taskArchetype.trim() || params.suite.taskArchetype.trim();
+  const reliability = executionReliabilitySummary({
+    taskType: params.suite.taskType,
+    taskArchetype: traceArchetype,
+    policyName: params.policy.policyName,
+    ticker: params.benchmarkCase.ticker,
+    repoRoot: params.benchmarkCase.repoRoot,
+    lookbackDays: params.lookbackDays,
+    dbPath: params.dbPath,
+  });
+  const reliabilityThresholds = reliabilityThresholdsForCase({
+    suite: params.suite,
+    benchmarkCase: params.benchmarkCase,
   });
   const sampleCount = rows.length;
   const graderScores = rows.map((row) => toFiniteOrUndefined(row.grader_score) ?? 0);
@@ -658,8 +759,16 @@ const scoreCaseForPolicy = (params: {
     0,
     1,
   );
+  const reliabilityScore = reliabilityCompositeScore({
+    reliability,
+    maxAvgRetries: reliabilityThresholds.maxAvgRetries,
+  });
   const score = clamp(
-    0.5 * avgGraderScore + 0.35 * avgOutcomeSignal + 0.1 * calibrationScore + 0.05 * sampleQuality,
+    0.45 * avgGraderScore +
+      0.3 * avgOutcomeSignal +
+      0.1 * calibrationScore +
+      0.05 * sampleQuality +
+      0.1 * reliabilityScore,
     0,
     1,
   );
@@ -689,6 +798,24 @@ const scoreCaseForPolicy = (params: {
   if (typeof minCitations === "number" && (citationsAvg ?? 0) < minCitations) {
     riskReasons.push("citation_coverage_low");
   }
+  if (reliability.traceCount <= 0) {
+    riskReasons.push("trace_data_missing");
+  } else {
+    if (reliability.completionRate < reliabilityThresholds.minCompletion) {
+      riskReasons.push("completion_rate_low");
+    }
+    if (reliability.timeoutRate > reliabilityThresholds.maxTimeoutRate) {
+      riskReasons.push("timeout_rate_high");
+    }
+    if (reliability.reproducibilitySampleCount <= 0) {
+      riskReasons.push("reproducibility_unverified");
+    } else if (reliability.reproducibilityScore < reliabilityThresholds.minReproducibility) {
+      riskReasons.push("reproducibility_low");
+    }
+    if (reliability.avgRetries > reliabilityThresholds.maxAvgRetries) {
+      riskReasons.push("retries_high");
+    }
+  }
 
   const riskBreach = riskReasons.length > 0;
   const win = !riskBreach && score >= minScore && winRate >= minWinRate;
@@ -714,6 +841,19 @@ const scoreCaseForPolicy = (params: {
       min_win_rate: minWinRate,
       max_quarantine_rate: maxQuarantineRate,
       max_calibration_error: maxCalibrationError,
+      reliability_trace_count: reliability.traceCount,
+      reliability_completion_rate: reliability.completionRate,
+      reliability_timeout_rate: reliability.timeoutRate,
+      reliability_reproducibility: reliability.reproducibilityScore,
+      reliability_reproducibility_samples: reliability.reproducibilitySampleCount,
+      reliability_avg_retries: reliability.avgRetries,
+      reliability_avg_errors: reliability.avgErrors,
+      reliability_avg_latency_ms: reliability.avgLatencyMs,
+      reliability_score: reliabilityScore,
+      min_completion_rate: reliabilityThresholds.minCompletion,
+      max_timeout_rate: reliabilityThresholds.maxTimeoutRate,
+      min_reproducibility: reliabilityThresholds.minReproducibility,
+      max_avg_retries: reliabilityThresholds.maxAvgRetries,
       risk_reasons: riskReasons,
     },
   };
@@ -733,6 +873,7 @@ const summarizePolicyResults = (params: {
       weightedWinRate: 0,
       riskBreaches: 0,
       totalSamples: 0,
+      reliabilityTraceCount: 0,
     };
   }
   let totalWeight = 0;
@@ -744,6 +885,12 @@ const summarizePolicyResults = (params: {
   let calibrationWeight = 0;
   let graderWeighted = 0;
   let outcomeWeighted = 0;
+  let reliabilityTraceCount = 0;
+  let completionWeighted = 0;
+  let timeoutWeighted = 0;
+  let reproducibilityWeighted = 0;
+  let retriesWeighted = 0;
+  let reliabilityWeight = 0;
   for (const result of params.results) {
     const benchmarkCase = params.casesById.get(result.caseId);
     const weight = benchmarkCase?.weight ?? 1;
@@ -761,6 +908,26 @@ const summarizePolicyResults = (params: {
     if (typeof grader === "number") graderWeighted += grader * weight;
     const outcome = toFiniteOrUndefined(result.metrics.avg_outcome_signal);
     if (typeof outcome === "number") outcomeWeighted += outcome * weight;
+    const traces = toFiniteOrUndefined(result.metrics.reliability_trace_count);
+    if (typeof traces === "number") {
+      reliabilityTraceCount += Math.max(0, Math.round(traces));
+    }
+    const completion = toFiniteOrUndefined(result.metrics.reliability_completion_rate);
+    const timeoutRate = toFiniteOrUndefined(result.metrics.reliability_timeout_rate);
+    const reproducibility = toFiniteOrUndefined(result.metrics.reliability_reproducibility);
+    const retries = toFiniteOrUndefined(result.metrics.reliability_avg_retries);
+    if (
+      typeof completion === "number" &&
+      typeof timeoutRate === "number" &&
+      typeof reproducibility === "number" &&
+      typeof retries === "number"
+    ) {
+      completionWeighted += completion * weight;
+      timeoutWeighted += timeoutRate * weight;
+      reproducibilityWeighted += reproducibility * weight;
+      retriesWeighted += retries * weight;
+      reliabilityWeight += weight;
+    }
   }
   return {
     policyName: params.policy.policyName,
@@ -770,6 +937,15 @@ const summarizePolicyResults = (params: {
     weightedWinRate: totalWeight > 1e-9 ? winWeighted / totalWeight : 0,
     riskBreaches,
     totalSamples,
+    reliabilityTraceCount,
+    reliabilityCompletionRate:
+      reliabilityWeight > 1e-9 ? completionWeighted / reliabilityWeight : undefined,
+    reliabilityTimeoutRate:
+      reliabilityWeight > 1e-9 ? timeoutWeighted / reliabilityWeight : undefined,
+    reliabilityReproducibility:
+      reliabilityWeight > 1e-9 ? reproducibilityWeighted / reliabilityWeight : undefined,
+    reliabilityAvgRetries:
+      reliabilityWeight > 1e-9 ? retriesWeighted / reliabilityWeight : undefined,
     avgCalibrationError:
       calibrationWeight > 1e-9 ? calibrationWeighted / calibrationWeight : undefined,
     avgGraderScore: totalWeight > 1e-9 ? graderWeighted / totalWeight : undefined,
@@ -799,6 +975,14 @@ const parseRunSummary = (
     weightedWinRate: clamp(toFiniteOrUndefined(item.weightedWinRate) ?? 0, 0, 1),
     riskBreaches: Math.max(0, Math.round(toFiniteOrUndefined(item.riskBreaches) ?? 0)),
     totalSamples: Math.max(0, Math.round(toFiniteOrUndefined(item.totalSamples) ?? 0)),
+    reliabilityTraceCount: Math.max(
+      0,
+      Math.round(toFiniteOrUndefined(item.reliabilityTraceCount) ?? 0),
+    ),
+    reliabilityCompletionRate: toFiniteOrUndefined(item.reliabilityCompletionRate),
+    reliabilityTimeoutRate: toFiniteOrUndefined(item.reliabilityTimeoutRate),
+    reliabilityReproducibility: toFiniteOrUndefined(item.reliabilityReproducibility),
+    reliabilityAvgRetries: toFiniteOrUndefined(item.reliabilityAvgRetries),
     avgCalibrationError: toFiniteOrUndefined(item.avgCalibrationError),
     avgGraderScore: toFiniteOrUndefined(item.avgGraderScore),
     avgOutcomeSignal: toFiniteOrUndefined(item.avgOutcomeSignal),
@@ -810,8 +994,14 @@ const parseRunSummary = (
       typeof gateRaw.promoteCandidate === "string" ? gateRaw.promoteCandidate : undefined,
     promoteAllowed: gateRaw.promoteAllowed === true,
     promoteReason: typeof gateRaw.promoteReason === "string" ? gateRaw.promoteReason : "",
+    promoteReliabilityPass: gateRaw.promoteReliabilityPass === true,
+    promoteReliabilityReason:
+      typeof gateRaw.promoteReliabilityReason === "string" ? gateRaw.promoteReliabilityReason : "",
     canaryBreach: gateRaw.canaryBreach === true,
     canaryDrop: toFiniteOrUndefined(gateRaw.canaryDrop),
+    canaryReliabilityBreach: gateRaw.canaryReliabilityBreach === true,
+    canaryReliabilityReason:
+      typeof gateRaw.canaryReliabilityReason === "string" ? gateRaw.canaryReliabilityReason : "",
     rollbackCandidate:
       typeof gateRaw.rollbackCandidate === "string" ? gateRaw.rollbackCandidate : undefined,
     rollbackReason: typeof gateRaw.rollbackReason === "string" ? gateRaw.rollbackReason : "",
@@ -847,6 +1037,59 @@ const getPreviousRunChampionScore = (params: {
     ?.weightedScore;
 };
 
+const reliabilityGateForSummary = (params: {
+  suite: BenchmarkSuite;
+  summary?: BenchmarkPolicySummary;
+}): {
+  pass: boolean;
+  reason: string;
+} => {
+  const summary = params.summary;
+  if (!summary) {
+    return { pass: false, reason: "Missing reliability summary." };
+  }
+  if (summary.reliabilityTraceCount <= 0) {
+    return { pass: false, reason: "No execution traces found." };
+  }
+  if (typeof summary.reliabilityCompletionRate !== "number") {
+    return { pass: false, reason: "Completion rate unavailable." };
+  }
+  if (summary.reliabilityCompletionRate < params.suite.reliabilityMinCompletion) {
+    return {
+      pass: false,
+      reason: `Completion rate ${summary.reliabilityCompletionRate.toFixed(3)} < min ${params.suite.reliabilityMinCompletion.toFixed(3)}.`,
+    };
+  }
+  if (typeof summary.reliabilityTimeoutRate !== "number") {
+    return { pass: false, reason: "Timeout rate unavailable." };
+  }
+  if (summary.reliabilityTimeoutRate > params.suite.reliabilityMaxTimeoutRate) {
+    return {
+      pass: false,
+      reason: `Timeout rate ${summary.reliabilityTimeoutRate.toFixed(3)} > max ${params.suite.reliabilityMaxTimeoutRate.toFixed(3)}.`,
+    };
+  }
+  if (typeof summary.reliabilityReproducibility !== "number") {
+    return { pass: false, reason: "Reproducibility unavailable." };
+  }
+  if (summary.reliabilityReproducibility < params.suite.reliabilityMinReproducibility) {
+    return {
+      pass: false,
+      reason: `Reproducibility ${summary.reliabilityReproducibility.toFixed(3)} < min ${params.suite.reliabilityMinReproducibility.toFixed(3)}.`,
+    };
+  }
+  if (typeof summary.reliabilityAvgRetries !== "number") {
+    return { pass: false, reason: "Retry rate unavailable." };
+  }
+  if (summary.reliabilityAvgRetries > params.suite.reliabilityMaxAvgRetries) {
+    return {
+      pass: false,
+      reason: `Avg retries ${summary.reliabilityAvgRetries.toFixed(3)} > max ${params.suite.reliabilityMaxAvgRetries.toFixed(3)}.`,
+    };
+  }
+  return { pass: true, reason: "Reliability gates passed." };
+};
+
 const evaluateGate = (params: {
   suite: BenchmarkSuite;
   runId: number;
@@ -860,7 +1103,11 @@ const evaluateGate = (params: {
     return {
       promoteAllowed: false,
       promoteReason: "No benchmark policy summaries available.",
+      promoteReliabilityPass: false,
+      promoteReliabilityReason: "No benchmark policy summaries available.",
       canaryBreach: false,
+      canaryReliabilityBreach: false,
+      canaryReliabilityReason: "No champion available.",
       rollbackReason: "No champion available.",
     };
   }
@@ -876,6 +1123,8 @@ const evaluateGate = (params: {
 
   let promoteAllowed = false;
   let promoteReason = "No eligible challenger.";
+  let promoteReliabilityPass = false;
+  let promoteReliabilityReason = "No eligible challenger.";
   if (topChallenger && challengerVariant) {
     const minSamples = Math.max(
       params.suite.gatingMinSamples,
@@ -891,18 +1140,33 @@ const evaluateGate = (params: {
       params.suite.gatingMaxRiskBreaches,
       Math.round((championVariant?.maxQuarantineRate ?? 1) * 10),
     );
+    const challengerReliability = reliabilityGateForSummary({
+      suite: params.suite,
+      summary: topChallenger,
+    });
+    promoteReliabilityPass = challengerReliability.pass;
+    promoteReliabilityReason = challengerReliability.reason;
     if (topChallenger.totalSamples < minSamples) {
       promoteReason = `Challenger samples ${topChallenger.totalSamples} < min ${minSamples}.`;
     } else if (topChallenger.weightedScore < championSummary.weightedScore + minLift) {
       promoteReason = `Challenger score ${topChallenger.weightedScore.toFixed(3)} < champion+lift ${(championSummary.weightedScore + minLift).toFixed(3)}.`;
     } else if (topChallenger.riskBreaches > requiredRiskBreaches) {
       promoteReason = `Challenger risk breaches ${topChallenger.riskBreaches} > allowed ${requiredRiskBreaches}.`;
+    } else if (!challengerReliability.pass) {
+      promoteReason = `Challenger reliability gate failed: ${challengerReliability.reason}`;
     } else {
       promoteAllowed = true;
       promoteReason = "Challenger passed benchmark promotion gates.";
     }
+  } else {
+    promoteReliabilityPass = false;
+    promoteReliabilityReason = "No eligible challenger.";
   }
 
+  const championReliability = reliabilityGateForSummary({
+    suite: params.suite,
+    summary: championSummary,
+  });
   const previousChampionScore = getPreviousRunChampionScore({
     suiteId: params.suite.id,
     runId: params.runId,
@@ -913,14 +1177,21 @@ const evaluateGate = (params: {
     typeof previousChampionScore === "number"
       ? previousChampionScore - championSummary.weightedScore
       : undefined;
-  const canaryBreach =
+  const canaryScoreBreach =
     typeof canaryDrop === "number" && canaryDrop > params.suite.canaryDropThreshold;
+  const canaryReliabilityBreach = !championReliability.pass;
+  const canaryBreach = canaryScoreBreach || canaryReliabilityBreach;
   let rollbackCandidate: string | undefined;
   let rollbackReason = "Champion canary stable.";
   if (canaryBreach) {
     const fallback = challengerSummaries.find((summary) => {
       const variant = params.variants.find((item) => item.policyName === summary.policyName);
       if (!variant) return false;
+      const reliability = reliabilityGateForSummary({
+        suite: params.suite,
+        summary,
+      });
+      if (!reliability.pass) return false;
       const minSamples = Math.max(
         variant.minSamples,
         Math.floor(params.suite.gatingMinSamples / 2),
@@ -945,8 +1216,12 @@ const evaluateGate = (params: {
     promoteCandidate: topChallenger?.policyName,
     promoteAllowed,
     promoteReason,
+    promoteReliabilityPass,
+    promoteReliabilityReason,
     canaryBreach,
     canaryDrop,
+    canaryReliabilityBreach,
+    canaryReliabilityReason: championReliability.reason,
     rollbackCandidate,
     rollbackReason,
   };

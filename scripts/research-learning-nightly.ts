@@ -1,5 +1,5 @@
-import { runDecisionEval } from "../src/research/eval.js";
 import { runAllBenchmarksWithGovernance } from "../src/research/benchmark.js";
+import { runDecisionEval } from "../src/research/eval.js";
 import { runLearningCalibration } from "../src/research/learning.js";
 import { runPolicyGovernance } from "../src/research/policy.js";
 
@@ -13,9 +13,7 @@ const run = async () => {
   console.log(
     `forecast sync: unresolved=${learning.forecastResolution.unresolvedCount} resolved_now=${learning.forecastResolution.resolvedNow}`,
   );
-  console.log(
-    `regrade: scanned=${learning.refresh.scanned} updated=${learning.refresh.updated}`,
-  );
+  console.log(`regrade: scanned=${learning.refresh.scanned} updated=${learning.refresh.updated}`);
   console.log(
     `learning report: tasks=${learning.report.totalTasks} avg_score=${typeof learning.report.avgGraderScore === "number" ? learning.report.avgGraderScore.toFixed(3) : "n/a"} trusted_rate=${typeof learning.report.trustedRate === "number" ? `${(learning.report.trustedRate * 100).toFixed(1)}%` : "n/a"}`,
   );
@@ -34,6 +32,13 @@ const run = async () => {
   console.log(
     `benchmark governance: suites=${benchmark.suiteCount} runs=${benchmark.runCount} failures=${benchmark.failures}`,
   );
+  benchmark.runs.slice(0, 20).forEach((run) => {
+    const champion = run.policySummaries.find((summary) => summary.status === "champion");
+    if (!champion) return;
+    console.log(
+      `benchmark suite=${run.suite.name} champion=${champion.policyName} score=${champion.weightedScore.toFixed(3)} completion=${typeof champion.reliabilityCompletionRate === "number" ? `${(champion.reliabilityCompletionRate * 100).toFixed(1)}%` : "n/a"} timeout=${typeof champion.reliabilityTimeoutRate === "number" ? `${(champion.reliabilityTimeoutRate * 100).toFixed(1)}%` : "n/a"} repro=${typeof champion.reliabilityReproducibility === "number" ? `${(champion.reliabilityReproducibility * 100).toFixed(1)}%` : "n/a"} retries=${typeof champion.reliabilityAvgRetries === "number" ? champion.reliabilityAvgRetries.toFixed(2) : "n/a"} canary=${run.gate.canaryBreach ? 1 : 0}`,
+    );
+  });
   benchmark.decisions.slice(0, 20).forEach((decision) => {
     console.log(
       `benchmark run=${decision.runId} ${decision.decisionType} applied=${decision.applied ? 1 : 0} ${decision.championBefore || "none"} -> ${decision.championAfter || "none"} (${decision.reason})`,

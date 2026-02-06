@@ -9,6 +9,7 @@ import {
   upsertBenchmarkSuite,
 } from "./benchmark.js";
 import { openResearchDb } from "./db.js";
+import { logExecutionTrace } from "./execution-trace.js";
 import { logTaskOutcome } from "./learning.js";
 import { listPolicyVariants, registerPolicyVariant } from "./policy.js";
 
@@ -23,6 +24,33 @@ const ageByPolicy = (dbPath: string, policyName: string, daysAgo: number) => {
     ts,
     policyName,
   );
+};
+
+const logStableTrace = (params: {
+  dbPath: string;
+  taskType: "investment" | "coding";
+  taskArchetype: string;
+  policyName: string;
+  seed: string;
+  outputText: string;
+  success?: boolean;
+  retries?: number;
+  timeouts?: number;
+  errors?: number;
+}) => {
+  logExecutionTrace({
+    taskType: params.taskType,
+    taskArchetype: params.taskArchetype,
+    policyName: params.policyName,
+    policyRole: "primary",
+    seed: params.seed,
+    outputText: params.outputText,
+    success: params.success,
+    retryCount: params.retries,
+    timeoutCount: params.timeouts,
+    errorCount: params.errors,
+    dbPath: params.dbPath,
+  });
 };
 
 describe("benchmark replay harness", () => {
@@ -69,6 +97,7 @@ describe("benchmark replay harness", () => {
     });
 
     for (let i = 0; i < 4; i += 1) {
+      const seed = `quality-seed-${Math.floor(i / 2)}`;
       logTaskOutcome({
         taskType: "investment",
         taskArchetype: "deep-dive",
@@ -84,6 +113,15 @@ describe("benchmark replay harness", () => {
         },
         dbPath,
       });
+      logStableTrace({
+        dbPath,
+        taskType: "investment",
+        taskArchetype: "deep-dive",
+        policyName: "champion-v1",
+        seed,
+        outputText: `champion-output-${seed}`,
+        success: true,
+      });
       logTaskOutcome({
         taskType: "investment",
         taskArchetype: "deep-dive",
@@ -98,6 +136,15 @@ describe("benchmark replay harness", () => {
           falsification_count: 5,
         },
         dbPath,
+      });
+      logStableTrace({
+        dbPath,
+        taskType: "investment",
+        taskArchetype: "deep-dive",
+        policyName: "challenger-v2",
+        seed,
+        outputText: `challenger-output-${seed}`,
+        success: true,
       });
     }
 
@@ -165,6 +212,7 @@ describe("benchmark replay harness", () => {
     });
 
     for (let i = 0; i < 4; i += 1) {
+      const seed = `baseline-seed-${Math.floor(i / 2)}`;
       logTaskOutcome({
         taskType: "coding",
         taskArchetype: "bugfix",
@@ -181,8 +229,18 @@ describe("benchmark replay harness", () => {
         },
         dbPath,
       });
+      logStableTrace({
+        dbPath,
+        taskType: "coding",
+        taskArchetype: "bugfix",
+        policyName: "champion-v2",
+        seed,
+        outputText: `champion-baseline-${seed}`,
+        success: true,
+      });
     }
     for (let i = 0; i < 4; i += 1) {
+      const seed = `baseline-seed-${Math.floor(i / 2)}`;
       logTaskOutcome({
         taskType: "coding",
         taskArchetype: "bugfix",
@@ -199,6 +257,15 @@ describe("benchmark replay harness", () => {
         },
         dbPath,
       });
+      logStableTrace({
+        dbPath,
+        taskType: "coding",
+        taskArchetype: "bugfix",
+        policyName: "challenger-v3",
+        seed,
+        outputText: `challenger-baseline-${seed}`,
+        success: true,
+      });
     }
     const baseline = runBenchmarkReplay({
       suiteName: "coding-core",
@@ -212,6 +279,7 @@ describe("benchmark replay harness", () => {
     ageByPolicy(dbPath, "champion-v2", 45);
     ageByPolicy(dbPath, "challenger-v3", 45);
     for (let i = 0; i < 4; i += 1) {
+      const seed = `canary-seed-${Math.floor(i / 2)}`;
       logTaskOutcome({
         taskType: "coding",
         taskArchetype: "bugfix",
@@ -228,6 +296,15 @@ describe("benchmark replay harness", () => {
         },
         dbPath,
       });
+      logStableTrace({
+        dbPath,
+        taskType: "coding",
+        taskArchetype: "bugfix",
+        policyName: "champion-v2",
+        seed,
+        outputText: `champion-degraded-${seed}`,
+        success: true,
+      });
       logTaskOutcome({
         taskType: "coding",
         taskArchetype: "bugfix",
@@ -243,6 +320,15 @@ describe("benchmark replay harness", () => {
           rollback_rate: 0,
         },
         dbPath,
+      });
+      logStableTrace({
+        dbPath,
+        taskType: "coding",
+        taskArchetype: "bugfix",
+        policyName: "challenger-v3",
+        seed,
+        outputText: `challenger-stable-${seed}`,
+        success: true,
       });
     }
 
@@ -310,6 +396,15 @@ describe("benchmark replay harness", () => {
       gradingMetrics: { contradictions: 0, falsification_count: 4 },
       dbPath,
     });
+    logStableTrace({
+      dbPath,
+      taskType: "investment",
+      taskArchetype: "deep-dive",
+      policyName: "nightly-champion",
+      seed: "nightly-seed-0",
+      outputText: "nightly-output",
+      success: true,
+    });
 
     const nightly = runAllBenchmarksWithGovernance({
       lookbackDays: 30,
@@ -319,5 +414,293 @@ describe("benchmark replay harness", () => {
     expect(nightly.runCount).toBe(1);
     expect(nightly.failures).toBe(0);
     expect(nightly.decisions).toHaveLength(1);
+  });
+
+  it("blocks promotion when challenger reliability gates fail", () => {
+    const dbPath = testDbPath("reliability-promotion-block");
+    upsertBenchmarkSuite({
+      name: "coding-reliability",
+      taskType: "coding",
+      taskArchetype: "bugfix",
+      gatingMinSamples: 3,
+      gatingMinLift: 0.01,
+      gatingMaxRiskBreaches: 10,
+      reliabilityMinCompletion: 0.9,
+      reliabilityMaxTimeoutRate: 0.1,
+      reliabilityMinReproducibility: 0.8,
+      reliabilityMaxAvgRetries: 1.5,
+      dbPath,
+    });
+    upsertBenchmarkCase({
+      suiteName: "coding-reliability",
+      taskType: "coding",
+      taskArchetype: "bugfix",
+      caseName: "reliability-case",
+      expected: {
+        min_samples: 3,
+        min_score: 0.6,
+      },
+      dbPath,
+    });
+    registerPolicyVariant({
+      taskType: "coding",
+      taskArchetype: "bugfix",
+      policyName: "champion-safe",
+      status: "champion",
+      minSamples: 3,
+      dbPath,
+    });
+    registerPolicyVariant({
+      taskType: "coding",
+      taskArchetype: "bugfix",
+      policyName: "challenger-risky",
+      status: "challenger",
+      minSamples: 3,
+      minLift: 0.01,
+      dbPath,
+    });
+
+    for (let i = 0; i < 4; i += 1) {
+      const seed = `rel-seed-${Math.floor(i / 2)}`;
+      logTaskOutcome({
+        taskType: "coding",
+        taskArchetype: "bugfix",
+        policyName: "champion-safe",
+        policyRole: "primary",
+        outputText: `champion-safe-${i}`,
+        userScore: 0.35,
+        realizedOutcomeScore: 0.36,
+        gradingMetrics: {
+          tests_pass_rate: 0.55,
+          regressions: 1,
+          review_findings: 4,
+          rollback_rate: 0.1,
+        },
+        dbPath,
+      });
+      logStableTrace({
+        dbPath,
+        taskType: "coding",
+        taskArchetype: "bugfix",
+        policyName: "champion-safe",
+        seed,
+        outputText: `safe-output-${seed}`,
+        success: true,
+      });
+
+      logTaskOutcome({
+        taskType: "coding",
+        taskArchetype: "bugfix",
+        policyName: "challenger-risky",
+        policyRole: "primary",
+        outputText: `challenger-risky-${i}`,
+        userScore: 0.85,
+        realizedOutcomeScore: 0.84,
+        gradingMetrics: {
+          tests_pass_rate: 0.93,
+          regressions: 0,
+          review_findings: 1,
+          rollback_rate: 0,
+        },
+        dbPath,
+      });
+      logStableTrace({
+        dbPath,
+        taskType: "coding",
+        taskArchetype: "bugfix",
+        policyName: "challenger-risky",
+        seed,
+        outputText: `risky-output-${i % 2 === 0 ? "a" : "b"}-${seed}`,
+        success: false,
+        retries: 3,
+        timeouts: 1,
+        errors: 1,
+      });
+    }
+
+    const run = runBenchmarkReplay({
+      suiteName: "coding-reliability",
+      taskType: "coding",
+      taskArchetype: "bugfix",
+      lookbackDays: 30,
+      dbPath,
+    });
+    expect(run.gate.promoteCandidate).toBe("challenger-risky");
+    expect(run.gate.promoteAllowed).toBe(false);
+    expect(run.gate.promoteReliabilityPass).toBe(false);
+    expect(run.gate.promoteReason).toContain("reliability gate failed");
+  });
+
+  it("triggers canary rollback when champion reliability collapses", () => {
+    const dbPath = testDbPath("reliability-rollback");
+    upsertBenchmarkSuite({
+      name: "investment-reliability",
+      taskType: "investment",
+      taskArchetype: "deep-dive",
+      gatingMinSamples: 3,
+      gatingMinLift: 0.5,
+      canaryDropThreshold: 0.3,
+      reliabilityMinCompletion: 0.9,
+      reliabilityMaxTimeoutRate: 0.1,
+      reliabilityMinReproducibility: 0.8,
+      reliabilityMaxAvgRetries: 1.5,
+      dbPath,
+    });
+    upsertBenchmarkCase({
+      suiteName: "investment-reliability",
+      taskType: "investment",
+      taskArchetype: "deep-dive",
+      caseName: "investment-reliability-case",
+      expected: {
+        min_samples: 3,
+        min_score: 0.6,
+      },
+      dbPath,
+    });
+    registerPolicyVariant({
+      taskType: "investment",
+      taskArchetype: "deep-dive",
+      policyName: "champion-rel-v1",
+      status: "champion",
+      minSamples: 3,
+      dbPath,
+    });
+    registerPolicyVariant({
+      taskType: "investment",
+      taskArchetype: "deep-dive",
+      policyName: "challenger-rel-v2",
+      status: "challenger",
+      minSamples: 3,
+      dbPath,
+    });
+
+    for (let i = 0; i < 4; i += 1) {
+      const seed = `baseline-seed-${Math.floor(i / 2)}`;
+      logTaskOutcome({
+        taskType: "investment",
+        taskArchetype: "deep-dive",
+        policyName: "champion-rel-v1",
+        policyRole: "primary",
+        outputText: `champion-baseline-${i}`,
+        userScore: 0.9,
+        realizedOutcomeScore: 0.9,
+        citationCount: 10,
+        gradingMetrics: {
+          contradictions: 0,
+          falsification_count: 5,
+        },
+        dbPath,
+      });
+      logStableTrace({
+        dbPath,
+        taskType: "investment",
+        taskArchetype: "deep-dive",
+        policyName: "champion-rel-v1",
+        seed,
+        outputText: `champion-baseline-output-${seed}`,
+        success: true,
+      });
+
+      logTaskOutcome({
+        taskType: "investment",
+        taskArchetype: "deep-dive",
+        policyName: "challenger-rel-v2",
+        policyRole: "primary",
+        outputText: `challenger-baseline-${i}`,
+        userScore: 0.86,
+        realizedOutcomeScore: 0.86,
+        citationCount: 9,
+        gradingMetrics: {
+          contradictions: 0,
+          falsification_count: 4,
+        },
+        dbPath,
+      });
+      logStableTrace({
+        dbPath,
+        taskType: "investment",
+        taskArchetype: "deep-dive",
+        policyName: "challenger-rel-v2",
+        seed,
+        outputText: `challenger-baseline-output-${seed}`,
+        success: true,
+      });
+    }
+
+    const baseline = runBenchmarkReplay({
+      suiteName: "investment-reliability",
+      taskType: "investment",
+      taskArchetype: "deep-dive",
+      lookbackDays: 90,
+      dbPath,
+    });
+    expect(baseline.gate.canaryBreach).toBe(false);
+
+    for (let i = 0; i < 4; i += 1) {
+      const seed = `degraded-seed-${Math.floor(i / 2)}`;
+      logTaskOutcome({
+        taskType: "investment",
+        taskArchetype: "deep-dive",
+        policyName: "champion-rel-v1",
+        policyRole: "primary",
+        outputText: `champion-degraded-${i}`,
+        userScore: 0.89,
+        realizedOutcomeScore: 0.9,
+        citationCount: 10,
+        gradingMetrics: {
+          contradictions: 0,
+          falsification_count: 5,
+        },
+        dbPath,
+      });
+      logStableTrace({
+        dbPath,
+        taskType: "investment",
+        taskArchetype: "deep-dive",
+        policyName: "champion-rel-v1",
+        seed,
+        outputText: `champion-unstable-${i % 2 === 0 ? "x" : "y"}-${seed}`,
+        success: false,
+        retries: 3,
+        timeouts: 1,
+        errors: 1,
+      });
+
+      logTaskOutcome({
+        taskType: "investment",
+        taskArchetype: "deep-dive",
+        policyName: "challenger-rel-v2",
+        policyRole: "primary",
+        outputText: `challenger-stable-${i}`,
+        userScore: 0.86,
+        realizedOutcomeScore: 0.86,
+        citationCount: 9,
+        gradingMetrics: {
+          contradictions: 0,
+          falsification_count: 4,
+        },
+        dbPath,
+      });
+      logStableTrace({
+        dbPath,
+        taskType: "investment",
+        taskArchetype: "deep-dive",
+        policyName: "challenger-rel-v2",
+        seed,
+        outputText: `challenger-stable-output-${seed}`,
+        success: true,
+      });
+    }
+
+    const canaryRun = runBenchmarkReplay({
+      suiteName: "investment-reliability",
+      taskType: "investment",
+      taskArchetype: "deep-dive",
+      lookbackDays: 90,
+      dbPath,
+    });
+    expect(canaryRun.gate.canaryBreach).toBe(true);
+    expect(canaryRun.gate.canaryReliabilityBreach).toBe(true);
+    expect(canaryRun.gate.rollbackCandidate).toBe("challenger-rel-v2");
   });
 });

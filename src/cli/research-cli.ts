@@ -35,6 +35,11 @@ import {
   runRetrievalEval,
 } from "../research/eval.js";
 import {
+  executionTraceReport,
+  logExecutionTrace,
+  type ExecutionTraceStepInput,
+} from "../research/execution-trace.js";
+import {
   ingestFilings,
   ingestExpectations,
   ingestFundamentals,
@@ -95,6 +100,7 @@ const parseSourceMixOption = (value: string): Record<string, number> => {
 };
 
 const parseOptionalNumber = (value: unknown): number | undefined => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value !== "string" || !value.trim()) return undefined;
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : undefined;
@@ -108,6 +114,17 @@ const parseOptionalJsonObject = (value: unknown): Record<string, unknown> | unde
     return parsed as Record<string, unknown>;
   } catch {
     throw new Error("Invalid JSON object");
+  }
+};
+
+const parseOptionalJsonArray = (value: unknown): unknown[] | undefined => {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) throw new Error("Invalid JSON array");
+    return parsed;
+  } catch {
+    throw new Error("Invalid JSON array");
   }
 };
 
@@ -819,6 +836,130 @@ export function registerResearchCli(program: Command) {
     });
 
   research
+    .command("trace-log")
+    .description("Log execution trace telemetry for reliability benchmarking")
+    .requiredOption("--task-type <kind>", "investment|coding|other")
+    .requiredOption("--policy <name>", "Policy name")
+    .option("--archetype <name>", "Task archetype", "")
+    .option("--policy-role <kind>", "primary|shadow", "primary")
+    .option("--experiment-group <name>", "Experiment group id")
+    .option("--ticker <symbol>", "Ticker")
+    .option("--repo-root <path>", "Repo root")
+    .option("--seed <text>", "Deterministic seed")
+    .option("--trace-hash <hex>", "Precomputed trace hash")
+    .option("--output <text>", "Output text to hash for reproducibility")
+    .option("--output-hash <hex>", "Precomputed output hash")
+    .option("--success <bool>", "true|false")
+    .option("--retries <n>", "Retry count")
+    .option("--errors <n>", "Error count")
+    .option("--timeouts <n>", "Timeout count")
+    .option("--latency-ms <n>", "Total latency in milliseconds")
+    .option("--started-at <ms>", "Start timestamp (epoch ms)")
+    .option("--completed-at <ms>", "Completed timestamp (epoch ms)")
+    .option("--steps <json>", "JSON array of trace steps")
+    .option("--metadata <json>", "JSON metadata object")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const parsedSteps = (parseOptionalJsonArray(opts.steps) ?? []).map((raw) => {
+          if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+            throw new Error("Each step must be a JSON object.");
+          }
+          const step = raw as Record<string, unknown>;
+          if (typeof step.toolName !== "string" || !step.toolName.trim()) {
+            throw new Error("Each step requires non-empty toolName.");
+          }
+          const normalized: ExecutionTraceStepInput = {
+            seq: parseOptionalNumber(step.seq),
+            toolName: step.toolName,
+            action: typeof step.action === "string" ? step.action : undefined,
+            status: typeof step.status === "string" ? step.status : undefined,
+            latencyMs: parseOptionalNumber(step.latencyMs),
+            retries: parseOptionalNumber(step.retries),
+            errorType: typeof step.errorType === "string" ? step.errorType : undefined,
+            inputHash: typeof step.inputHash === "string" ? step.inputHash : undefined,
+            outputHash: typeof step.outputHash === "string" ? step.outputHash : undefined,
+            details:
+              step.details && typeof step.details === "object" && !Array.isArray(step.details)
+                ? (step.details as Record<string, unknown>)
+                : undefined,
+          };
+          return normalized;
+        });
+
+        const success =
+          typeof opts.success === "string" ? parseBooleanOption(opts.success as string) : undefined;
+        const trace = logExecutionTrace({
+          taskType: opts["taskType"] as string,
+          taskArchetype: opts.archetype as string,
+          policyName: opts.policy as string,
+          policyRole: opts["policyRole"] as string,
+          experimentGroup: opts["experimentGroup"] as string | undefined,
+          ticker: opts.ticker as string | undefined,
+          repoRoot: opts["repoRoot"] as string | undefined,
+          seed: opts.seed as string | undefined,
+          traceHash: opts["traceHash"] as string | undefined,
+          outputText: opts.output as string | undefined,
+          outputHash: opts["outputHash"] as string | undefined,
+          success,
+          retryCount: parseOptionalNumber(opts.retries),
+          errorCount: parseOptionalNumber(opts.errors),
+          timeoutCount: parseOptionalNumber(opts.timeouts),
+          totalLatencyMs: parseOptionalNumber(opts["latencyMs"]),
+          startedAt: parseOptionalNumber(opts["startedAt"]),
+          completedAt: parseOptionalNumber(opts["completedAt"]),
+          steps: parsedSteps,
+          metadata: parseOptionalJsonObject(opts.metadata),
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `trace_id=${trace.id} task_type=${trace.taskType} policy=${trace.policyName} success=${trace.success ? 1 : 0} steps=${trace.stepCount} retries=${trace.retryCount} timeouts=${trace.timeoutCount}`,
+        );
+        defaultRuntime.log(`trace_hash=${trace.traceHash}`);
+        if (trace.outputHash) defaultRuntime.log(`output_hash=${trace.outputHash}`);
+      });
+    });
+
+  research
+    .command("trace-report")
+    .description("Show execution trace reliability metrics for a policy")
+    .requiredOption("--task-type <kind>", "investment|coding|other")
+    .requiredOption("--policy <name>", "Policy name")
+    .option("--archetype <name>", "Task archetype", "")
+    .option("--ticker <symbol>", "Ticker filter")
+    .option("--repo-root <path>", "Repo filter")
+    .option("--lookback-days <n>", "Lookback days", "90")
+    .option("--seed-limit <n>", "Max seeds to display", "20")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const report = executionTraceReport({
+          taskType: opts["taskType"] as string,
+          taskArchetype: opts.archetype as string,
+          policyName: opts.policy as string,
+          ticker: opts.ticker as string | undefined,
+          repoRoot: opts["repoRoot"] as string | undefined,
+          lookbackDays: Number.parseInt(opts["lookbackDays"] as string, 10) || 90,
+          seedLimit: Number.parseInt(opts["seedLimit"] as string, 10) || 20,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `trace_report task_type=${report.taskType} policy=${report.policyName} archetype=${report.taskArchetype || "default"} traces=${report.summary.traceCount} completion=${(report.summary.completionRate * 100).toFixed(1)}% timeout=${(report.summary.timeoutRate * 100).toFixed(1)}% reproducibility=${(report.summary.reproducibilityScore * 100).toFixed(1)}% retries=${report.summary.avgRetries.toFixed(2)}`,
+        );
+        if (typeof report.summary.avgLatencyMs === "number") {
+          defaultRuntime.log(`avg_latency_ms=${report.summary.avgLatencyMs.toFixed(1)}`);
+        }
+        if (report.seedStats.length) {
+          report.seedStats.forEach((seed) => {
+            defaultRuntime.log(
+              `seed=${seed.seed} runs=${seed.runCount} stable=${(seed.stableRatio * 100).toFixed(1)}% latest=${new Date(seed.latestAt).toISOString()}`,
+            );
+          });
+        }
+      });
+    });
+
+  research
     .command("learn-calibrate")
     .description("Run learning calibration cycle (forecast sync + regrade + report)")
     .option("--days <n>", "Lookback window for report", "90")
@@ -1015,6 +1156,14 @@ export function registerResearchCli(program: Command) {
     .option("--gating-min-lift <n>", "Promotion gate minimum score lift", "0.03")
     .option("--gating-max-risk-breaches <n>", "Promotion gate max risk breaches", "0")
     .option("--canary-drop-threshold <n>", "Canary rollback threshold [0-1]", "0.07")
+    .option("--reliability-min-completion <n>", "Reliability min completion rate [0-1]", "0.9")
+    .option("--reliability-max-timeout-rate <n>", "Reliability max timeout rate [0-1]", "0.1")
+    .option(
+      "--reliability-min-reproducibility <n>",
+      "Reliability min reproducibility score [0-1]",
+      "0.8",
+    )
+    .option("--reliability-max-avg-retries <n>", "Reliability max average retries", "1.5")
     .option("--metadata <json>", "JSON metadata")
     .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
     .action(async (opts) => {
@@ -1029,11 +1178,15 @@ export function registerResearchCli(program: Command) {
           gatingMinLift: parseOptionalNumber(opts["gatingMinLift"]),
           gatingMaxRiskBreaches: Number.parseInt(opts["gatingMaxRiskBreaches"] as string, 10) || 0,
           canaryDropThreshold: parseOptionalNumber(opts["canaryDropThreshold"]),
+          reliabilityMinCompletion: parseOptionalNumber(opts["reliabilityMinCompletion"]),
+          reliabilityMaxTimeoutRate: parseOptionalNumber(opts["reliabilityMaxTimeoutRate"]),
+          reliabilityMinReproducibility: parseOptionalNumber(opts["reliabilityMinReproducibility"]),
+          reliabilityMaxAvgRetries: parseOptionalNumber(opts["reliabilityMaxAvgRetries"]),
           metadata: parseOptionalJsonObject(opts.metadata),
           dbPath: opts.db as string,
         });
         defaultRuntime.log(
-          `suite=${suite.name} task_type=${suite.taskType} archetype=${suite.taskArchetype || "default"} active=${suite.active ? 1 : 0} min_samples=${suite.gatingMinSamples} min_lift=${suite.gatingMinLift.toFixed(3)} canary_drop=${suite.canaryDropThreshold.toFixed(3)}`,
+          `suite=${suite.name} task_type=${suite.taskType} archetype=${suite.taskArchetype || "default"} active=${suite.active ? 1 : 0} min_samples=${suite.gatingMinSamples} min_lift=${suite.gatingMinLift.toFixed(3)} canary_drop=${suite.canaryDropThreshold.toFixed(3)} reliability_completion=${suite.reliabilityMinCompletion.toFixed(3)} reliability_timeout=${suite.reliabilityMaxTimeoutRate.toFixed(3)} reliability_repro=${suite.reliabilityMinReproducibility.toFixed(3)} reliability_retries=${suite.reliabilityMaxAvgRetries.toFixed(2)}`,
         );
       });
     });
@@ -1059,7 +1212,7 @@ export function registerResearchCli(program: Command) {
         }
         suites.forEach((suite) => {
           defaultRuntime.log(
-            `suite=${suite.name} task_type=${suite.taskType} archetype=${suite.taskArchetype || "default"} active=${suite.active ? 1 : 0} min_samples=${suite.gatingMinSamples} min_lift=${suite.gatingMinLift.toFixed(3)} max_risk_breaches=${suite.gatingMaxRiskBreaches} canary_drop=${suite.canaryDropThreshold.toFixed(3)}`,
+            `suite=${suite.name} task_type=${suite.taskType} archetype=${suite.taskArchetype || "default"} active=${suite.active ? 1 : 0} min_samples=${suite.gatingMinSamples} min_lift=${suite.gatingMinLift.toFixed(3)} max_risk_breaches=${suite.gatingMaxRiskBreaches} canary_drop=${suite.canaryDropThreshold.toFixed(3)} reliability_completion=${suite.reliabilityMinCompletion.toFixed(3)} reliability_timeout=${suite.reliabilityMaxTimeoutRate.toFixed(3)} reliability_repro=${suite.reliabilityMinReproducibility.toFixed(3)} reliability_retries=${suite.reliabilityMaxAvgRetries.toFixed(2)}`,
           );
         });
       });
@@ -1164,12 +1317,20 @@ export function registerResearchCli(program: Command) {
         );
         run.policySummaries.forEach((summary) => {
           defaultRuntime.log(
-            `policy=${summary.policyName} status=${summary.status} score=${summary.weightedScore.toFixed(3)} win=${(summary.weightedWinRate * 100).toFixed(1)}% risk_breaches=${summary.riskBreaches} samples=${summary.totalSamples}`,
+            `policy=${summary.policyName} status=${summary.status} score=${summary.weightedScore.toFixed(3)} win=${(summary.weightedWinRate * 100).toFixed(1)}% risk_breaches=${summary.riskBreaches} samples=${summary.totalSamples} traces=${summary.reliabilityTraceCount} completion=${typeof summary.reliabilityCompletionRate === "number" ? `${(summary.reliabilityCompletionRate * 100).toFixed(1)}%` : "n/a"} timeout=${typeof summary.reliabilityTimeoutRate === "number" ? `${(summary.reliabilityTimeoutRate * 100).toFixed(1)}%` : "n/a"} repro=${typeof summary.reliabilityReproducibility === "number" ? `${(summary.reliabilityReproducibility * 100).toFixed(1)}%` : "n/a"} retries=${typeof summary.reliabilityAvgRetries === "number" ? summary.reliabilityAvgRetries.toFixed(2) : "n/a"}`,
           );
         });
         defaultRuntime.log(
-          `gate champion=${run.gate.championPolicy ?? "none"} promote_allowed=${run.gate.promoteAllowed ? 1 : 0} promote_candidate=${run.gate.promoteCandidate ?? "none"} canary_breach=${run.gate.canaryBreach ? 1 : 0} rollback_candidate=${run.gate.rollbackCandidate ?? "none"}`,
+          `gate champion=${run.gate.championPolicy ?? "none"} promote_allowed=${run.gate.promoteAllowed ? 1 : 0} promote_candidate=${run.gate.promoteCandidate ?? "none"} promote_reliability_pass=${run.gate.promoteReliabilityPass ? 1 : 0} canary_breach=${run.gate.canaryBreach ? 1 : 0} canary_reliability_breach=${run.gate.canaryReliabilityBreach ? 1 : 0} rollback_candidate=${run.gate.rollbackCandidate ?? "none"}`,
         );
+        if (run.gate.promoteReliabilityReason) {
+          defaultRuntime.log(
+            `gate_promote_reliability_reason=${run.gate.promoteReliabilityReason}`,
+          );
+        }
+        if (run.gate.canaryReliabilityReason) {
+          defaultRuntime.log(`gate_canary_reliability_reason=${run.gate.canaryReliabilityReason}`);
+        }
         if (Boolean(opts["applyGovernance"])) {
           const decision = applyBenchmarkGovernance({
             runId: run.runId,
@@ -1204,11 +1365,11 @@ export function registerResearchCli(program: Command) {
         );
         report.runs.forEach((run) => {
           defaultRuntime.log(
-            `${new Date(run.completedAt).toISOString()} run_id=${run.id} mode=${run.mode} cases=${run.summary.caseCount} champion=${run.summary.gate.championPolicy ?? "none"} promote_allowed=${run.summary.gate.promoteAllowed ? 1 : 0} canary_breach=${run.summary.gate.canaryBreach ? 1 : 0}`,
+            `${new Date(run.completedAt).toISOString()} run_id=${run.id} mode=${run.mode} cases=${run.summary.caseCount} champion=${run.summary.gate.championPolicy ?? "none"} promote_allowed=${run.summary.gate.promoteAllowed ? 1 : 0} promote_reliability_pass=${run.summary.gate.promoteReliabilityPass ? 1 : 0} canary_breach=${run.summary.gate.canaryBreach ? 1 : 0} canary_reliability_breach=${run.summary.gate.canaryReliabilityBreach ? 1 : 0}`,
           );
           run.summary.policySummaries.forEach((summary) => {
             defaultRuntime.log(
-              `  policy=${summary.policyName} score=${summary.weightedScore.toFixed(3)} win=${(summary.weightedWinRate * 100).toFixed(1)}% risk_breaches=${summary.riskBreaches} samples=${summary.totalSamples}`,
+              `  policy=${summary.policyName} score=${summary.weightedScore.toFixed(3)} win=${(summary.weightedWinRate * 100).toFixed(1)}% risk_breaches=${summary.riskBreaches} samples=${summary.totalSamples} traces=${summary.reliabilityTraceCount} completion=${typeof summary.reliabilityCompletionRate === "number" ? `${(summary.reliabilityCompletionRate * 100).toFixed(1)}%` : "n/a"} timeout=${typeof summary.reliabilityTimeoutRate === "number" ? `${(summary.reliabilityTimeoutRate * 100).toFixed(1)}%` : "n/a"} repro=${typeof summary.reliabilityReproducibility === "number" ? `${(summary.reliabilityReproducibility * 100).toFixed(1)}%` : "n/a"} retries=${typeof summary.reliabilityAvgRetries === "number" ? summary.reliabilityAvgRetries.toFixed(2) : "n/a"}`,
             );
           });
         });
