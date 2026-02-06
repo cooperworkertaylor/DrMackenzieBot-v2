@@ -31,6 +31,7 @@ import {
   ingestPrices,
   ingestTranscript,
 } from "../research/ingest.js";
+import { learningReport, logTaskOutcome, runLearningCalibration } from "../research/learning.js";
 import { generateMemoAsync } from "../research/memo.js";
 import { monitorTicker, monitorTickers } from "../research/monitor.js";
 import { computePortfolioPlan } from "../research/portfolio.js";
@@ -59,6 +60,28 @@ const parseTickersOption = (value: string): string[] =>
     .split(",")
     .map((ticker) => ticker.trim().toUpperCase())
     .filter(Boolean);
+
+const parseSourceMixOption = (value: string): Record<string, number> => {
+  const out: Record<string, number> = {};
+  value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .forEach((entry) => {
+      const [sourceRaw, weightRaw] = entry.split(":", 2);
+      const source = sourceRaw?.trim() ?? "";
+      const weight = Number.parseFloat((weightRaw ?? "").trim());
+      if (!source || !Number.isFinite(weight) || weight <= 0) return;
+      out[source] = weight;
+    });
+  return out;
+};
+
+const parseOptionalNumber = (value: unknown): number | undefined => {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
 
 const parseBooleanOption = (value: string): boolean => {
   const normalized = value.trim().toLowerCase();
@@ -620,6 +643,168 @@ export function registerResearchCli(program: Command) {
         const outcome = resolveMatureForecasts({ dbPath: opts.db as string });
         defaultRuntime.log(
           `forecast_unresolved_scanned=${outcome.unresolvedCount} forecast_resolved_now=${outcome.resolvedNow}`,
+        );
+      });
+    });
+
+  research
+    .command("learn-log")
+    .description("Log or update a task outcome for learning-loop grading")
+    .option("--id <n>", "Existing task outcome id to update")
+    .option("--task-type <kind>", "investment|coding|other")
+    .option("--archetype <name>", "Task archetype (e.g., sector-deep-dive, bugfix-hotpath)")
+    .option("--ticker <symbol>", "Ticker (investment tasks)")
+    .option("--repo-root <path>", "Repo path (coding tasks)")
+    .option("--input <text>", "Input summary")
+    .option("--output <text>", "Output text (used for output hash if hash not passed)")
+    .option("--output-hash <hex>", "Precomputed output hash")
+    .option("--confidence <n>", "Predicted confidence [0-1]")
+    .option("--citations <n>", "Citation count")
+    .option("--latency-ms <n>", "Latency in milliseconds")
+    .option("--user-score <n>", "User quality score [0-1]")
+    .option("--realized-score <n>", "Realized outcome score [0-1]")
+    .option("--outcome <label>", "Outcome label/status note")
+    .option("--source-mix <csv>", "Source usage like filings:3,transcripts:2,code:5")
+    .option("--contradictions <n>", "Investment metric: contradiction count")
+    .option("--falsification-count <n>", "Investment metric: falsification trigger count")
+    .option("--calibration-error <n>", "Investment metric: calibration error [0-1]")
+    .option("--tests-pass-rate <n>", "Coding metric: test pass rate [0-1]")
+    .option("--regressions <n>", "Coding metric: post-merge regressions")
+    .option("--review-findings <n>", "Coding metric: review findings count")
+    .option("--rollback-rate <n>", "Coding metric: rollback rate [0-1]")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const gradingMetrics: Record<string, number> = {};
+        const contradictions = parseOptionalNumber(opts.contradictions);
+        const falsificationCount = parseOptionalNumber(opts["falsificationCount"]);
+        const calibrationError = parseOptionalNumber(opts["calibrationError"]);
+        const testsPassRate = parseOptionalNumber(opts["testsPassRate"]);
+        const regressions = parseOptionalNumber(opts.regressions);
+        const reviewFindings = parseOptionalNumber(opts["reviewFindings"]);
+        const rollbackRate = parseOptionalNumber(opts["rollbackRate"]);
+        if (typeof contradictions === "number") gradingMetrics.contradictions = contradictions;
+        if (typeof falsificationCount === "number") {
+          gradingMetrics.falsification_count = falsificationCount;
+        }
+        if (typeof calibrationError === "number") {
+          gradingMetrics.calibration_error = calibrationError;
+        }
+        if (typeof testsPassRate === "number") gradingMetrics.tests_pass_rate = testsPassRate;
+        if (typeof regressions === "number") gradingMetrics.regressions = regressions;
+        if (typeof reviewFindings === "number") gradingMetrics.review_findings = reviewFindings;
+        if (typeof rollbackRate === "number") gradingMetrics.rollback_rate = rollbackRate;
+
+        const id = parseOptionalNumber(opts.id);
+        const result = logTaskOutcome({
+          id: typeof id === "number" ? Math.round(id) : undefined,
+          taskType: opts["taskType"] as string | undefined,
+          taskArchetype: opts.archetype as string | undefined,
+          ticker: opts.ticker as string | undefined,
+          repoRoot: opts["repoRoot"] as string | undefined,
+          inputSummary: opts.input as string | undefined,
+          outputText: opts.output as string | undefined,
+          outputHash: opts["outputHash"] as string | undefined,
+          confidence: parseOptionalNumber(opts.confidence),
+          citationCount: parseOptionalNumber(opts.citations),
+          latencyMs: parseOptionalNumber(opts["latencyMs"]),
+          userScore: parseOptionalNumber(opts["userScore"]),
+          realizedOutcomeScore: parseOptionalNumber(opts["realizedScore"]),
+          outcomeLabel: opts.outcome as string | undefined,
+          sourceMix:
+            typeof opts["sourceMix"] === "string" && opts["sourceMix"].trim()
+              ? parseSourceMixOption(opts["sourceMix"] as string)
+              : undefined,
+          gradingMetrics,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(`id=${result.id}`);
+        defaultRuntime.log(`task_type=${result.taskType}`);
+        defaultRuntime.log(`grader_score=${result.graderScore.toFixed(3)}`);
+        defaultRuntime.log(`status=${result.status}`);
+        defaultRuntime.log(`status_reason=${result.statusReason}`);
+        defaultRuntime.log(`output_hash=${result.outputHash}`);
+      });
+    });
+
+  research
+    .command("learn-report")
+    .description("Report learning-loop quality, routing, and calibration metrics")
+    .option("--days <n>", "Lookback window in days", "30")
+    .option("--task-type <kind>", "investment|coding|other")
+    .option("--min-samples <n>", "Minimum samples for archetype routing", "3")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const report = learningReport({
+          days: Number.parseInt(opts.days as string, 10) || 30,
+          taskType: opts["taskType"] as string | undefined,
+          minSamples: Number.parseInt(opts["minSamples"] as string, 10) || 3,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `learning window=${report.lookbackDays}d tasks=${report.totalTasks} avg_score=${typeof report.avgGraderScore === "number" ? report.avgGraderScore.toFixed(3) : "n/a"}`,
+        );
+        if (typeof report.trustedRate === "number") {
+          defaultRuntime.log(`trusted_rate=${(report.trustedRate * 100).toFixed(1)}%`);
+        }
+        if (typeof report.quarantineRate === "number") {
+          defaultRuntime.log(`quarantine_rate=${(report.quarantineRate * 100).toFixed(1)}%`);
+        }
+        report.byTaskType.forEach((row) => {
+          defaultRuntime.log(
+            `type=${row.taskType} count=${row.count} avg=${row.avgScore.toFixed(3)} trusted=${(row.trustedRate * 100).toFixed(1)}% quarantine=${(row.quarantineRate * 100).toFixed(1)}% win=${(row.winRate * 100).toFixed(1)}%`,
+          );
+        });
+        report.routing.forEach((row) => {
+          defaultRuntime.log(
+            `routing type=${row.taskType} archetype=${row.bestArchetype ?? "n/a"} samples=${row.archetypeSampleCount ?? 0} win=${typeof row.archetypeWinRate === "number" ? `${(row.archetypeWinRate * 100).toFixed(1)}%` : "n/a"} avg=${typeof row.archetypeAvgScore === "number" ? row.archetypeAvgScore.toFixed(3) : "n/a"}`,
+          );
+          if (row.topSources.length) {
+            defaultRuntime.log(
+              `routing_sources ${row.taskType}: ${row.topSources
+                .map((entry) => `${entry.source}:${entry.score.toFixed(3)}`)
+                .join(", ")}`,
+            );
+          }
+        });
+        if (report.sourceEffectiveness.length) {
+          defaultRuntime.log(
+            `source_effectiveness: ${report.sourceEffectiveness
+              .map((entry) => `${entry.source}:${entry.score.toFixed(3)}`)
+              .join(", ")}`,
+          );
+        }
+        defaultRuntime.log(
+          `calibration forecast_samples=${report.calibration.forecastSampleCount} forecast_mae=${typeof report.calibration.forecastMae === "number" ? report.calibration.forecastMae.toFixed(3) : "n/a"} directional=${typeof report.calibration.forecastDirectionalAccuracy === "number" ? report.calibration.forecastDirectionalAccuracy.toFixed(3) : "n/a"}`,
+        );
+        defaultRuntime.log(
+          `calibration catalyst_samples=${report.calibration.catalystSampleCount} catalyst_brier=${typeof report.calibration.catalystBrier === "number" ? report.calibration.catalystBrier.toFixed(3) : "n/a"} catalyst_impact_mae_bps=${typeof report.calibration.catalystImpactMaeBps === "number" ? report.calibration.catalystImpactMaeBps.toFixed(1) : "n/a"} open_high_alerts=${report.calibration.openHighAlerts}`,
+        );
+      });
+    });
+
+  research
+    .command("learn-calibrate")
+    .description("Run learning calibration cycle (forecast sync + regrade + report)")
+    .option("--days <n>", "Lookback window for report", "90")
+    .option("--min-samples <n>", "Minimum samples for routing", "3")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const result = runLearningCalibration({
+          days: Number.parseInt(opts.days as string, 10) || 90,
+          minSamples: Number.parseInt(opts["minSamples"] as string, 10) || 3,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `forecast_unresolved_scanned=${result.forecastResolution.unresolvedCount} forecast_resolved_now=${result.forecastResolution.resolvedNow}`,
+        );
+        defaultRuntime.log(
+          `regrade_scanned=${result.refresh.scanned} regrade_updated=${result.refresh.updated}`,
+        );
+        defaultRuntime.log(
+          `learning tasks=${result.report.totalTasks} avg_score=${typeof result.report.avgGraderScore === "number" ? result.report.avgGraderScore.toFixed(3) : "n/a"} trusted_rate=${typeof result.report.trustedRate === "number" ? `${(result.report.trustedRate * 100).toFixed(1)}%` : "n/a"}`,
         );
       });
     });

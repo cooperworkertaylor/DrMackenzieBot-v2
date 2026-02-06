@@ -241,6 +241,31 @@ const migrate = (db: ResearchDb) => {
       resolved_at integer
     );
 
+    create table if not exists task_outcomes (
+      id integer primary key,
+      task_type text not null,
+      task_archetype text not null default '',
+      ticker text not null default '',
+      repo_root text not null default '',
+      input_summary text not null default '',
+      output_hash text not null default '',
+      confidence real,
+      citation_count integer,
+      latency_ms integer,
+      user_score real,
+      realized_outcome_score real,
+      outcome_label text not null default '',
+      source_mix text not null default '{}',
+      grading_metrics text not null default '{}',
+      grader_score real not null default 0,
+      grader_details text not null default '{}',
+      grader_version text not null default 'v1',
+      status text not null default 'pending',
+      status_reason text not null default '',
+      created_at integer not null,
+      updated_at integer not null
+    );
+
     create table if not exists chunks (
       id integer primary key,
       source_table text not null,
@@ -330,6 +355,15 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_thesis_alerts_lookup
       on thesis_alerts (ticker, resolved, created_at desc);
+
+    create index if not exists idx_task_outcomes_lookup
+      on task_outcomes (task_type, status, created_at desc);
+
+    create index if not exists idx_task_outcomes_archetype
+      on task_outcomes (task_type, task_archetype, created_at desc);
+
+    create index if not exists idx_task_outcomes_hash
+      on task_outcomes (output_hash, created_at desc);
   `);
 
   ensureColumn(db, "filings", "accession_raw", "TEXT");
