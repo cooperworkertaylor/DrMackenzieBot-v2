@@ -74,6 +74,7 @@ import { computePortfolioPlan } from "../research/portfolio.js";
 import { provenanceReport } from "../research/provenance.js";
 import { indexRepo } from "../research/repo-index.js";
 import { runResearchSecurityAudit } from "../research/security.js";
+import { computeSectorResearch, computeThemeResearch } from "../research/theme-sector.js";
 import { computeValuation, resolveMatureForecasts } from "../research/valuation.js";
 import { computeVariantPerception } from "../research/variant.js";
 import { searchResearch, syncEmbeddings, writeBackup } from "../research/vector-search.js";
@@ -988,6 +989,100 @@ export function registerResearchCli(program: Command) {
         replay.evaluationChecks.forEach((check) => {
           const label = check.passed ? "PASS" : "FAIL";
           defaultRuntime.log(`${label} ${check.name}: ${check.detail}`);
+        });
+      });
+    });
+
+  research
+    .command("sector-research")
+    .description("Generate institutional sector cross-sectional research")
+    .requiredOption("--sector <name>", "Sector name")
+    .option("--tickers <csv>", "Optional explicit ticker universe override")
+    .option("--lookback-days <n>", "Price lookback window", "365")
+    .option("--top <n>", "Leaders/laggards count", "5")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const overrideTickers =
+          typeof opts.tickers === "string" && opts.tickers.trim()
+            ? parseTickersOption(opts.tickers as string)
+            : undefined;
+        const result = computeSectorResearch({
+          sector: opts.sector as string,
+          tickers: overrideTickers,
+          lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 365,
+          topN: parseOptionalNumber(opts.top) ?? 5,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `sector=${result.sector} constituents=${result.metrics.constituentCount} regime=${result.metrics.regime} readiness_score=${result.metrics.institutionalReadinessScore.toFixed(2)} evidence_coverage=${result.metrics.evidenceCoverageScore.toFixed(2)}`,
+        );
+        defaultRuntime.log(
+          `breadth_20d_pct=${(result.metrics.breadthPositive20dPct * 100).toFixed(1)} breadth_63d_pct=${(result.metrics.breadthPositive63dPct * 100).toFixed(1)} median_return_63d_pct=${typeof result.metrics.medianReturn63dPct === "number" ? result.metrics.medianReturn63dPct.toFixed(2) : "n/a"} median_upside_pct=${typeof result.metrics.medianExpectedUpsidePct === "number" ? result.metrics.medianExpectedUpsidePct.toFixed(2) : "n/a"} dispersion_63d_pct=${typeof result.metrics.dispersion63dPct === "number" ? result.metrics.dispersion63dPct.toFixed(2) : "n/a"} avg_pairwise_corr_63d=${typeof result.metrics.averagePairwiseCorrelation63d === "number" ? result.metrics.averagePairwiseCorrelation63d.toFixed(3) : "n/a"}`,
+        );
+        result.insightSummary.forEach((line, index) => {
+          defaultRuntime.log(`insight_${index + 1}=${line}`);
+        });
+        result.leaders.forEach((row, index) => {
+          defaultRuntime.log(
+            `leader_${index + 1} ticker=${row.ticker} score=${row.compositeScore.toFixed(2)} conviction=${row.conviction} return_63d_pct=${typeof row.return63dPct === "number" ? row.return63dPct.toFixed(2) : "n/a"} upside_pct=${typeof row.expectedUpsideWithCatalystsPct === "number" ? row.expectedUpsideWithCatalystsPct.toFixed(2) : typeof row.expectedUpsidePct === "number" ? row.expectedUpsidePct.toFixed(2) : "n/a"} variant_gap=${row.variantGapScore.toFixed(2)} catalysts_open=${row.catalystOpenCount}`,
+          );
+        });
+        result.laggards.forEach((row, index) => {
+          defaultRuntime.log(
+            `laggard_${index + 1} ticker=${row.ticker} score=${row.compositeScore.toFixed(2)} conviction=${row.conviction} return_63d_pct=${typeof row.return63dPct === "number" ? row.return63dPct.toFixed(2) : "n/a"} upside_pct=${typeof row.expectedUpsideWithCatalystsPct === "number" ? row.expectedUpsideWithCatalystsPct.toFixed(2) : typeof row.expectedUpsidePct === "number" ? row.expectedUpsidePct.toFixed(2) : "n/a"} variant_gap=${row.variantGapScore.toFixed(2)} catalysts_open=${row.catalystOpenCount}`,
+          );
+        });
+        result.riskFlags.forEach((flag) => {
+          defaultRuntime.error(`RISK_FLAG: ${flag}`);
+        });
+      });
+    });
+
+  research
+    .command("theme-research")
+    .description("Generate institutional thematic cross-sector research")
+    .requiredOption("--theme <name>", "Theme name")
+    .requiredOption("--tickers <csv>", "Thematic ticker basket")
+    .option("--lookback-days <n>", "Price lookback window", "365")
+    .option("--top <n>", "Leaders/laggards count", "5")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const tickers = parseTickersOption(opts.tickers as string);
+        const result = computeThemeResearch({
+          theme: opts.theme as string,
+          tickers,
+          lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 365,
+          topN: parseOptionalNumber(opts.top) ?? 5,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `theme=${result.theme} constituents=${result.metrics.constituentCount} regime=${result.metrics.regime} readiness_score=${result.metrics.institutionalReadinessScore.toFixed(2)} evidence_coverage=${result.metrics.evidenceCoverageScore.toFixed(2)}`,
+        );
+        defaultRuntime.log(
+          `breadth_20d_pct=${(result.metrics.breadthPositive20dPct * 100).toFixed(1)} breadth_63d_pct=${(result.metrics.breadthPositive63dPct * 100).toFixed(1)} median_return_63d_pct=${typeof result.metrics.medianReturn63dPct === "number" ? result.metrics.medianReturn63dPct.toFixed(2) : "n/a"} median_upside_pct=${typeof result.metrics.medianExpectedUpsidePct === "number" ? result.metrics.medianExpectedUpsidePct.toFixed(2) : "n/a"} dispersion_63d_pct=${typeof result.metrics.dispersion63dPct === "number" ? result.metrics.dispersion63dPct.toFixed(2) : "n/a"} avg_pairwise_corr_63d=${typeof result.metrics.averagePairwiseCorrelation63d === "number" ? result.metrics.averagePairwiseCorrelation63d.toFixed(3) : "n/a"}`,
+        );
+        result.sectorExposure.forEach((row) => {
+          defaultRuntime.log(
+            `sector_exposure sector=${row.sector} count=${row.count} share_pct=${(row.sharePct * 100).toFixed(1)} avg_score=${row.avgCompositeScore.toFixed(2)}`,
+          );
+        });
+        result.insightSummary.forEach((line, index) => {
+          defaultRuntime.log(`insight_${index + 1}=${line}`);
+        });
+        result.leaders.forEach((row, index) => {
+          defaultRuntime.log(
+            `leader_${index + 1} ticker=${row.ticker} sector=${row.sector} score=${row.compositeScore.toFixed(2)} conviction=${row.conviction} return_63d_pct=${typeof row.return63dPct === "number" ? row.return63dPct.toFixed(2) : "n/a"} upside_pct=${typeof row.expectedUpsideWithCatalystsPct === "number" ? row.expectedUpsideWithCatalystsPct.toFixed(2) : typeof row.expectedUpsidePct === "number" ? row.expectedUpsidePct.toFixed(2) : "n/a"}`,
+          );
+        });
+        result.laggards.forEach((row, index) => {
+          defaultRuntime.log(
+            `laggard_${index + 1} ticker=${row.ticker} sector=${row.sector} score=${row.compositeScore.toFixed(2)} conviction=${row.conviction} return_63d_pct=${typeof row.return63dPct === "number" ? row.return63dPct.toFixed(2) : "n/a"} upside_pct=${typeof row.expectedUpsideWithCatalystsPct === "number" ? row.expectedUpsideWithCatalystsPct.toFixed(2) : typeof row.expectedUpsidePct === "number" ? row.expectedUpsidePct.toFixed(2) : "n/a"}`,
+          );
+        });
+        result.riskFlags.forEach((flag) => {
+          defaultRuntime.error(`RISK_FLAG: ${flag}`);
         });
       });
     });
