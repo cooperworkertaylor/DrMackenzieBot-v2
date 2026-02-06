@@ -1,4 +1,5 @@
 import { openResearchDb } from "./db.js";
+import { computeVariantPerception, type VariantPerceptionResult } from "./variant.js";
 import { searchResearch } from "./vector-search.js";
 
 type MemoLine = { claim: string; citationIds: number[] };
@@ -59,6 +60,8 @@ export const generateMemoAsync = async (params: {
               CASE
                 WHEN c.source_table='filings' THEN (SELECT url FROM filings WHERE id=c.ref_id)
                 WHEN c.source_table='transcripts' THEN (SELECT url FROM transcripts WHERE id=c.ref_id)
+                WHEN c.source_table='fundamental_facts' THEN (SELECT source_url FROM fundamental_facts WHERE id=c.ref_id)
+                WHEN c.source_table='earnings_expectations' THEN (SELECT source_url FROM earnings_expectations WHERE id=c.ref_id)
                 ELSE NULL
               END AS url
        FROM chunks c
@@ -75,6 +78,10 @@ export const generateMemoAsync = async (params: {
     url?: string;
   }>;
   const byId = new Map(citations.map((c) => [c.id, c]));
+  const variant = computeVariantPerception({
+    ticker: params.ticker,
+    dbPath: params.dbPath,
+  });
 
   const memo = [
     `# Research Memo: ${params.ticker.toUpperCase()}`,
@@ -94,6 +101,20 @@ export const generateMemoAsync = async (params: {
       return `${idx + 1}. ${line.claim}\n   Citations: ${refs}`;
     }),
     ``,
+    `## Variant Perception`,
+    `- Stance: ${variant.stance}`,
+    `- Variant gap score: ${variant.variantGapScore.toFixed(2)}`,
+    `- Expectation score: ${variant.expectationScore.toFixed(2)}`,
+    `- Fundamental score: ${variant.fundamentalScore.toFixed(2)}`,
+    `- Confidence: ${variant.confidence.toFixed(2)}`,
+    `- Expectation observations: ${variant.expectationObservations}`,
+    `- Fundamental observations: ${variant.fundamentalObservations}`,
+    `- Avg surprise %: ${typeof variant.metrics.avgSurprisePct === "number" ? variant.metrics.avgSurprisePct.toFixed(2) : "n/a"}`,
+    `- Estimate trend: ${typeof variant.metrics.estimateTrend === "number" ? variant.metrics.estimateTrend.toFixed(3) : "n/a"}`,
+    `- Revenue growth signal: ${typeof variant.metrics.revenueGrowth === "number" ? variant.metrics.revenueGrowth.toFixed(3) : "n/a"}`,
+    `- Margin delta signal: ${typeof variant.metrics.marginDelta === "number" ? variant.metrics.marginDelta.toFixed(3) : "n/a"}`,
+    ...(variant.notes.length ? variant.notes.map((note) => `- Note: ${note}`) : []),
+    ``,
     `## Citation Index`,
     ...citations.map(
       (c) =>
@@ -105,6 +126,7 @@ export const generateMemoAsync = async (params: {
     hitsCount: hits.length,
     lines,
     citations,
+    variant,
     minQualityScore,
   });
 
@@ -131,6 +153,7 @@ export const generateMemoAsync = async (params: {
     citations: citations.length,
     claims: lines.length,
     quality,
+    variant,
   };
 };
 
@@ -146,6 +169,7 @@ const assessInstitutionalQuality = (params: {
   hitsCount: number;
   lines: MemoLine[];
   citations: Array<{ id: number; source_table: string; url?: string }>;
+  variant: VariantPerceptionResult;
   minQualityScore: number;
 }): QualityGateResult => {
   const checks: QualityGateCheck[] = [];
@@ -161,25 +185,37 @@ const assessInstitutionalQuality = (params: {
     name: "claim_count",
     passed: claimCount >= 4,
     detail: `claims=${claimCount} (required >= 4)`,
-    weight: 0.25,
+    weight: 0.2,
   });
   checks.push({
     name: "citations_per_claim",
     passed: citationsPerClaim >= 2,
     detail: `avg=${citationsPerClaim.toFixed(2)} (required >= 2.00)`,
-    weight: 0.3,
+    weight: 0.25,
   });
   checks.push({
     name: "source_diversity",
     passed: uniqueUrls >= 3 || uniqueSourceTables >= 2,
     detail: `unique_urls=${uniqueUrls}, source_tables=${uniqueSourceTables} (required urls>=3 or sources>=2)`,
-    weight: 0.25,
+    weight: 0.2,
   });
   checks.push({
     name: "retrieval_depth",
     passed: params.hitsCount >= 8,
     detail: `hits=${params.hitsCount} (required >= 8)`,
-    weight: 0.2,
+    weight: 0.15,
+  });
+  checks.push({
+    name: "expectation_coverage",
+    passed: params.variant.expectationObservations >= 4,
+    detail: `expectation_observations=${params.variant.expectationObservations} (required >= 4)`,
+    weight: 0.1,
+  });
+  checks.push({
+    name: "variant_confidence",
+    passed: params.variant.confidence >= 0.55,
+    detail: `variant_confidence=${params.variant.confidence.toFixed(2)} (required >= 0.55)`,
+    weight: 0.1,
   });
 
   const score = checks.reduce((s, c) => s + (c.passed ? c.weight : 0), 0);

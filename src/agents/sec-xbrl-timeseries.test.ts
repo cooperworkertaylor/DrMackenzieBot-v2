@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildTimeSeriesExhibit,
+  flattenCompanyFacts,
   timeSeriesToCsv,
   type CompanyFactsResponse,
 } from "./sec-xbrl-timeseries.js";
@@ -97,5 +98,52 @@ describe("sec-xbrl-timeseries", () => {
     expect(csv).toContain("seriesKey");
     expect(csv).toContain("dei:EntityCommonStockSharesOutstanding");
     expect(csv).toContain("2025-12-31");
+  });
+
+  it("flattens companyfacts into point-in-time observations with source URLs", () => {
+    const facts: CompanyFactsResponse = {
+      cik: 320193,
+      entityName: "Apple Inc.",
+      facts: {
+        "us-gaap": {
+          Revenues: {
+            label: "Revenues",
+            units: {
+              USD: [
+                {
+                  end: "2024-09-28",
+                  filed: "2024-11-01",
+                  form: "10-K",
+                  fy: 2024,
+                  fp: "FY",
+                  val: 391000,
+                  accn: "0000320193-24-000123",
+                },
+                {
+                  end: "2024-09-28",
+                  filed: "2024-11-05",
+                  form: "8-K",
+                  fy: 2024,
+                  fp: "FY",
+                  val: 999999,
+                  accn: "0000320193-24-000999",
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    const rows = flattenCompanyFacts(facts, {
+      includeForms: ["10-K"],
+      concepts: ["us-gaap:Revenues"],
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.periodEnd).toBe("2024-09-28");
+    expect(rows[0]?.filingDate).toBe("2024-11-01");
+    expect(rows[0]?.accessionNoDash).toBe("000032019324000123");
+    expect(rows[0]?.sourceUrl).toContain("0000320193-24-000123-index.html");
   });
 });

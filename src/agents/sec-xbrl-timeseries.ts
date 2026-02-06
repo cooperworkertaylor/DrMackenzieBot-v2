@@ -53,6 +53,30 @@ export type BuildTimeSeriesOptions = {
   perSeriesLimit?: number;
 };
 
+export type FlattenCompanyFactsOptions = {
+  includeForms?: string[];
+  concepts?: string[];
+};
+
+export type CompanyFactObservation = {
+  taxonomy: string;
+  concept: string;
+  label: string;
+  unit: string;
+  value: number;
+  asOfDate: string;
+  periodEnd: string;
+  filingDate: string;
+  acceptedAt?: string;
+  form?: string;
+  accession?: string;
+  accessionNoDash: string;
+  fiscalYear: number;
+  fiscalPeriod: string;
+  frame?: string;
+  sourceUrl: string;
+};
+
 const DEFAULT_FORMS = ["10-K", "10-Q", "20-F", "40-F"];
 const SEC_DATA_BASE = "https://data.sec.gov";
 const SEC_WWW_BASE = "https://www.sec.gov";
@@ -88,6 +112,20 @@ const parseConceptKey = (raw: string): { taxonomy: string; concept: string } => 
   return { taxonomy: left, concept: right };
 };
 
+const conceptKey = (taxonomy: string, concept: string): string =>
+  `${taxonomy.trim().toLowerCase()}:${concept.trim().toLowerCase()}`;
+
+const stripAccessionDashes = (accession?: string): string => (accession ?? "").replace(/-/g, "");
+
+const toArchiveIndexUrl = (cik: string, accession?: string): string => {
+  const accessionNoDash = stripAccessionDashes(accession);
+  if (!accessionNoDash) return "";
+  const cikPath = String(Number.parseInt(cik, 10));
+  if (!/^\d+$/.test(cikPath)) return "";
+  const accessionRaw = accession && accession.includes("-") ? accession : accessionNoDash;
+  return `${SEC_WWW_BASE}/Archives/edgar/data/${cikPath}/${accessionNoDash}/${accessionRaw}-index.html`;
+};
+
 const comparePoints = (a: TimeSeriesPoint, b: TimeSeriesPoint): number => {
   const endCmp = a.end.localeCompare(b.end);
   if (endCmp !== 0) return endCmp;
@@ -115,6 +153,74 @@ const pickLatestPerPeriod = (points: TimeSeriesPoint[]): TimeSeriesPoint[] => {
     }
   }
   return [...keyed.values()].sort(comparePoints);
+};
+
+export const flattenCompanyFacts = (
+  companyFacts: CompanyFactsResponse,
+  options: FlattenCompanyFactsOptions = {},
+): CompanyFactObservation[] => {
+  const includeForms = (options.includeForms?.length ? options.includeForms : DEFAULT_FORMS).map(
+    (value) => value.trim().toUpperCase(),
+  );
+  const includeFormsSet = new Set(includeForms);
+  const requested = (options.concepts ?? [])
+    .map((raw) => parseConceptKey(raw))
+    .filter((item) => item.concept)
+    .map((item) => conceptKey(item.taxonomy, item.concept));
+  const requestedSet = new Set(requested);
+  const constrainConcepts = requestedSet.size > 0;
+
+  const observations: CompanyFactObservation[] = [];
+  const facts = companyFacts.facts ?? {};
+  const cik = padCik(companyFacts.cik ?? "");
+
+  for (const [taxonomy, concepts] of Object.entries(facts)) {
+    for (const [concept, conceptData] of Object.entries(concepts ?? {})) {
+      if (constrainConcepts && !requestedSet.has(conceptKey(taxonomy, concept))) {
+        continue;
+      }
+      const label = conceptData.label?.trim() || concept;
+      for (const [unit, rows] of Object.entries(conceptData.units ?? {})) {
+        for (const row of rows) {
+          if (typeof row.val !== "number") continue;
+          const periodEnd = toIsoDate(row.end);
+          if (!periodEnd) continue;
+          const form = row.form?.trim().toUpperCase();
+          if (form && includeFormsSet.size > 0 && !includeFormsSet.has(form)) continue;
+          const filingDate = toIsoDate(row.filed);
+          const accession = row.accn?.trim();
+          const accessionNoDash = stripAccessionDashes(accession);
+          observations.push({
+            taxonomy,
+            concept,
+            label,
+            unit,
+            value: row.val,
+            asOfDate: periodEnd,
+            periodEnd,
+            filingDate,
+            acceptedAt: undefined,
+            form,
+            accession,
+            accessionNoDash,
+            fiscalYear: typeof row.fy === "number" ? row.fy : 0,
+            fiscalPeriod: row.fp?.trim() ?? "",
+            frame: row.frame?.trim(),
+            sourceUrl: toArchiveIndexUrl(cik, accession),
+          });
+        }
+      }
+    }
+  }
+
+  observations.sort((a, b) => {
+    const periodCmp = a.periodEnd.localeCompare(b.periodEnd);
+    if (periodCmp !== 0) return periodCmp;
+    const filedCmp = a.filingDate.localeCompare(b.filingDate);
+    if (filedCmp !== 0) return filedCmp;
+    return a.accessionNoDash.localeCompare(b.accessionNoDash);
+  });
+  return observations;
 };
 
 export const createSecHeaders = (userAgent?: string): Record<string, string> => ({

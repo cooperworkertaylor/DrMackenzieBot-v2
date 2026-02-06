@@ -4,10 +4,14 @@ import { chunkText } from "./chunker.js";
 
 export type FilingMeta = {
   accession: string;
+  accessionRaw: string;
   form: string;
+  isAmendment: boolean;
   filed: string;
+  acceptedAt?: string;
   periodEnd?: string;
   primaryDoc?: string;
+  sourceUrl: string;
   url: string;
   title?: string;
 };
@@ -15,6 +19,15 @@ export type FilingMeta = {
 export type FilingText = FilingMeta & { text: string };
 
 const SUBMISSIONS_BASE = "https://data.sec.gov/submissions";
+
+const toIsoDateTime = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().replace(" ", "T");
+  const withZone = /[zZ]|[+-]\d{2}:\d{2}$/.test(normalized) ? normalized : `${normalized}Z`;
+  const parsed = new Date(withZone);
+  if (Number.isNaN(parsed.getTime())) return undefined;
+  return parsed.toISOString();
+};
 
 export const fetchRecentFilings = async (
   cik: string,
@@ -35,11 +48,26 @@ export const fetchRecentFilings = async (
     const accessionRaw = recent.accessionNumber[i] as string;
     const accession = accessionRaw.replace(/-/g, "");
     const form = recent.form[i] as string;
+    const isAmendment = /\/A$/i.test(form);
     const filed = recent.filingDate[i] as string;
+    const acceptedAt = toIsoDateTime(recent.acceptanceDateTime?.[i] as string | undefined);
     const periodEnd = recent.reportDate?.[i] as string | undefined;
     const primaryDoc = recent.primaryDocument?.[i] as string | undefined;
-    const url = `https://www.sec.gov/Archives/edgar/data/${Number(normalized)}/${accession}/${primaryDoc ?? ""}`;
-    out.push({ accession, form, filed, periodEnd, primaryDoc, url });
+    const filingBase = `https://www.sec.gov/Archives/edgar/data/${Number(normalized)}/${accession}`;
+    const sourceUrl = `${filingBase}/${accessionRaw}-index.html`;
+    const url = primaryDoc ? `${filingBase}/${primaryDoc}` : sourceUrl;
+    out.push({
+      accession,
+      accessionRaw,
+      form,
+      isAmendment,
+      filed,
+      acceptedAt,
+      periodEnd,
+      primaryDoc,
+      sourceUrl,
+      url,
+    });
   }
   return out;
 };

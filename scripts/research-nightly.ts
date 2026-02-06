@@ -1,4 +1,9 @@
-import { ingestFilings, ingestPrices } from "../src/research/ingest.js";
+import {
+  ingestExpectations,
+  ingestFilings,
+  ingestFundamentals,
+  ingestPrices,
+} from "../src/research/ingest.js";
 import { openResearchDb } from "../src/research/db.js";
 
 const run = async () => {
@@ -27,6 +32,24 @@ const run = async () => {
       console.log(`filings: ${ok} ingested, ${failed} failed`);
     } catch (err) {
       console.error(`filings failed: ${String(err)}`);
+    }
+    try {
+      const fundamentals = await ingestFundamentals(ticker, {
+        userAgent: process.env.SEC_USER_AGENT,
+      });
+      console.log(
+        `fundamentals: ${fundamentals.observations} observations across ${fundamentals.conceptCount} concepts`,
+      );
+    } catch (err) {
+      console.error(`fundamentals failed: ${String(err)}`);
+    }
+    try {
+      const expectations = await ingestExpectations(ticker);
+      console.log(
+        `expectations: ${expectations.rows} rows (quarterly=${expectations.quarterly}, annual=${expectations.annual})`,
+      );
+    } catch (err) {
+      console.error(`expectations failed: ${String(err)}`);
     }
   }
 };

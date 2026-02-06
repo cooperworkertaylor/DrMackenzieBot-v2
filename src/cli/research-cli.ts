@@ -10,10 +10,22 @@ import {
   timeSeriesToMarkdown,
 } from "../agents/sec-xbrl-timeseries.js";
 import { openResearchDb, resolveResearchDbPath } from "../research/db.js";
-import { latestEvalReport, runCodingEval, runFinanceEval } from "../research/eval.js";
-import { ingestFilings, ingestPrices, ingestTranscript } from "../research/ingest.js";
+import {
+  latestEvalReport,
+  runCodingEval,
+  runFinanceEval,
+  runRetrievalEval,
+} from "../research/eval.js";
+import {
+  ingestFilings,
+  ingestExpectations,
+  ingestFundamentals,
+  ingestPrices,
+  ingestTranscript,
+} from "../research/ingest.js";
 import { generateMemoAsync } from "../research/memo.js";
 import { indexRepo } from "../research/repo-index.js";
+import { computeVariantPerception } from "../research/variant.js";
 import { searchResearch, syncEmbeddings, writeBackup } from "../research/vector-search.js";
 import { defaultRuntime } from "../runtime.js";
 import { formatDocsLink } from "../terminal/links.js";
@@ -146,6 +158,46 @@ export function registerResearchCli(program: Command) {
     });
 
   research
+    .command("fundamentals")
+    .description("Ingest SEC companyfacts as point-in-time fundamentals")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--concept <key>", "Repeatable concept key (e.g., us-gaap:Revenues)", collectOption, [])
+    .option("--forms <csv>", "Comma-separated form filter (default: 10-K,10-Q,20-F,40-F)")
+    .option("--user-agent <ua>", "SEC User-Agent header")
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const forms = (opts.forms as string | undefined)
+          ?.split(",")
+          .map((value) => value.trim().toUpperCase())
+          .filter(Boolean);
+        const concepts = (opts.concept as string[] | undefined)
+          ?.map((value) => value.trim())
+          .filter(Boolean);
+        const result = await ingestFundamentals(opts.ticker as string, {
+          userAgent: opts.userAgent as string | undefined,
+          includeForms: forms?.length ? forms : undefined,
+          concepts: concepts?.length ? concepts : undefined,
+        });
+        defaultRuntime.log(
+          `Fundamentals ingested for ${result.ticker} (CIK ${result.cik}): observations=${result.observations}, concepts=${result.conceptCount}`,
+        );
+      });
+    });
+
+  research
+    .command("expectations")
+    .description("Ingest analyst expectations and EPS surprise history")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const result = await ingestExpectations(opts.ticker as string);
+        defaultRuntime.log(
+          `Expectations ingested for ${(opts.ticker as string).toUpperCase()}: rows=${result.rows}, quarterly=${result.quarterly}, annual=${result.annual}`,
+        );
+      });
+    });
+
+  research
     .command("transcript")
     .description("Scrape a transcript URL (HTML or PDF) and chunk it")
     .requiredOption("--ticker <symbol>", "Ticker symbol")
@@ -176,7 +228,10 @@ export function registerResearchCli(program: Command) {
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const res = await syncEmbeddings(opts.db as string);
-        defaultRuntime.log(`Embedded chunks=${res.chunkCount}, repo_chunks=${res.repoCount}`);
+        defaultRuntime.log(
+          `Embedded chunks=${res.chunkCount}, repo_chunks=${res.repoCount} provider=${res.provider} model=${res.model} dims=${res.dims}`,
+        );
+        if (res.warning) defaultRuntime.error(`WARN: ${res.warning}`);
       });
     });
 
@@ -202,10 +257,39 @@ export function registerResearchCli(program: Command) {
           return;
         }
         hits.forEach((h, i) => {
-          defaultRuntime.log(`${i + 1}. [${h.table}:${h.id}] score=${h.score.toFixed(3)}`);
+          defaultRuntime.log(
+            `${i + 1}. [${h.table}:${h.id}] score=${h.score.toFixed(3)} vector=${h.vectorScore.toFixed(3)} lexical=${h.lexicalScore.toFixed(3)}`,
+          );
           defaultRuntime.log(`   ${h.text.slice(0, 220).replace(/\s+/g, " ")}...`);
+          if (h.sourceTable) defaultRuntime.log(`   source_table=${h.sourceTable}`);
+          if (h.citationUrl) defaultRuntime.log(`   citation=${h.citationUrl}`);
           if (h.meta) defaultRuntime.log(`   meta=${h.meta}`);
         });
+      });
+    });
+
+  research
+    .command("variant")
+    .description("Compute variant-perception score vs consensus expectations")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const result = computeVariantPerception({
+          ticker: opts.ticker as string,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(`ticker=${result.ticker}`);
+        defaultRuntime.log(`stance=${result.stance}`);
+        defaultRuntime.log(`variant_gap_score=${result.variantGapScore.toFixed(2)}`);
+        defaultRuntime.log(`expectation_score=${result.expectationScore.toFixed(2)}`);
+        defaultRuntime.log(`fundamental_score=${result.fundamentalScore.toFixed(2)}`);
+        defaultRuntime.log(`confidence=${result.confidence.toFixed(2)}`);
+        defaultRuntime.log(`expectation_observations=${result.expectationObservations}`);
+        defaultRuntime.log(`fundamental_observations=${result.fundamentalObservations}`);
+        if (result.notes.length) {
+          result.notes.forEach((note) => defaultRuntime.error(`NOTE: ${note}`));
+        }
       });
     });
 
@@ -241,7 +325,7 @@ export function registerResearchCli(program: Command) {
   research
     .command("eval")
     .description("Run finance/coding evals and store scores")
-    .requiredOption("--type <kind>", "finance|coding|all")
+    .requiredOption("--type <kind>", "finance|coding|retrieval|all")
     .option("--repo-root <path>", "Repo root for coding eval", process.cwd())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
@@ -256,6 +340,12 @@ export function registerResearchCli(program: Command) {
           const res = await runCodingEval(path.resolve(opts.repoRoot as string));
           defaultRuntime.log(
             `coding eval score=${(res.score * 100).toFixed(1)}% (${res.passed}/${res.total})`,
+          );
+        }
+        if (kind === "retrieval" || kind === "all") {
+          const res = await runRetrievalEval();
+          defaultRuntime.log(
+            `retrieval eval score=${(res.score * 100).toFixed(1)}% (${res.passed}/${res.total})`,
           );
         }
       });
@@ -292,17 +382,41 @@ export function registerResearchCli(program: Command) {
         const latestFiling = db.prepare(`SELECT MAX(fetched_at) as ts FROM filings`).get() as {
           ts?: number;
         };
+        const latestFundamentals = db
+          .prepare(`SELECT MAX(fetched_at) as ts FROM fundamental_facts`)
+          .get() as {
+          ts?: number;
+        };
+        const latestExpectations = db
+          .prepare(`SELECT MAX(fetched_at) as ts FROM earnings_expectations`)
+          .get() as {
+          ts?: number;
+        };
         const now = Date.now();
         const priceAgeH = latestPrice.ts ? (now - latestPrice.ts) / 36e5 : Infinity;
         const filingAgeH = latestFiling.ts ? (now - latestFiling.ts) / 36e5 : Infinity;
+        const fundamentalsAgeH = latestFundamentals.ts
+          ? (now - latestFundamentals.ts) / 36e5
+          : Infinity;
+        const expectationsAgeH = latestExpectations.ts
+          ? (now - latestExpectations.ts) / 36e5
+          : Infinity;
         defaultRuntime.log(
           `prices age: ${Number.isFinite(priceAgeH) ? priceAgeH.toFixed(1) : "none"}h`,
         );
         defaultRuntime.log(
           `filings age: ${Number.isFinite(filingAgeH) ? filingAgeH.toFixed(1) : "none"}h`,
         );
+        defaultRuntime.log(
+          `fundamentals age: ${Number.isFinite(fundamentalsAgeH) ? fundamentalsAgeH.toFixed(1) : "none"}h`,
+        );
+        defaultRuntime.log(
+          `expectations age: ${Number.isFinite(expectationsAgeH) ? expectationsAgeH.toFixed(1) : "none"}h`,
+        );
         if (priceAgeH > 48) defaultRuntime.error("WARN: prices stale (>48h)");
         if (filingAgeH > 24 * 14) defaultRuntime.error("WARN: filings stale (>14d)");
+        if (fundamentalsAgeH > 24 * 14) defaultRuntime.error("WARN: fundamentals stale (>14d)");
+        if (expectationsAgeH > 24 * 14) defaultRuntime.error("WARN: expectations stale (>14d)");
       });
     });
 
