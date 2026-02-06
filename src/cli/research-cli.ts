@@ -77,6 +77,14 @@ import {
 import { computePortfolioReplay } from "../research/portfolio-replay.js";
 import { computePortfolioPlan } from "../research/portfolio.js";
 import { provenanceReport } from "../research/provenance.js";
+import {
+  evaluateCrossSectionQualityGate,
+  evaluateQualityGateRegression,
+  listQualityGateRuns,
+  recordQualityGateRun,
+  summarizeQualityGateRuns,
+  type QualityGateArtifactType,
+} from "../research/quality-gate.js";
 import { indexRepo } from "../research/repo-index.js";
 import { runResearchSecurityAudit } from "../research/security.js";
 import {
@@ -179,6 +187,20 @@ const parseBooleanOption = (value: string): boolean => {
   if (["1", "true", "yes", "y"].includes(normalized)) return true;
   if (["0", "false", "no", "n"].includes(normalized)) return false;
   throw new Error(`Invalid boolean value: ${value}`);
+};
+
+const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+
+const mean = (values: number[]): number =>
+  values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+
+const parseQualityGateArtifactType = (value?: string): QualityGateArtifactType | undefined => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized || normalized === "all") return undefined;
+  if (normalized === "memo" || normalized === "sector_report" || normalized === "theme_report") {
+    return normalized;
+  }
+  throw new Error(`Invalid artifact type: ${value}`);
 };
 
 export function registerResearchCli(program: Command) {
@@ -1247,6 +1269,8 @@ export function registerResearchCli(program: Command) {
     .option("--benchmark <ticker>", "Optional benchmark ticker for factor attribution")
     .option("--lookback-days <n>", "Price lookback window", "365")
     .option("--top <n>", "Leaders/laggards count", "5")
+    .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
+    .option("--min-score <n>", "Institutional quality threshold [0-1]", "0.82")
     .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
@@ -1262,8 +1286,74 @@ export function registerResearchCli(program: Command) {
           topN: parseOptionalNumber(opts.top) ?? 5,
           dbPath: opts.db as string,
         });
+        const sectorArtifactId = `${result.sector}:${result.generatedAt.slice(0, 10)}:${result.tickers.length}`;
+        const scenarioCoverageRatio =
+          result.constituents.length > 0
+            ? result.constituents.filter(
+                (row) =>
+                  typeof row.expectedUpsideWithCatalystsPct === "number" ||
+                  typeof row.expectedUpsidePct === "number",
+              ).length / result.constituents.length
+            : 0;
+        const uniqueIndustryCount = new Set(
+          result.constituents.map((row) => row.industry).filter(Boolean),
+        ).size;
+        const benchmarkContextScore = result.factorAttribution
+          ? clamp01(
+              0.65 * clamp01(result.factorAttribution.sampleSize / 63) +
+                0.35 * clamp01(result.factorAttribution.rSquared / 0.5),
+            )
+          : 0;
+        const factorStabilityScore = result.factorAttribution?.rollingWindows.length
+          ? clamp01(
+              0.6 *
+                mean(
+                  result.factorAttribution.rollingWindows.map((window) => clamp01(window.rSquared)),
+                ) +
+                0.4 * clamp01(result.factorAttribution.rollingWindows.length / 4),
+            )
+          : 0;
+        const macroCoveragePct = result.factorAttribution?.macroFactors.length
+          ? mean(result.factorAttribution.macroFactors.map((factor) => factor.coveragePct))
+          : undefined;
+        const sectorGate = evaluateCrossSectionQualityGate({
+          artifactType: "sector_report",
+          artifactId: sectorArtifactId,
+          evidenceCoverageScore: result.metrics.evidenceCoverageScore,
+          institutionalReadinessScore: result.metrics.institutionalReadinessScore,
+          avgVariantConfidence: result.metrics.avgVariantConfidence,
+          avgValuationConfidence: result.metrics.avgValuationConfidence,
+          avgPortfolioConfidence: result.metrics.avgPortfolioConfidence,
+          benchmarkContextScore,
+          scenarioCoverageRatio,
+          riskFlagCount: result.riskFlags.length,
+          uniqueGroupCount: uniqueIndustryCount,
+          factorStabilityScore,
+          macroCoveragePct,
+          generatedAt: result.generatedAt,
+          minScore: parseOptionalNumber(opts["minScore"]) ?? 0.82,
+        });
+        const sectorGateRun = recordQualityGateRun({
+          evaluation: sectorGate,
+          metadata: {
+            sector: result.sector,
+            ticker_count: result.tickers.length,
+            benchmark: opts.benchmark ?? null,
+          },
+          dbPath: opts.db as string,
+        });
+        if (!Boolean(opts.allowDraft) && !sectorGate.passed) {
+          const failed = sectorGate.checks.filter((check) => !check.passed);
+          const details = failed.map((check) => `${check.name}: ${check.detail}`).join("; ");
+          throw new Error(
+            `Institutional sector gate failed (run_id=${sectorGateRun.id} score=${sectorGate.score.toFixed(2)} min=${sectorGate.minScore.toFixed(2)} required_failures=${sectorGate.requiredFailures.join(",") || "none"}): ${details}`,
+          );
+        }
         defaultRuntime.log(
           `sector=${result.sector} constituents=${result.metrics.constituentCount} regime=${result.metrics.regime} readiness_score=${result.metrics.institutionalReadinessScore.toFixed(2)} evidence_coverage=${result.metrics.evidenceCoverageScore.toFixed(2)}`,
+        );
+        defaultRuntime.log(
+          `institutional_gate run_id=${sectorGateRun.id} gate=${sectorGate.gateName} score=${sectorGate.score.toFixed(2)} min_score=${sectorGate.minScore.toFixed(2)} passed=${sectorGate.passed ? 1 : 0} artifact_id=${sectorGate.artifactId}`,
         );
         defaultRuntime.log(
           `breadth_20d_pct=${(result.metrics.breadthPositive20dPct * 100).toFixed(1)} breadth_63d_pct=${(result.metrics.breadthPositive63dPct * 100).toFixed(1)} median_return_63d_pct=${typeof result.metrics.medianReturn63dPct === "number" ? result.metrics.medianReturn63dPct.toFixed(2) : "n/a"} median_upside_pct=${typeof result.metrics.medianExpectedUpsidePct === "number" ? result.metrics.medianExpectedUpsidePct.toFixed(2) : "n/a"} dispersion_63d_pct=${typeof result.metrics.dispersion63dPct === "number" ? result.metrics.dispersion63dPct.toFixed(2) : "n/a"} avg_pairwise_corr_63d=${typeof result.metrics.averagePairwiseCorrelation63d === "number" ? result.metrics.averagePairwiseCorrelation63d.toFixed(3) : "n/a"}`,
@@ -1321,6 +1411,11 @@ export function registerResearchCli(program: Command) {
         result.riskFlags.forEach((flag) => {
           defaultRuntime.error(`RISK_FLAG: ${flag}`);
         });
+        if (sectorGate.requiredFailures.length) {
+          defaultRuntime.error(
+            `institutional_gate_required_failures=${sectorGate.requiredFailures.join(",")}`,
+          );
+        }
       });
     });
 
@@ -1334,6 +1429,8 @@ export function registerResearchCli(program: Command) {
     .option("--max-constituents <n>", "Max constituents to load from theme registry")
     .option("--lookback-days <n>", "Price lookback window", "365")
     .option("--top <n>", "Leaders/laggards count", "5")
+    .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
+    .option("--min-score <n>", "Institutional quality threshold [0-1]", "0.82")
     .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
@@ -1351,8 +1448,84 @@ export function registerResearchCli(program: Command) {
           topN: parseOptionalNumber(opts.top) ?? 5,
           dbPath: opts.db as string,
         });
+        const themeArtifactId = `${result.theme}:${result.generatedAt.slice(0, 10)}:${result.tickers.length}`;
+        const scenarioCoverageRatio =
+          result.constituents.length > 0
+            ? result.constituents.filter(
+                (row) =>
+                  typeof row.expectedUpsideWithCatalystsPct === "number" ||
+                  typeof row.expectedUpsidePct === "number",
+              ).length / result.constituents.length
+            : 0;
+        const uniqueSectorCount = new Set(
+          result.constituents.map((row) => row.sector).filter(Boolean),
+        ).size;
+        const benchmarkRelativeScore = result.benchmarkRelative
+          ? clamp01(
+              0.65 * clamp01(result.benchmarkRelative.sampleSize / 63) +
+                0.35 * clamp01((result.benchmarkRelative.correlation ?? 0.35) / 0.8),
+            )
+          : 0;
+        const factorAttributionScore = result.factorAttribution
+          ? clamp01(
+              0.7 * clamp01(result.factorAttribution.sampleSize / 63) +
+                0.3 * clamp01(result.factorAttribution.rSquared / 0.5),
+            )
+          : 0;
+        const benchmarkContextScore =
+          result.benchmarkRelative || result.factorAttribution
+            ? clamp01(0.55 * benchmarkRelativeScore + 0.45 * factorAttributionScore)
+            : 0;
+        const factorStabilityScore = result.factorAttribution?.rollingWindows.length
+          ? clamp01(
+              0.6 *
+                mean(
+                  result.factorAttribution.rollingWindows.map((window) => clamp01(window.rSquared)),
+                ) +
+                0.4 * clamp01(result.factorAttribution.rollingWindows.length / 4),
+            )
+          : 0;
+        const macroCoveragePct = result.factorAttribution?.macroFactors.length
+          ? mean(result.factorAttribution.macroFactors.map((factor) => factor.coveragePct))
+          : undefined;
+        const themeGate = evaluateCrossSectionQualityGate({
+          artifactType: "theme_report",
+          artifactId: themeArtifactId,
+          evidenceCoverageScore: result.metrics.evidenceCoverageScore,
+          institutionalReadinessScore: result.metrics.institutionalReadinessScore,
+          avgVariantConfidence: result.metrics.avgVariantConfidence,
+          avgValuationConfidence: result.metrics.avgValuationConfidence,
+          avgPortfolioConfidence: result.metrics.avgPortfolioConfidence,
+          benchmarkContextScore,
+          scenarioCoverageRatio,
+          riskFlagCount: result.riskFlags.length,
+          uniqueGroupCount: uniqueSectorCount,
+          factorStabilityScore,
+          macroCoveragePct,
+          generatedAt: result.generatedAt,
+          minScore: parseOptionalNumber(opts["minScore"]) ?? 0.82,
+        });
+        const themeGateRun = recordQualityGateRun({
+          evaluation: themeGate,
+          metadata: {
+            theme: result.theme,
+            ticker_count: result.tickers.length,
+            used_theme_registry: result.usedThemeRegistry,
+          },
+          dbPath: opts.db as string,
+        });
+        if (!Boolean(opts.allowDraft) && !themeGate.passed) {
+          const failed = themeGate.checks.filter((check) => !check.passed);
+          const details = failed.map((check) => `${check.name}: ${check.detail}`).join("; ");
+          throw new Error(
+            `Institutional theme gate failed (run_id=${themeGateRun.id} score=${themeGate.score.toFixed(2)} min=${themeGate.minScore.toFixed(2)} required_failures=${themeGate.requiredFailures.join(",") || "none"}): ${details}`,
+          );
+        }
         defaultRuntime.log(
           `theme=${result.theme} constituents=${result.metrics.constituentCount} regime=${result.metrics.regime} readiness_score=${result.metrics.institutionalReadinessScore.toFixed(2)} evidence_coverage=${result.metrics.evidenceCoverageScore.toFixed(2)} registry_source=${result.usedThemeRegistry ? 1 : 0} theme_version=${typeof result.themeVersion === "number" ? result.themeVersion : "n/a"} min_membership_score=${typeof result.membershipMinScore === "number" ? result.membershipMinScore.toFixed(2) : "n/a"}`,
+        );
+        defaultRuntime.log(
+          `institutional_gate run_id=${themeGateRun.id} gate=${themeGate.gateName} score=${themeGate.score.toFixed(2)} min_score=${themeGate.minScore.toFixed(2)} passed=${themeGate.passed ? 1 : 0} artifact_id=${themeGate.artifactId}`,
         );
         defaultRuntime.log(
           `breadth_20d_pct=${(result.metrics.breadthPositive20dPct * 100).toFixed(1)} breadth_63d_pct=${(result.metrics.breadthPositive63dPct * 100).toFixed(1)} median_return_63d_pct=${typeof result.metrics.medianReturn63dPct === "number" ? result.metrics.medianReturn63dPct.toFixed(2) : "n/a"} median_upside_pct=${typeof result.metrics.medianExpectedUpsidePct === "number" ? result.metrics.medianExpectedUpsidePct.toFixed(2) : "n/a"} dispersion_63d_pct=${typeof result.metrics.dispersion63dPct === "number" ? result.metrics.dispersion63dPct.toFixed(2) : "n/a"} avg_pairwise_corr_63d=${typeof result.metrics.averagePairwiseCorrelation63d === "number" ? result.metrics.averagePairwiseCorrelation63d.toFixed(3) : "n/a"}`,
@@ -1420,6 +1593,11 @@ export function registerResearchCli(program: Command) {
         result.riskFlags.forEach((flag) => {
           defaultRuntime.error(`RISK_FLAG: ${flag}`);
         });
+        if (themeGate.requiredFailures.length) {
+          defaultRuntime.error(
+            `institutional_gate_required_failures=${themeGate.requiredFailures.join(",")}`,
+          );
+        }
       });
     });
 
@@ -2409,6 +2587,75 @@ export function registerResearchCli(program: Command) {
     });
 
   research
+    .command("quality-gate")
+    .description("List institutional quality-gate runs and summary")
+    .option("--artifact-type <kind>", "memo|sector_report|theme_report|all", "all")
+    .option("--artifact-id <id>", "Optional artifact id")
+    .option("--days <n>", "Lookback window in days", "30")
+    .option("--limit <n>", "Result limit", "100")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const artifactType = parseQualityGateArtifactType(opts["artifactType"] as string);
+        const runs = listQualityGateRuns({
+          artifactType,
+          artifactId: opts["artifactId"] as string | undefined,
+          days: parseOptionalNumber(opts.days) ?? 30,
+          limit: parseOptionalNumber(opts.limit) ?? 100,
+          dbPath: opts.db as string,
+        });
+        const summary = summarizeQualityGateRuns(runs);
+        defaultRuntime.log(
+          `quality_gate_summary total=${summary.total} passed=${summary.passed} pass_rate=${(summary.passRate * 100).toFixed(1)}% avg_score=${summary.avgScore.toFixed(3)} avg_min_score=${summary.avgMinScore.toFixed(3)}`,
+        );
+        if (!runs.length) {
+          defaultRuntime.log("No quality-gate runs found.");
+          return;
+        }
+        runs.forEach((run) => {
+          defaultRuntime.log(
+            `quality_gate_run id=${run.id} gate=${run.gateName} artifact_type=${run.artifactType} artifact_id=${run.artifactId} score=${run.score.toFixed(3)} min_score=${run.minScore.toFixed(3)} passed=${run.passed ? 1 : 0} required_failures=${run.requiredFailures.length ? run.requiredFailures.join(",") : "none"} created_at=${new Date(run.createdAt).toISOString()}`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("quality-gate-ci")
+    .description("Fail when quality-gate pass rate or score regresses")
+    .option("--artifact-type <kind>", "memo|sector_report|theme_report|all", "all")
+    .option("--lookback-days <n>", "Lookback window in days", "90")
+    .option("--recent-days <n>", "Recent window in days", "14")
+    .option("--min-recent-samples <n>", "Minimum samples in recent window", "10")
+    .option("--min-recent-pass-rate <n>", "Minimum recent pass rate [0-1]", "0.8")
+    .option("--min-recent-avg-score <n>", "Minimum recent average score [0-1]", "0.82")
+    .option("--max-pass-rate-drop <n>", "Maximum pass-rate drop vs baseline [0-1]", "0.08")
+    .option("--max-avg-score-drop <n>", "Maximum avg-score drop vs baseline [0-1]", "0.05")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const artifactType = parseQualityGateArtifactType(opts["artifactType"] as string);
+        const result = evaluateQualityGateRegression({
+          artifactType,
+          lookbackDays: parseOptionalNumber(opts["lookbackDays"]),
+          recentDays: parseOptionalNumber(opts["recentDays"]),
+          minRecentSamples: parseOptionalNumber(opts["minRecentSamples"]),
+          minRecentPassRate: parseOptionalNumber(opts["minRecentPassRate"]),
+          minRecentAvgScore: parseOptionalNumber(opts["minRecentAvgScore"]),
+          maxPassRateDrop: parseOptionalNumber(opts["maxPassRateDrop"]),
+          maxAvgScoreDrop: parseOptionalNumber(opts["maxAvgScoreDrop"]),
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `quality_gate_regression artifact_type=${result.artifactType ?? "all"} recent_count=${result.recentCount} baseline_count=${result.baselineCount} recent_pass_rate=${(result.recentPassRate * 100).toFixed(1)}% baseline_pass_rate=${(result.baselinePassRate * 100).toFixed(1)}% recent_avg_score=${result.recentAvgScore.toFixed(3)} baseline_avg_score=${result.baselineAvgScore.toFixed(3)} passed=${result.passed ? 1 : 0}`,
+        );
+        if (!result.passed) {
+          throw new Error(`Quality gate regression failed: ${result.reasons.join("; ")}`);
+        }
+      });
+    });
+
+  research
     .command("memo")
     .description("Generate citation-enforced research memo")
     .requiredOption("--ticker <symbol>", "Ticker symbol")
@@ -2437,6 +2684,9 @@ export function registerResearchCli(program: Command) {
         defaultRuntime.log(`quality_passed=${result.quality.passed ? 1 : 0}`);
         defaultRuntime.log(`quality_min_score=${result.quality.minScore.toFixed(2)}`);
         defaultRuntime.log(
+          `institutional_gate run_id=${result.qualityGateRunId} gate=${result.qualityGate.gateName} score=${result.qualityGate.score.toFixed(2)} min_score=${result.qualityGate.minScore.toFixed(2)} passed=${result.qualityGate.passed ? 1 : 0} artifact_id=${result.qualityGate.artifactId}`,
+        );
+        defaultRuntime.log(
           `actionability_score=${result.quality.actionabilityScore.toFixed(2)} adversarial_coverage_score=${result.quality.adversarialCoverageScore.toFixed(2)} calibration_mode=${result.quality.calibration.mode} calibration_score=${result.quality.calibration.score.toFixed(2)} calibration_samples=${result.quality.calibration.sampleCount}`,
         );
         defaultRuntime.log(
@@ -2447,6 +2697,11 @@ export function registerResearchCli(program: Command) {
         );
         if (result.quality.requiredFailures.length) {
           defaultRuntime.error(`required_failures=${result.quality.requiredFailures.join(",")}`);
+        }
+        if (result.qualityGate.requiredFailures.length) {
+          defaultRuntime.error(
+            `institutional_gate_required_failures=${result.qualityGate.requiredFailures.join(",")}`,
+          );
         }
       });
     });

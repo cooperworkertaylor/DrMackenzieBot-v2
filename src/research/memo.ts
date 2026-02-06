@@ -13,6 +13,7 @@ import { addClaimEvidence, createResearchClaim, upsertResearchEntity } from "./m
 import { composePortfolioDecision } from "./portfolio-decision.js";
 import { computePortfolioPlan, type PortfolioPlan } from "./portfolio.js";
 import { appendProvenanceEvent } from "./provenance.js";
+import { evaluateMemoQualityGate, recordQualityGateRun } from "./quality-gate.js";
 import { runAdversarialResearchCell } from "./research-cell.js";
 import { computeValuation, recordValuationForecast, type ValuationResult } from "./valuation.js";
 import { computeVariantPerception, type VariantPerceptionResult } from "./variant.js";
@@ -393,15 +394,45 @@ export const generateMemoAsync = async (params: {
     dbPath: params.dbPath,
   });
 
-  if (enforceInstitutionalGrade && !quality.passed) {
-    const failed = quality.checks.filter((c) => !c.passed);
+  const memoGateArtifactId = `${params.ticker.toUpperCase()}:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        ticker: params.ticker.toUpperCase(),
+        question: params.question,
+        claims: lines.map((line) => line.claim),
+        citationIds: lines.flatMap((line) => line.citationIds),
+      }),
+    )
+    .digest("hex")
+    .slice(0, 16)}`;
+  const qualityGate = evaluateMemoQualityGate({
+    artifactId: memoGateArtifactId,
+    claims: lines,
+    citations,
+    diagnostics,
+    valuation,
+    grade: quality,
+    minScore: minQualityScore,
+  });
+  const qualityGateRun = recordQualityGateRun({
+    evaluation: qualityGate,
+    metadata: {
+      ticker: params.ticker.toUpperCase(),
+      question: params.question,
+      enforce_institutional_grade: enforceInstitutionalGrade,
+    },
+    dbPath: params.dbPath,
+  });
+
+  if (enforceInstitutionalGrade && !qualityGate.passed) {
+    const failed = qualityGate.checks.filter((c) => !c.passed);
     const details = failed.map((f) => `${f.name}: ${f.detail}`).join("; ");
     const requiredFailures =
-      quality.requiredFailures.length > 0
-        ? ` required_failures=${quality.requiredFailures.join(",")};`
+      qualityGate.requiredFailures.length > 0
+        ? ` required_failures=${qualityGate.requiredFailures.join(",")};`
         : "";
     throw new Error(
-      `Institutional-grade quality gate failed (score=${quality.score.toFixed(2)} < ${minQualityScore.toFixed(2)};${requiredFailures}): ${details}`,
+      `Institutional-grade quality gate failed (score=${qualityGate.score.toFixed(2)} < ${minQualityScore.toFixed(2)};${requiredFailures} run_id=${qualityGateRun.id}): ${details}`,
     );
   }
 
@@ -486,6 +517,18 @@ export const generateMemoAsync = async (params: {
     `- Decision recommendation: ${portfolioDecision.recommendation}`,
     `- Decision score: ${portfolioDecision.decisionScore.toFixed(2)}`,
     `- Decision risk breaches: ${portfolioDecision.riskBreaches.length}`,
+    "",
+    "## Institutional Deliverable Gate",
+    `- Gate: ${qualityGate.gateName}`,
+    `- Run id: ${qualityGateRun.id}`,
+    `- Artifact id: ${qualityGate.artifactId}`,
+    `- Score: ${qualityGate.score.toFixed(2)} (threshold ${qualityGate.minScore.toFixed(2)})`,
+    `- Passed: ${qualityGate.passed ? "yes" : "no"}`,
+    `- Required failures: ${qualityGate.requiredFailures.length ? qualityGate.requiredFailures.join(", ") : "none"}`,
+    ...qualityGate.checks.map(
+      (c) =>
+        `- ${c.passed ? "PASS" : "FAIL"} ${c.name}: ${c.detail} (weight ${c.weight}, score ${c.score.toFixed(2)}, required ${c.required ? "yes" : "no"})`,
+    ),
     typeof forecastId === "number" ? `- Forecast id: ${forecastId}` : "- Forecast id: n/a",
   ].join("\n");
   const memoHash = createHash("sha256").update(memoWithQuality).digest("hex");
@@ -503,6 +546,16 @@ export const generateMemoAsync = async (params: {
         quality_score: quality.score,
         quality_passed: quality.passed,
         required_failures: quality.requiredFailures,
+        institutional_gate: {
+          run_id: qualityGateRun.id,
+          gate_name: qualityGate.gateName,
+          artifact_type: qualityGate.artifactType,
+          artifact_id: qualityGate.artifactId,
+          score: qualityGate.score,
+          min_score: qualityGate.minScore,
+          passed: qualityGate.passed,
+          required_failures: qualityGate.requiredFailures,
+        },
         actionability_score: quality.actionabilityScore,
         adversarial_coverage_score: quality.adversarialCoverageScore,
         research_cell: {
@@ -568,6 +621,8 @@ export const generateMemoAsync = async (params: {
     citations: citations.length,
     claims: lines.length,
     quality,
+    qualityGate,
+    qualityGateRunId: qualityGateRun.id,
     variant,
     valuation,
     portfolio,

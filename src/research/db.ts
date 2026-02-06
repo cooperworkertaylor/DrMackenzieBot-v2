@@ -596,6 +596,21 @@ const migrate = (db: ResearchDb) => {
       unique (factor_key, date, source)
     );
 
+    create table if not exists quality_gate_runs (
+      id integer primary key,
+      artifact_type text not null,
+      artifact_id text not null,
+      gate_name text not null default 'institutional_v1',
+      score real not null,
+      min_score real not null,
+      passed integer not null default 0,
+      required_failures text not null default '[]',
+      checks text not null default '[]',
+      metrics text not null default '{}',
+      metadata text not null default '{}',
+      created_at integer not null
+    );
+
     create table if not exists research_events (
       id integer primary key,
       entity_id integer not null,
@@ -805,6 +820,15 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_macro_factor_date
       on macro_factor_observations (date desc, factor_key);
+
+    create index if not exists idx_quality_gate_runs_lookup
+      on quality_gate_runs (artifact_type, created_at desc);
+
+    create index if not exists idx_quality_gate_runs_artifact
+      on quality_gate_runs (artifact_type, artifact_id, created_at desc);
+
+    create index if not exists idx_quality_gate_runs_pass
+      on quality_gate_runs (passed, created_at desc);
 
     create index if not exists idx_research_events_lookup
       on research_events (entity_id, event_time desc, event_type);
