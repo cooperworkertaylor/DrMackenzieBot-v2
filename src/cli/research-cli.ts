@@ -65,6 +65,10 @@ import {
   computePortfolioDecision,
   type PortfolioDecisionConstraints,
 } from "../research/portfolio-decision.js";
+import {
+  computePortfolioOptimization,
+  type PortfolioOptimizerConstraints,
+} from "../research/portfolio-optimizer.js";
 import { computePortfolioPlan } from "../research/portfolio.js";
 import { provenanceReport } from "../research/provenance.js";
 import { indexRepo } from "../research/repo-index.js";
@@ -695,6 +699,126 @@ export function registerResearchCli(program: Command) {
           defaultRuntime.log(
             `stress scenario=${stress.scenario} probability=${stress.probability.toFixed(2)} return_pct=${stress.returnPct.toFixed(2)} weighted_return_pct=${stress.weightedReturnPct.toFixed(2)} pnl_pct=${stress.pnlPct.toFixed(2)} risk_breach=${stress.breachesRiskBudget ? 1 : 0}`,
           );
+        });
+      });
+    });
+
+  research
+    .command("portfolio-optimize")
+    .description("Optimize multi-name portfolio allocations with correlation and exposure controls")
+    .requiredOption("--tickers <csv>", "Comma-separated tickers")
+    .option("--question <text>", "Portfolio construction framing question")
+    .option("--lookback-days <n>", "Price history lookback days", "252")
+    .option("--max-gross <n>", "Max gross exposure %")
+    .option("--max-net <n>", "Max net exposure %")
+    .option("--max-portfolio-risk <n>", "Max aggregate risk budget %")
+    .option("--max-sector <n>", "Max sector exposure %")
+    .option("--max-single <n>", "Max single-name weight %")
+    .option("--max-pair-corr <n>", "Max pairwise correlation threshold [0-1]")
+    .option("--max-weighted-corr <n>", "Max weighted portfolio correlation [0-1]")
+    .option("--min-position <n>", "Minimum tradable position size %")
+    .option("--min-corr-history <n>", "Minimum overlapping history days for correlation")
+    .option("--max-stress-loss <n>", "Max allowed portfolio stress loss %")
+    .option("--max-weight <n>", "Pass-through single-name cap % for decision layer")
+    .option("--max-risk-budget <n>", "Pass-through single-name risk budget %")
+    .option("--max-stop-loss <n>", "Pass-through stop-loss cap % (absolute)")
+    .option("--min-confidence <n>", "Pass-through single-name confidence floor [0-1]")
+    .option("--min-coverage <n>", "Pass-through debate coverage floor [0-1]")
+    .option("--max-downside-loss <n>", "Pass-through single-name downside loss cap %")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const tickers = parseTickersOption(opts.tickers as string);
+        if (!tickers.length) throw new Error("Provide at least one ticker.");
+
+        const decisionConstraints: Partial<PortfolioDecisionConstraints> = {};
+        const passMaxWeight = parseOptionalNumber(opts["maxWeight"]);
+        const passMaxRiskBudget = parseOptionalNumber(opts["maxRiskBudget"]);
+        const passMaxStopLoss = parseOptionalNumber(opts["maxStopLoss"]);
+        const passMinConfidence = parseOptionalNumber(opts["minConfidence"]);
+        const passMinCoverage = parseOptionalNumber(opts["minCoverage"]);
+        const passMaxDownsideLoss = parseOptionalNumber(opts["maxDownsideLoss"]);
+        if (typeof passMaxWeight === "number")
+          decisionConstraints.maxSingleNameWeightPct = passMaxWeight;
+        if (typeof passMaxRiskBudget === "number")
+          decisionConstraints.maxRiskBudgetPct = passMaxRiskBudget;
+        if (typeof passMaxStopLoss === "number")
+          decisionConstraints.maxStopLossPct = passMaxStopLoss;
+        if (typeof passMinConfidence === "number")
+          decisionConstraints.minConfidence = passMinConfidence;
+        if (typeof passMinCoverage === "number")
+          decisionConstraints.requiredDebateCoverage = passMinCoverage;
+        if (typeof passMaxDownsideLoss === "number")
+          decisionConstraints.maxDownsideLossPct = passMaxDownsideLoss;
+
+        const constraints: Partial<PortfolioOptimizerConstraints> = {};
+        const maxGross = parseOptionalNumber(opts["maxGross"]);
+        const maxNet = parseOptionalNumber(opts["maxNet"]);
+        const maxPortfolioRisk = parseOptionalNumber(opts["maxPortfolioRisk"]);
+        const maxSector = parseOptionalNumber(opts["maxSector"]);
+        const maxSingle = parseOptionalNumber(opts["maxSingle"]);
+        const maxPairCorr = parseOptionalNumber(opts["maxPairCorr"]);
+        const maxWeightedCorr = parseOptionalNumber(opts["maxWeightedCorr"]);
+        const minPosition = parseOptionalNumber(opts["minPosition"]);
+        const minCorrHistory = parseOptionalNumber(opts["minCorrHistory"]);
+        const maxStressLoss = parseOptionalNumber(opts["maxStressLoss"]);
+        if (typeof maxGross === "number") constraints.maxGrossExposurePct = maxGross;
+        if (typeof maxNet === "number") constraints.maxNetExposurePct = maxNet;
+        if (typeof maxPortfolioRisk === "number")
+          constraints.maxPortfolioRiskBudgetPct = maxPortfolioRisk;
+        if (typeof maxSector === "number") constraints.maxSectorExposurePct = maxSector;
+        if (typeof maxSingle === "number") constraints.maxSingleNameWeightPct = maxSingle;
+        if (typeof maxPairCorr === "number") constraints.maxPairwiseCorrelation = maxPairCorr;
+        if (typeof maxWeightedCorr === "number")
+          constraints.maxWeightedCorrelation = maxWeightedCorr;
+        if (typeof minPosition === "number") constraints.minPositionWeightPct = minPosition;
+        if (typeof minCorrHistory === "number")
+          constraints.minCorrelationHistoryDays = minCorrHistory;
+        if (typeof maxStressLoss === "number") constraints.maxStressLossPct = maxStressLoss;
+
+        const result = computePortfolioOptimization({
+          tickers,
+          question: opts.question as string | undefined,
+          decisionConstraints,
+          constraints,
+          dbPath: opts.db as string,
+          lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 252,
+        });
+
+        defaultRuntime.log(
+          `portfolio_positions=${result.positions.length} dropped=${result.dropped.length} constraints_breaches=${result.constraintBreaches.length}`,
+        );
+        defaultRuntime.log(
+          `gross_exposure_pct=${result.metrics.grossExposurePct.toFixed(2)} net_exposure_pct=${result.metrics.netExposurePct.toFixed(2)} risk_budget_pct=${result.metrics.portfolioRiskBudgetPct.toFixed(2)} expected_pnl_pct=${result.metrics.expectedPnlPct.toFixed(2)} worst_scenario_pnl_pct=${result.metrics.worstScenarioPnlPct.toFixed(2)} weighted_correlation=${result.metrics.weightedCorrelation.toFixed(2)} diversification_score=${result.metrics.diversificationScore.toFixed(2)} effective_names=${result.metrics.effectiveNames.toFixed(2)}`,
+        );
+        result.positions.forEach((position) => {
+          defaultRuntime.log(
+            `position ticker=${position.ticker} stance=${position.stance} recommendation=${position.recommendation} signed_weight_pct=${position.signedWeightPct.toFixed(2)} abs_weight_pct=${position.absWeightPct.toFixed(2)} risk_budget_pct=${position.riskBudgetPct.toFixed(2)} expected_return_pct=${position.directionalExpectedReturnPct.toFixed(2)} expected_pnl_pct=${position.expectedPnlPct.toFixed(2)} worst_scenario_pnl_pct=${position.worstScenarioPnlPct.toFixed(2)} score=${position.decisionScore.toFixed(2)} confidence=${position.confidence.toFixed(2)} sector=${position.sector} corr_penalty=${position.correlationPenalty.toFixed(2)} vol_annualized_pct=${typeof position.volatilityAnnualizedPct === "number" ? position.volatilityAnnualizedPct.toFixed(2) : "n/a"}`,
+          );
+        });
+        result.scenarioStress.forEach((scenario) => {
+          defaultRuntime.log(
+            `stress scenario=${scenario.scenario} portfolio_pnl_pct=${scenario.portfolioPnlPct.toFixed(2)} stress_breach=${scenario.breachesStressLossLimit ? 1 : 0}`,
+          );
+        });
+        const sectorEntries = Object.entries(result.sectorExposurePct).sort(
+          (left, right) => right[1] - left[1],
+        );
+        sectorEntries.forEach(([sector, exposure]) => {
+          defaultRuntime.log(
+            `sector_exposure sector=${sector} exposure_pct=${exposure.toFixed(2)}`,
+          );
+        });
+        result.pairwiseCorrelation.slice(0, 8).forEach((edge) => {
+          defaultRuntime.log(
+            `correlation left=${edge.left} right=${edge.right} corr=${edge.correlation.toFixed(3)} overlap_days=${edge.overlapDays}`,
+          );
+        });
+        result.dropped.forEach((row) => {
+          defaultRuntime.error(`DROPPED ${row.ticker}: ${row.reason}`);
+        });
+        result.constraintBreaches.forEach((breach) => {
+          defaultRuntime.error(`CONSTRAINT_BREACH: ${breach}`);
         });
       });
     });
