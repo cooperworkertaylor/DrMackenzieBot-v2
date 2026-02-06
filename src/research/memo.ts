@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { openResearchDb } from "./db.js";
 import {
+  type AdversarialDebateAssessment,
   gradeInstitutionalMemo,
   type MemoCitation,
   type MemoContradiction,
@@ -11,6 +12,7 @@ import { buildTickerPointInTimeGraph, getTickerPointInTimeSnapshot } from "./kno
 import { addClaimEvidence, createResearchClaim, upsertResearchEntity } from "./memory-graph.js";
 import { computePortfolioPlan, type PortfolioPlan } from "./portfolio.js";
 import { appendProvenanceEvent } from "./provenance.js";
+import { runAdversarialResearchCell } from "./research-cell.js";
 import { computeValuation, recordValuationForecast, type ValuationResult } from "./valuation.js";
 import { computeVariantPerception, type VariantPerceptionResult } from "./variant.js";
 import { searchResearch } from "./vector-search.js";
@@ -195,6 +197,27 @@ export const generateMemoAsync = async (params: {
     factLimit: 240,
     metricLimit: 16,
   });
+  const researchCell = runAdversarialResearchCell({
+    ticker: params.ticker,
+    question: params.question,
+    claims: lines,
+    citations,
+    variant,
+    valuation,
+    portfolio,
+    diagnostics,
+    graphSnapshot,
+  });
+  const researchCellAssessment: AdversarialDebateAssessment = {
+    coverageScore: researchCell.debate.adversarialCoverageScore,
+    dissentCount: researchCell.debate.majorDisagreements.length,
+    disconfirmingEvidenceCount: researchCell.debate.disconfirmingEvidence.length,
+    riskControlCount: researchCell.debate.riskControls.length,
+    unresolvedRiskCount: researchCell.debate.unresolvedRisks.length,
+    finalStance: researchCell.allocator.finalStance,
+    finalConfidence: researchCell.allocator.confidence,
+    passed: researchCell.debate.passed,
+  };
 
   const memo = [
     `# Research Memo: ${params.ticker.toUpperCase()}`,
@@ -272,6 +295,40 @@ export const generateMemoAsync = async (params: {
         )
       : ["1. None detected."]),
     ``,
+    `## Adversarial Research Cell`,
+    `- Coverage score: ${researchCell.debate.adversarialCoverageScore.toFixed(2)}`,
+    `- Consensus score: ${researchCell.debate.consensusScore.toFixed(2)}`,
+    `- Debate passed: ${researchCell.debate.passed ? "yes" : "no"}`,
+    `- Final stance: ${researchCell.allocator.finalStance}`,
+    `- Final confidence: ${researchCell.allocator.confidence.toFixed(2)}`,
+    `- Recommended weight: ${researchCell.allocator.recommendedWeightPct.toFixed(2)}%`,
+    `- Max risk budget: ${researchCell.allocator.maxRiskBudgetPct.toFixed(2)}%`,
+    `- Stop loss: ${(researchCell.allocator.stopLossPct * 100).toFixed(1)}%`,
+    `- Thesis summary: ${researchCell.thesis.summary}`,
+    `- Skeptic summary: ${researchCell.skeptic.summary}`,
+    `- Risk summary: ${researchCell.riskManager.summary}`,
+    `- Allocator summary: ${researchCell.allocator.summary}`,
+    `- Disconfirming evidence:`,
+    ...researchCell.debate.disconfirmingEvidence
+      .slice(0, 6)
+      .map((item, index) => `  ${index + 1}. ${item}`),
+    `- Major disagreements:`,
+    ...(researchCell.debate.majorDisagreements.length
+      ? researchCell.debate.majorDisagreements
+          .slice(0, 4)
+          .map((item, index) => `  ${index + 1}. ${item}`)
+      : ["  1. None material."]),
+    `- Unresolved risks:`,
+    ...(researchCell.debate.unresolvedRisks.length
+      ? researchCell.debate.unresolvedRisks
+          .slice(0, 4)
+          .map((item, index) => `  ${index + 1}. ${item}`)
+      : ["  1. None material."]),
+    `- Required follow-ups:`,
+    ...researchCell.debate.requiredFollowUps
+      .slice(0, 4)
+      .map((item, index) => `  ${index + 1}. ${item}`),
+    ``,
     `## Falsification Triggers`,
     ...diagnostics.falsificationTriggers.map((trigger, index) => `${index + 1}. ${trigger}`),
     ``,
@@ -300,6 +357,7 @@ export const generateMemoAsync = async (params: {
     valuation,
     portfolio,
     diagnostics,
+    researchCell: researchCellAssessment,
     minScore: minQualityScore,
     dbPath: params.dbPath,
   });
@@ -386,6 +444,7 @@ export const generateMemoAsync = async (params: {
     `- Required failures: ${quality.requiredFailures.length ? quality.requiredFailures.join(", ") : "none"}`,
     `- Calibration: mode=${quality.calibration.mode} score=${quality.calibration.score.toFixed(2)} sample=${quality.calibration.sampleCount}`,
     `- Actionability score: ${quality.actionabilityScore.toFixed(2)}`,
+    `- Adversarial coverage score: ${quality.adversarialCoverageScore.toFixed(2)}`,
     ...quality.checks.map(
       (c) =>
         `- ${c.passed ? "PASS" : "FAIL"} ${c.name}: ${c.detail} (weight ${c.weight}, score ${c.score.toFixed(2)}, required ${c.required ? "yes" : "no"})`,
@@ -411,6 +470,19 @@ export const generateMemoAsync = async (params: {
         quality_passed: quality.passed,
         required_failures: quality.requiredFailures,
         actionability_score: quality.actionabilityScore,
+        adversarial_coverage_score: quality.adversarialCoverageScore,
+        research_cell: {
+          coverage_score: researchCell.debate.adversarialCoverageScore,
+          consensus_score: researchCell.debate.consensusScore,
+          passed: researchCell.debate.passed,
+          final_stance: researchCell.allocator.finalStance,
+          final_confidence: researchCell.allocator.confidence,
+          recommended_weight_pct: researchCell.allocator.recommendedWeightPct,
+          max_risk_budget_pct: researchCell.allocator.maxRiskBudgetPct,
+          disconfirming_evidence_count: researchCell.debate.disconfirmingEvidence.length,
+          major_disagreements_count: researchCell.debate.majorDisagreements.length,
+          unresolved_risks_count: researchCell.debate.unresolvedRisks.length,
+        },
         point_in_time_graph: {
           snapshot_as_of: graphSnapshot.asOfDate,
           rows_scanned: graphBuild.rowsScanned,
@@ -448,6 +520,7 @@ export const generateMemoAsync = async (params: {
     valuation,
     portfolio,
     diagnostics,
+    researchCell,
     forecastId,
   };
 };

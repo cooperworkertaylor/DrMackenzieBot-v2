@@ -54,6 +54,7 @@ export type InstitutionalGradeResult = {
   requiredFailures: string[];
   calibration: InstitutionalCalibration;
   actionabilityScore: number;
+  adversarialCoverageScore: number;
 };
 
 type CalibrationOverride = {
@@ -63,6 +64,17 @@ type CalibrationOverride = {
   mae?: number;
   directionalAccuracy?: number;
   confidenceOutcomeMae?: number;
+};
+
+export type AdversarialDebateAssessment = {
+  coverageScore: number;
+  dissentCount: number;
+  disconfirmingEvidenceCount: number;
+  riskControlCount: number;
+  unresolvedRiskCount: number;
+  finalStance: string;
+  finalConfidence: number;
+  passed: boolean;
 };
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
@@ -315,6 +327,7 @@ export const gradeInstitutionalMemo = (params: {
   valuation: ValuationResult;
   portfolio: PortfolioPlan;
   diagnostics: MemoDiagnostics;
+  researchCell?: AdversarialDebateAssessment;
   minScore?: number;
   dbPath?: string;
   calibrationOverride?: CalibrationOverride;
@@ -382,6 +395,14 @@ export const gradeInstitutionalMemo = (params: {
     valuation: params.valuation,
     variant: params.variant,
   });
+  const adversarialCoverageScore = params.researchCell
+    ? clamp01(
+        0.55 * clamp01(params.researchCell.coverageScore) +
+          0.2 * clamp01(params.researchCell.disconfirmingEvidenceCount / 2) +
+          0.15 * clamp01(params.researchCell.riskControlCount / 4) +
+          0.1 * clamp01(params.researchCell.finalConfidence),
+      )
+    : 0.8;
 
   const checks: InstitutionalGradeCheck[] = [
     check({
@@ -475,6 +496,16 @@ export const gradeInstitutionalMemo = (params: {
       required: true,
     }),
     check({
+      name: "adversarial_debate",
+      detail: params.researchCell
+        ? `coverage=${params.researchCell.coverageScore.toFixed(2)} disconfirming=${params.researchCell.disconfirmingEvidenceCount} risk_controls=${params.researchCell.riskControlCount} dissent=${params.researchCell.dissentCount} unresolved=${params.researchCell.unresolvedRiskCount} stance=${params.researchCell.finalStance} passed=${params.researchCell.passed ? 1 : 0}`
+        : "research_cell=missing (fallback score applied)",
+      weight: 0.08,
+      score: adversarialCoverageScore,
+      passThreshold: params.researchCell ? 0.72 : 0.55,
+      required: Boolean(params.researchCell),
+    }),
+    check({
       name: "variant_support",
       detail: `variant_confidence=${params.variant.confidence.toFixed(2)} expectation_obs=${params.variant.expectationObservations} fundamental_obs=${params.variant.fundamentalObservations}`,
       weight: 0.04,
@@ -503,5 +534,6 @@ export const gradeInstitutionalMemo = (params: {
     requiredFailures,
     calibration,
     actionabilityScore: actionability.score,
+    adversarialCoverageScore,
   };
 };

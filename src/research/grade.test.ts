@@ -184,4 +184,21 @@ describe("institutional memo grading", () => {
     expect(grade.passed).toBe(false);
     expect(grade.requiredFailures).toContain("actionability");
   });
+
+  it("fails when adversarial debate coverage is weak", () => {
+    const params = baseInputs();
+    params.researchCell = {
+      coverageScore: 0.31,
+      dissentCount: 0,
+      disconfirmingEvidenceCount: 0,
+      riskControlCount: 1,
+      unresolvedRiskCount: 3,
+      finalStance: "long",
+      finalConfidence: 0.41,
+      passed: false,
+    };
+    const grade = gradeInstitutionalMemo(params);
+    expect(grade.passed).toBe(false);
+    expect(grade.requiredFailures).toContain("adversarial_debate");
+  });
 });

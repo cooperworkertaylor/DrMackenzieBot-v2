@@ -1650,7 +1650,10 @@ export function registerResearchCli(program: Command) {
         defaultRuntime.log(`quality_passed=${result.quality.passed ? 1 : 0}`);
         defaultRuntime.log(`quality_min_score=${result.quality.minScore.toFixed(2)}`);
         defaultRuntime.log(
-          `actionability_score=${result.quality.actionabilityScore.toFixed(2)} calibration_mode=${result.quality.calibration.mode} calibration_score=${result.quality.calibration.score.toFixed(2)} calibration_samples=${result.quality.calibration.sampleCount}`,
+          `actionability_score=${result.quality.actionabilityScore.toFixed(2)} adversarial_coverage_score=${result.quality.adversarialCoverageScore.toFixed(2)} calibration_mode=${result.quality.calibration.mode} calibration_score=${result.quality.calibration.score.toFixed(2)} calibration_samples=${result.quality.calibration.sampleCount}`,
+        );
+        defaultRuntime.log(
+          `research_cell_passed=${result.researchCell.debate.passed ? 1 : 0} research_cell_consensus=${result.researchCell.debate.consensusScore.toFixed(2)} research_cell_final_stance=${result.researchCell.allocator.finalStance}`,
         );
         if (result.quality.requiredFailures.length) {
           defaultRuntime.error(`required_failures=${result.quality.requiredFailures.join(",")}`);
