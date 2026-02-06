@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { addCatalyst } from "./catalyst.js";
 import { openResearchDb } from "./db.js";
 import { refreshThemeMembership, upsertThemeDefinition } from "./theme-ontology.js";
 import { computeSectorResearch, computeThemeResearch } from "./theme-sector.js";
@@ -16,6 +17,9 @@ const generateDates = (count: number, startDate: string): string[] => {
   }
   return out;
 };
+
+const futureDate = (daysAhead: number): string =>
+  new Date(Date.now() + daysAhead * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
 const seedTicker = (params: {
   dbPath: string;
@@ -116,6 +120,8 @@ describe("theme and sector research", () => {
     expect(result.metrics.institutionalReadinessScore).toBeLessThanOrEqual(1);
     expect(result.metrics.evidenceCoverageScore).toBeGreaterThanOrEqual(0);
     expect(result.metrics.evidenceCoverageScore).toBeLessThanOrEqual(1);
+    expect(result.factorDecomposition.exposures).toHaveLength(4);
+    expect(result.catalystCalendar.totalOpenEvents).toBe(0);
     expect(result.insightSummary.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -182,6 +188,37 @@ describe("theme and sector research", () => {
       theme: "ai-compute-energy",
       dbPath,
     });
+    addCatalyst({
+      ticker: "NVDA",
+      name: "AI platform launch",
+      probability: 0.8,
+      impactBps: 420,
+      confidence: 0.75,
+      direction: "up",
+      dateWindowStart: futureDate(9),
+      dateWindowEnd: futureDate(12),
+      dbPath,
+    });
+    addCatalyst({
+      ticker: "XOM",
+      name: "Commodity downside shock",
+      probability: 0.65,
+      impactBps: 380,
+      confidence: 0.8,
+      direction: "down",
+      dateWindowStart: futureDate(15),
+      dateWindowEnd: futureDate(20),
+      dbPath,
+    });
+    addCatalyst({
+      ticker: "AAPL",
+      name: "Regulatory review",
+      probability: 0.35,
+      impactBps: 240,
+      confidence: 0.6,
+      direction: "down",
+      dbPath,
+    });
 
     const result = computeThemeResearch({
       theme: "ai-compute-energy",
@@ -196,6 +233,10 @@ describe("theme and sector research", () => {
     expect(result.benchmarkRelative?.sampleSize).toBeGreaterThanOrEqual(30);
     expect(result.benchmarkRelative?.themeReturnPct).toBeTypeOf("number");
     expect(result.benchmarkRelative?.benchmarkReturnPct).toBeTypeOf("number");
+    expect(result.factorDecomposition.exposures).toHaveLength(4);
+    expect(result.catalystCalendar.totalOpenEvents).toBeGreaterThanOrEqual(3);
+    expect(result.catalystCalendar.eventsInHorizon).toBeGreaterThanOrEqual(2);
+    expect(result.catalystCalendar.weightedDownsideSharePct).toBeGreaterThan(0);
     expect(result.sectorExposure.length).toBeGreaterThanOrEqual(2);
     expect(result.sectorExposure.reduce((sum, row) => sum + row.sharePct, 0)).toBeCloseTo(1, 5);
     expect(result.leaders.length).toBeGreaterThan(0);

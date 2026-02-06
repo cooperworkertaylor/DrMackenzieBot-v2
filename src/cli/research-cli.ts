@@ -1208,6 +1208,22 @@ export function registerResearchCli(program: Command) {
         defaultRuntime.log(
           `breadth_20d_pct=${(result.metrics.breadthPositive20dPct * 100).toFixed(1)} breadth_63d_pct=${(result.metrics.breadthPositive63dPct * 100).toFixed(1)} median_return_63d_pct=${typeof result.metrics.medianReturn63dPct === "number" ? result.metrics.medianReturn63dPct.toFixed(2) : "n/a"} median_upside_pct=${typeof result.metrics.medianExpectedUpsidePct === "number" ? result.metrics.medianExpectedUpsidePct.toFixed(2) : "n/a"} dispersion_63d_pct=${typeof result.metrics.dispersion63dPct === "number" ? result.metrics.dispersion63dPct.toFixed(2) : "n/a"} avg_pairwise_corr_63d=${typeof result.metrics.averagePairwiseCorrelation63d === "number" ? result.metrics.averagePairwiseCorrelation63d.toFixed(3) : "n/a"}`,
         );
+        defaultRuntime.log(
+          `style dominant=${result.factorDecomposition.dominantFactor} concentration=${result.factorDecomposition.concentration.toFixed(2)} model=${result.factorDecomposition.model}`,
+        );
+        result.factorDecomposition.exposures.forEach((row) => {
+          defaultRuntime.log(
+            `style_factor factor=${row.factor} exposure_z=${row.exposureZ.toFixed(2)} weighted_raw=${row.weightedRaw.toFixed(2)} dispersion_z=${row.dispersionZ.toFixed(2)} top_pos=${row.topPositiveTicker || "n/a"} top_neg=${row.topNegativeTicker || "n/a"}`,
+          );
+        });
+        defaultRuntime.log(
+          `catalyst_calendar horizon_days=${result.catalystCalendar.horizonDays} open_events=${result.catalystCalendar.totalOpenEvents} scheduled=${result.catalystCalendar.scheduledEvents} in_horizon=${result.catalystCalendar.eventsInHorizon} near_term=${result.catalystCalendar.nearTermEvents} high_impact=${result.catalystCalendar.highImpactEvents} net_expected_impact_bps=${result.catalystCalendar.weightedExpectedImpactBps.toFixed(1)} downside_share_pct=${result.catalystCalendar.weightedDownsideSharePct.toFixed(1)} crowding=${result.catalystCalendar.crowdingScore.toFixed(2)}`,
+        );
+        result.catalystCalendar.topEventWindows.forEach((window) => {
+          defaultRuntime.log(
+            `catalyst_window date=${window.date} event_count=${window.eventCount} weighted_expected_impact_bps=${window.weightedExpectedImpactBps.toFixed(1)}`,
+          );
+        });
         result.insightSummary.forEach((line, index) => {
           defaultRuntime.log(`insight_${index + 1}=${line}`);
         });
@@ -1260,6 +1276,22 @@ export function registerResearchCli(program: Command) {
         defaultRuntime.log(
           `breadth_20d_pct=${(result.metrics.breadthPositive20dPct * 100).toFixed(1)} breadth_63d_pct=${(result.metrics.breadthPositive63dPct * 100).toFixed(1)} median_return_63d_pct=${typeof result.metrics.medianReturn63dPct === "number" ? result.metrics.medianReturn63dPct.toFixed(2) : "n/a"} median_upside_pct=${typeof result.metrics.medianExpectedUpsidePct === "number" ? result.metrics.medianExpectedUpsidePct.toFixed(2) : "n/a"} dispersion_63d_pct=${typeof result.metrics.dispersion63dPct === "number" ? result.metrics.dispersion63dPct.toFixed(2) : "n/a"} avg_pairwise_corr_63d=${typeof result.metrics.averagePairwiseCorrelation63d === "number" ? result.metrics.averagePairwiseCorrelation63d.toFixed(3) : "n/a"}`,
         );
+        defaultRuntime.log(
+          `style dominant=${result.factorDecomposition.dominantFactor} concentration=${result.factorDecomposition.concentration.toFixed(2)} model=${result.factorDecomposition.model}`,
+        );
+        result.factorDecomposition.exposures.forEach((row) => {
+          defaultRuntime.log(
+            `style_factor factor=${row.factor} exposure_z=${row.exposureZ.toFixed(2)} weighted_raw=${row.weightedRaw.toFixed(2)} dispersion_z=${row.dispersionZ.toFixed(2)} top_pos=${row.topPositiveTicker || "n/a"} top_neg=${row.topNegativeTicker || "n/a"}`,
+          );
+        });
+        defaultRuntime.log(
+          `catalyst_calendar horizon_days=${result.catalystCalendar.horizonDays} open_events=${result.catalystCalendar.totalOpenEvents} scheduled=${result.catalystCalendar.scheduledEvents} in_horizon=${result.catalystCalendar.eventsInHorizon} near_term=${result.catalystCalendar.nearTermEvents} high_impact=${result.catalystCalendar.highImpactEvents} net_expected_impact_bps=${result.catalystCalendar.weightedExpectedImpactBps.toFixed(1)} downside_share_pct=${result.catalystCalendar.weightedDownsideSharePct.toFixed(1)} crowding=${result.catalystCalendar.crowdingScore.toFixed(2)}`,
+        );
+        result.catalystCalendar.topEventWindows.forEach((window) => {
+          defaultRuntime.log(
+            `catalyst_window date=${window.date} event_count=${window.eventCount} weighted_expected_impact_bps=${window.weightedExpectedImpactBps.toFixed(1)}`,
+          );
+        });
         if (result.benchmarkRelative) {
           defaultRuntime.log(
             `benchmark ticker=${result.benchmarkRelative.benchmarkTicker} sample_size=${result.benchmarkRelative.sampleSize} relative_return_pct=${result.benchmarkRelative.relativeReturnPct.toFixed(2)} theme_return_pct=${result.benchmarkRelative.themeReturnPct.toFixed(2)} benchmark_return_pct=${result.benchmarkRelative.benchmarkReturnPct.toFixed(2)} beta=${typeof result.benchmarkRelative.beta === "number" ? result.benchmarkRelative.beta.toFixed(2) : "n/a"} tracking_error_pct=${typeof result.benchmarkRelative.trackingErrorPct === "number" ? result.benchmarkRelative.trackingErrorPct.toFixed(2) : "n/a"} info_ratio=${typeof result.benchmarkRelative.informationRatio === "number" ? result.benchmarkRelative.informationRatio.toFixed(2) : "n/a"} upside_capture_pct=${typeof result.benchmarkRelative.upsideCapturePct === "number" ? result.benchmarkRelative.upsideCapturePct.toFixed(1) : "n/a"} downside_capture_pct=${typeof result.benchmarkRelative.downsideCapturePct === "number" ? result.benchmarkRelative.downsideCapturePct.toFixed(1) : "n/a"}`,

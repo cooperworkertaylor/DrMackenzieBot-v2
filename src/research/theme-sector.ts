@@ -12,6 +12,16 @@ type PriceRow = {
   volume?: number;
 };
 
+type CatalystEventInternal = {
+  ticker: string;
+  dateWindowStart: string;
+  dateWindowEnd: string;
+  probability: number;
+  impactBps: number;
+  confidence: number;
+  direction: "up" | "down" | "both";
+};
+
 type CrossSectionConstituentInternal = {
   ticker: string;
   companyName?: string;
@@ -79,6 +89,8 @@ export type SectorResearchResult = {
   tickers: string[];
   lookbackDays: number;
   metrics: CrossSectionMetrics;
+  factorDecomposition: FactorDecomposition;
+  catalystCalendar: CatalystCalendarMetrics;
   leaders: CrossSectionConstituentSnapshot[];
   laggards: CrossSectionConstituentSnapshot[];
   constituents: CrossSectionConstituentSnapshot[];
@@ -96,6 +108,8 @@ export type ThemeResearchResult = {
   tickers: string[];
   lookbackDays: number;
   metrics: CrossSectionMetrics;
+  factorDecomposition: FactorDecomposition;
+  catalystCalendar: CatalystCalendarMetrics;
   sectorExposure: Array<{
     sector: string;
     count: number;
@@ -125,6 +139,56 @@ export type ThemeBenchmarkRelativeMetrics = {
   informationRatio?: number;
   upsideCapturePct?: number;
   downsideCapturePct?: number;
+};
+
+export type CrossSectionFactor = "momentum" | "value" | "quality" | "size";
+
+export type FactorExposure = {
+  factor: CrossSectionFactor;
+  exposureZ: number;
+  weightedRaw: number;
+  dispersionZ: number;
+  topPositiveTicker?: string;
+  topNegativeTicker?: string;
+};
+
+export type FactorDecomposition = {
+  model: string;
+  dominantFactor: CrossSectionFactor;
+  concentration: number;
+  exposures: FactorExposure[];
+};
+
+export type CatalystCalendarTickerLoad = {
+  ticker: string;
+  openEvents: number;
+  scheduledEvents: number;
+  nearTermEvents: number;
+  weightedExpectedImpactBps: number;
+};
+
+export type CatalystCalendarWindow = {
+  date: string;
+  eventCount: number;
+  weightedExpectedImpactBps: number;
+};
+
+export type CatalystCalendarMetrics = {
+  asOfDate: string;
+  horizonDays: number;
+  totalOpenEvents: number;
+  scheduledEvents: number;
+  unscheduledEvents: number;
+  eventsInHorizon: number;
+  nearTermEvents: number;
+  highImpactEvents: number;
+  avgConfidence: number;
+  weightedExpectedImpactBps: number;
+  weightedDownsideSharePct: number;
+  crowdingScore: number;
+  maxSameDayEvents: number;
+  topEventWindows: CatalystCalendarWindow[];
+  tickerLoad: CatalystCalendarTickerLoad[];
 };
 
 const clamp = (value: number, min: number, max: number): number =>
@@ -176,6 +240,24 @@ const normalizeTicker = (value: string): string => value.trim().toUpperCase();
 
 const toFinite = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+const toIsoDate = (value: Date): string => value.toISOString().slice(0, 10);
+
+const parseIsoDate = (value?: string): Date | undefined => {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) ? parsed : undefined;
+};
+
+const daysBetween = (left: Date, right: Date): number =>
+  Math.floor((right.getTime() - left.getTime()) / (24 * 60 * 60 * 1000));
+
+const signedImpactBps = (event: CatalystEventInternal): number => {
+  const base = event.probability * event.impactBps * event.confidence;
+  if (event.direction === "up") return Math.abs(base);
+  if (event.direction === "down") return -Math.abs(base);
+  return base;
+};
 
 const inferRegime = (params: {
   breadthPositive63dPct: number;
@@ -641,9 +723,274 @@ const computeCrossSectionMetrics = (
   };
 };
 
+const factorRawValue = (
+  row: CrossSectionConstituentInternal,
+  factor: CrossSectionFactor,
+): number => {
+  if (factor === "momentum") return row.return126dPct ?? row.return63dPct ?? row.return20dPct ?? 0;
+  if (factor === "value") return row.expectedUpsideWithCatalystsPct ?? row.expectedUpsidePct ?? 0;
+  if (factor === "quality")
+    return (
+      (0.45 * row.variantConfidence +
+        0.35 * row.valuationConfidence +
+        0.2 * row.portfolioConfidence -
+        0.5) *
+      100
+    );
+  return -Math.log(Math.max(row.avgDailyDollarVolumeUsd ?? 5_000_000, 1));
+};
+
+const computeFactorDecomposition = (
+  rows: CrossSectionConstituentInternal[],
+): FactorDecomposition => {
+  const factors: CrossSectionFactor[] = ["momentum", "value", "quality", "size"];
+  const weights = rows.map((row) => Math.max(0.001, row.compositeScore));
+  const totalWeight = weights.reduce((sum, value) => sum + value, 0);
+  const exposures = factors.map((factor) => {
+    const raw = rows.map((row) => factorRawValue(row, factor));
+    const rawMean = mean(raw);
+    const rawStd = stddev(raw) ?? 0;
+    const z = raw.map((value) => (rawStd > 1e-9 ? (value - rawMean) / rawStd : 0));
+    const exposureZ =
+      totalWeight > 1e-9
+        ? z.reduce((sum, value, index) => sum + value * (weights[index] ?? 0), 0) / totalWeight
+        : 0;
+    const weightedRaw =
+      totalWeight > 1e-9
+        ? raw.reduce((sum, value, index) => sum + value * (weights[index] ?? 0), 0) / totalWeight
+        : rawMean;
+    let topPositiveTicker: string | undefined;
+    let topNegativeTicker: string | undefined;
+    if (rows.length) {
+      let maxIndex = 0;
+      let minIndex = 0;
+      for (let index = 1; index < z.length; index += 1) {
+        if ((z[index] ?? 0) > (z[maxIndex] ?? 0)) maxIndex = index;
+        if ((z[index] ?? 0) < (z[minIndex] ?? 0)) minIndex = index;
+      }
+      topPositiveTicker = rows[maxIndex]?.ticker;
+      topNegativeTicker = rows[minIndex]?.ticker;
+    }
+    return {
+      factor,
+      exposureZ,
+      weightedRaw,
+      dispersionZ: stddev(z) ?? 0,
+      topPositiveTicker,
+      topNegativeTicker,
+    };
+  });
+  const absolute = exposures.map((row) => Math.abs(row.exposureZ));
+  const sumAbs = absolute.reduce((sum, value) => sum + value, 0);
+  const concentration =
+    sumAbs > 1e-9
+      ? absolute.reduce((sum, value) => {
+          const share = value / sumAbs;
+          return sum + share ** 2;
+        }, 0)
+      : 0;
+  const dominant = exposures
+    .slice()
+    .sort((left, right) => Math.abs(right.exposureZ) - Math.abs(left.exposureZ))[0]?.factor;
+  return {
+    model: "cross_sectional_style_proxy_v1",
+    dominantFactor: dominant ?? "momentum",
+    concentration,
+    exposures,
+  };
+};
+
+const loadOpenCatalystEvents = (params: {
+  tickers: string[];
+  dbPath?: string;
+}): CatalystEventInternal[] => {
+  const tickers = Array.from(new Set(params.tickers.map(normalizeTicker).filter(Boolean)));
+  if (!tickers.length) return [];
+  const db = openResearchDb(params.dbPath);
+  const placeholders = tickers.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT
+         UPPER(ticker) AS ticker,
+         date_window_start,
+         date_window_end,
+         probability,
+         impact_bps,
+         confidence,
+         direction
+       FROM catalysts
+       WHERE status='open'
+         AND UPPER(ticker) IN (${placeholders})`,
+    )
+    .all(...tickers) as Array<{
+    ticker: string;
+    date_window_start: string;
+    date_window_end: string;
+    probability: number;
+    impact_bps: number;
+    confidence: number;
+    direction: string;
+  }>;
+  return rows.map((row) => ({
+    ticker: normalizeTicker(row.ticker),
+    dateWindowStart: row.date_window_start || "",
+    dateWindowEnd: row.date_window_end || "",
+    probability: clamp01(toFinite(row.probability) ?? 0),
+    impactBps: toFinite(row.impact_bps) ?? 0,
+    confidence: clamp01(toFinite(row.confidence) ?? 0),
+    direction:
+      row.direction === "up" || row.direction === "down" || row.direction === "both"
+        ? row.direction
+        : "both",
+  }));
+};
+
+const computeCatalystCalendar = (params: {
+  rows: CrossSectionConstituentInternal[];
+  dbPath?: string;
+  horizonDays?: number;
+  asOf?: Date;
+}): CatalystCalendarMetrics => {
+  const asOf = params.asOf ?? new Date();
+  const asOfDate = toIsoDate(asOf);
+  const horizonDays = Math.max(7, Math.round(params.horizonDays ?? 90));
+  const events = loadOpenCatalystEvents({
+    tickers: params.rows.map((row) => row.ticker),
+    dbPath: params.dbPath,
+  });
+  if (!events.length) {
+    return {
+      asOfDate,
+      horizonDays,
+      totalOpenEvents: 0,
+      scheduledEvents: 0,
+      unscheduledEvents: 0,
+      eventsInHorizon: 0,
+      nearTermEvents: 0,
+      highImpactEvents: 0,
+      avgConfidence: 0,
+      weightedExpectedImpactBps: 0,
+      weightedDownsideSharePct: 0,
+      crowdingScore: 0,
+      maxSameDayEvents: 0,
+      topEventWindows: [],
+      tickerLoad: [],
+    };
+  }
+  let scheduledEvents = 0;
+  let unscheduledEvents = 0;
+  let eventsInHorizon = 0;
+  let nearTermEvents = 0;
+  let highImpactEvents = 0;
+  let weightedExpectedImpactBps = 0;
+  let downsideWeight = 0;
+  let absWeight = 0;
+  const windowMap = new Map<string, { eventCount: number; weightedExpectedImpactBps: number }>();
+  const tickerMap = new Map<
+    string,
+    {
+      openEvents: number;
+      scheduledEvents: number;
+      nearTermEvents: number;
+      weightedExpectedImpactBps: number;
+    }
+  >();
+  for (const event of events) {
+    const signedImpact = signedImpactBps(event);
+    weightedExpectedImpactBps += signedImpact;
+    absWeight += Math.abs(signedImpact);
+    if (signedImpact < 0) downsideWeight += Math.abs(signedImpact);
+    if (Math.abs(signedImpact) >= 150) highImpactEvents += 1;
+    const tickerBucket = tickerMap.get(event.ticker) ?? {
+      openEvents: 0,
+      scheduledEvents: 0,
+      nearTermEvents: 0,
+      weightedExpectedImpactBps: 0,
+    };
+    tickerBucket.openEvents += 1;
+    tickerBucket.weightedExpectedImpactBps += signedImpact;
+    const start = parseIsoDate(event.dateWindowStart);
+    if (!start) {
+      unscheduledEvents += 1;
+      tickerMap.set(event.ticker, tickerBucket);
+      continue;
+    }
+    scheduledEvents += 1;
+    tickerBucket.scheduledEvents += 1;
+    const daysUntil = daysBetween(asOf, start);
+    if (daysUntil >= 0 && daysUntil <= horizonDays) {
+      eventsInHorizon += 1;
+      const windowKey = event.dateWindowStart;
+      const windowBucket = windowMap.get(windowKey) ?? {
+        eventCount: 0,
+        weightedExpectedImpactBps: 0,
+      };
+      windowBucket.eventCount += 1;
+      windowBucket.weightedExpectedImpactBps += signedImpact;
+      windowMap.set(windowKey, windowBucket);
+    }
+    if (daysUntil >= 0 && daysUntil <= 14) {
+      nearTermEvents += 1;
+      tickerBucket.nearTermEvents += 1;
+    }
+    tickerMap.set(event.ticker, tickerBucket);
+  }
+  const tickerLoad = Array.from(tickerMap.entries())
+    .map(([ticker, row]) => ({
+      ticker,
+      openEvents: row.openEvents,
+      scheduledEvents: row.scheduledEvents,
+      nearTermEvents: row.nearTermEvents,
+      weightedExpectedImpactBps: row.weightedExpectedImpactBps,
+    }))
+    .sort((left, right) => {
+      const impactDiff =
+        Math.abs(right.weightedExpectedImpactBps) - Math.abs(left.weightedExpectedImpactBps);
+      if (Math.abs(impactDiff) > 1e-9) return impactDiff;
+      return right.openEvents - left.openEvents;
+    });
+  const topEventWindows = Array.from(windowMap.entries())
+    .map(([date, row]) => ({
+      date,
+      eventCount: row.eventCount,
+      weightedExpectedImpactBps: row.weightedExpectedImpactBps,
+    }))
+    .sort((left, right) => {
+      if (right.eventCount !== left.eventCount) return right.eventCount - left.eventCount;
+      return Math.abs(right.weightedExpectedImpactBps) - Math.abs(left.weightedExpectedImpactBps);
+    })
+    .slice(0, 5);
+  const maxSameDayEvents = topEventWindows[0]?.eventCount ?? 0;
+  const universeSize = Math.max(1, params.rows.length);
+  const crowdingScore = clamp01(
+    0.45 * clamp01(eventsInHorizon / (universeSize * 2)) +
+      0.35 * clamp01(maxSameDayEvents / universeSize) +
+      0.2 * clamp01(nearTermEvents / universeSize),
+  );
+  return {
+    asOfDate,
+    horizonDays,
+    totalOpenEvents: events.length,
+    scheduledEvents,
+    unscheduledEvents,
+    eventsInHorizon,
+    nearTermEvents,
+    highImpactEvents,
+    avgConfidence: mean(events.map((event) => event.confidence)),
+    weightedExpectedImpactBps,
+    weightedDownsideSharePct: absWeight > 1e-9 ? (downsideWeight / absWeight) * 100 : 0,
+    crowdingScore,
+    maxSameDayEvents,
+    topEventWindows,
+    tickerLoad,
+  };
+};
+
 const buildRiskFlags = (params: {
   metrics: CrossSectionMetrics;
   rows: CrossSectionConstituentInternal[];
+  factorDecomposition?: FactorDecomposition;
+  catalystCalendar?: CatalystCalendarMetrics;
   benchmarkRelative?: ThemeBenchmarkRelativeMetrics;
 }): string[] => {
   const out: string[] = [];
@@ -683,6 +1030,49 @@ const buildRiskFlags = (params: {
   if (liquidityTail.length >= Math.max(2, Math.ceil(params.rows.length * 0.25))) {
     out.push("Liquidity tail is material; execution slippage risk may dominate alpha at size.");
   }
+  if (params.factorDecomposition) {
+    const dominant = params.factorDecomposition.exposures.find(
+      (row) => row.factor === params.factorDecomposition?.dominantFactor,
+    );
+    if (
+      typeof dominant?.exposureZ === "number" &&
+      Math.abs(dominant.exposureZ) >= 0.9 &&
+      params.factorDecomposition.concentration >= 0.42
+    ) {
+      out.push(
+        `Style concentration is elevated in ${dominant.factor} (z=${dominant.exposureZ.toFixed(2)}, concentration=${params.factorDecomposition.concentration.toFixed(2)}).`,
+      );
+    }
+    const sizeExposure = params.factorDecomposition.exposures.find((row) => row.factor === "size");
+    if (
+      typeof sizeExposure?.exposureZ === "number" &&
+      sizeExposure.exposureZ >= 0.85 &&
+      params.metrics.avgVolatility63dPct !== undefined &&
+      params.metrics.avgVolatility63dPct >= 30
+    ) {
+      out.push(
+        "Small-cap/liquidity style tilt is high while volatility is elevated; position sizing discipline is critical.",
+      );
+    }
+  }
+  if (params.catalystCalendar) {
+    if (
+      params.catalystCalendar.eventsInHorizon >= Math.max(4, Math.ceil(params.rows.length * 0.8)) &&
+      params.catalystCalendar.crowdingScore >= 0.55
+    ) {
+      out.push(
+        "Catalyst calendar is crowded in the next quarter; gap-risk and correlation spikes around event windows are likely.",
+      );
+    }
+    if (
+      params.catalystCalendar.weightedExpectedImpactBps < 0 &&
+      params.catalystCalendar.weightedDownsideSharePct >= 65
+    ) {
+      out.push(
+        "Catalyst skew is net downside with high downside share; scenario analysis should stress adverse outcomes.",
+      );
+    }
+  }
   if (params.benchmarkRelative) {
     const relative = params.benchmarkRelative;
     if (relative.relativeReturnPct <= -8) {
@@ -720,6 +1110,8 @@ const buildInsightSummary = (params: {
   leaders: CrossSectionConstituentInternal[];
   laggards: CrossSectionConstituentInternal[];
   riskFlags: string[];
+  factorDecomposition?: FactorDecomposition;
+  catalystCalendar?: CatalystCalendarMetrics;
   benchmarkRelative?: ThemeBenchmarkRelativeMetrics;
 }): string[] => {
   const out: string[] = [];
@@ -746,6 +1138,19 @@ const buildInsightSummary = (params: {
             `${row.ticker}(${row.compositeScore.toFixed(2)}, ${typeof row.return63dPct === "number" ? row.return63dPct.toFixed(1) : "n/a"}%)`,
         )
         .join(", ")}.`,
+    );
+  }
+  if (params.factorDecomposition) {
+    const line = params.factorDecomposition.exposures
+      .map((row) => `${row.factor}=${row.exposureZ >= 0 ? "+" : ""}${row.exposureZ.toFixed(2)}`)
+      .join(", ");
+    out.push(
+      `Style decomposition: ${line}; dominant=${params.factorDecomposition.dominantFactor}, concentration=${params.factorDecomposition.concentration.toFixed(2)}.`,
+    );
+  }
+  if (params.catalystCalendar && params.catalystCalendar.totalOpenEvents > 0) {
+    out.push(
+      `Catalyst calendar ${params.catalystCalendar.horizonDays}d: events=${params.catalystCalendar.eventsInHorizon}/${params.catalystCalendar.totalOpenEvents}, near_term=${params.catalystCalendar.nearTermEvents}, net_expected_impact=${params.catalystCalendar.weightedExpectedImpactBps.toFixed(1)}bps, downside_share=${params.catalystCalendar.weightedDownsideSharePct.toFixed(1)}%, crowding=${params.catalystCalendar.crowdingScore.toFixed(2)}.`,
     );
   }
   if (params.benchmarkRelative) {
@@ -957,16 +1362,29 @@ export const computeSectorResearch = (params: {
     dbPath: params.dbPath,
   });
   const metrics = computeCrossSectionMetrics(rows);
+  const factorDecomposition = computeFactorDecomposition(rows);
+  const catalystCalendar = computeCatalystCalendar({
+    rows,
+    dbPath: params.dbPath,
+    horizonDays: 90,
+  });
   const sorted = [...rows].sort((left, right) => right.compositeScore - left.compositeScore);
   const leaders = sorted.slice(0, Math.min(topN, sorted.length));
   const laggards = [...sorted].reverse().slice(0, Math.min(topN, sorted.length));
-  const riskFlags = buildRiskFlags({ metrics, rows });
+  const riskFlags = buildRiskFlags({
+    metrics,
+    rows,
+    factorDecomposition,
+    catalystCalendar,
+  });
   const insightSummary = buildInsightSummary({
     label: `Sector ${sector}`,
     metrics,
     leaders,
     laggards,
     riskFlags,
+    factorDecomposition,
+    catalystCalendar,
   });
   try {
     appendProvenanceEvent({
@@ -979,6 +1397,10 @@ export const computeSectorResearch = (params: {
         regime: metrics.regime,
         institutional_readiness: metrics.institutionalReadinessScore,
         risk_flags: riskFlags,
+        factor_dominant: factorDecomposition.dominantFactor,
+        factor_concentration: factorDecomposition.concentration,
+        catalyst_events_horizon: catalystCalendar.eventsInHorizon,
+        catalyst_downside_share_pct: catalystCalendar.weightedDownsideSharePct,
       },
       metadata: {
         lookback_days: lookbackDays,
@@ -994,6 +1416,8 @@ export const computeSectorResearch = (params: {
     tickers: rows.map((row) => row.ticker),
     lookbackDays,
     metrics,
+    factorDecomposition,
+    catalystCalendar,
     leaders: leaders.map(toPublicSnapshot),
     laggards: laggards.map(toPublicSnapshot),
     constituents: sorted.map(toPublicSnapshot),
@@ -1066,6 +1490,12 @@ export const computeThemeResearch = (params: {
         })
       : undefined;
   const metrics = computeCrossSectionMetrics(rows);
+  const factorDecomposition = computeFactorDecomposition(rows);
+  const catalystCalendar = computeCatalystCalendar({
+    rows,
+    dbPath: params.dbPath,
+    horizonDays: 90,
+  });
   const sorted = [...rows].sort((left, right) => right.compositeScore - left.compositeScore);
   const leaders = sorted.slice(0, Math.min(topN, sorted.length));
   const laggards = [...sorted].reverse().slice(0, Math.min(topN, sorted.length));
@@ -1083,13 +1513,21 @@ export const computeThemeResearch = (params: {
       avgCompositeScore: mean(group.map((row) => row.compositeScore)),
     }))
     .sort((left, right) => right.sharePct - left.sharePct);
-  const riskFlags = buildRiskFlags({ metrics, rows, benchmarkRelative });
+  const riskFlags = buildRiskFlags({
+    metrics,
+    rows,
+    factorDecomposition,
+    catalystCalendar,
+    benchmarkRelative,
+  });
   const insightSummary = buildInsightSummary({
     label: `Theme ${theme}`,
     metrics,
     leaders,
     laggards,
     riskFlags,
+    factorDecomposition,
+    catalystCalendar,
     benchmarkRelative,
   });
   try {
@@ -1107,6 +1545,10 @@ export const computeThemeResearch = (params: {
         benchmark_ticker: benchmarkTicker || null,
         benchmark_relative_return_pct: benchmarkRelative?.relativeReturnPct ?? null,
         benchmark_information_ratio: benchmarkRelative?.informationRatio ?? null,
+        factor_dominant: factorDecomposition.dominantFactor,
+        factor_concentration: factorDecomposition.concentration,
+        catalyst_events_horizon: catalystCalendar.eventsInHorizon,
+        catalyst_downside_share_pct: catalystCalendar.weightedDownsideSharePct,
       },
       metadata: {
         lookback_days: lookbackDays,
@@ -1130,6 +1572,8 @@ export const computeThemeResearch = (params: {
     tickers: rows.map((row) => row.ticker),
     lookbackDays,
     metrics,
+    factorDecomposition,
+    catalystCalendar,
     sectorExposure,
     leaders: leaders.map(toPublicSnapshot),
     laggards: laggards.map(toPublicSnapshot),
