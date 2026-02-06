@@ -61,6 +61,10 @@ import {
   routePolicyAssignment,
   runPolicyGovernance,
 } from "../research/policy.js";
+import {
+  computePortfolioDecision,
+  type PortfolioDecisionConstraints,
+} from "../research/portfolio-decision.js";
 import { computePortfolioPlan } from "../research/portfolio.js";
 import { provenanceReport } from "../research/provenance.js";
 import { indexRepo } from "../research/repo-index.js";
@@ -633,6 +637,65 @@ export function registerResearchCli(program: Command) {
           `catalyst_expected_impact_pct=${(plan.catalystExpectedImpactPct * 100).toFixed(2)}%`,
         );
         plan.reviewTriggers.forEach((trigger) => defaultRuntime.log(`trigger=${trigger}`));
+      });
+    });
+
+  research
+    .command("position-decision")
+    .description("Generate production-grade position candidates with scenario stress")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--question <text>", "Decision framing question")
+    .option("--max-weight <n>", "Max single-name weight %")
+    .option("--max-risk-budget <n>", "Max risk budget %")
+    .option("--max-stop-loss <n>", "Max stop-loss % (absolute, e.g. 0.24)")
+    .option("--min-confidence <n>", "Minimum confidence [0-1]")
+    .option("--min-coverage <n>", "Minimum adversarial debate coverage [0-1]")
+    .option("--max-downside-loss <n>", "Max downside PnL % allowed in stress")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const constraints: Partial<PortfolioDecisionConstraints> = {};
+        const maxWeight = parseOptionalNumber(opts["maxWeight"]);
+        const maxRiskBudget = parseOptionalNumber(opts["maxRiskBudget"]);
+        const maxStopLoss = parseOptionalNumber(opts["maxStopLoss"]);
+        const minConfidence = parseOptionalNumber(opts["minConfidence"]);
+        const minCoverage = parseOptionalNumber(opts["minCoverage"]);
+        const maxDownsideLoss = parseOptionalNumber(opts["maxDownsideLoss"]);
+        if (typeof maxWeight === "number") constraints.maxSingleNameWeightPct = maxWeight;
+        if (typeof maxRiskBudget === "number") constraints.maxRiskBudgetPct = maxRiskBudget;
+        if (typeof maxStopLoss === "number") constraints.maxStopLossPct = maxStopLoss;
+        if (typeof minConfidence === "number") constraints.minConfidence = minConfidence;
+        if (typeof minCoverage === "number") constraints.requiredDebateCoverage = minCoverage;
+        if (typeof maxDownsideLoss === "number") constraints.maxDownsideLossPct = maxDownsideLoss;
+
+        const decision = computePortfolioDecision({
+          ticker: opts.ticker as string,
+          question: opts.question as string | undefined,
+          constraints,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `ticker=${decision.ticker} recommendation=${decision.recommendation} stance=${decision.finalStance} score=${decision.decisionScore.toFixed(2)} confidence=${decision.confidence.toFixed(2)}`,
+        );
+        defaultRuntime.log(
+          `expected_return_pct=${decision.expectedReturnPct.toFixed(2)} downside_risk_pct=${decision.downsideRiskPct.toFixed(2)} debate_coverage=${decision.researchCell.debate.adversarialCoverageScore.toFixed(2)}`,
+        );
+        defaultRuntime.log(
+          `constraints max_weight_pct=${decision.constraints.maxSingleNameWeightPct.toFixed(2)} max_risk_budget_pct=${decision.constraints.maxRiskBudgetPct.toFixed(2)} max_stop_loss_pct=${decision.constraints.maxStopLossPct.toFixed(2)} min_confidence=${decision.constraints.minConfidence.toFixed(2)} min_coverage=${decision.constraints.requiredDebateCoverage.toFixed(2)} max_downside_loss_pct=${decision.constraints.maxDownsideLossPct.toFixed(2)}`,
+        );
+        if (decision.riskBreaches.length) {
+          decision.riskBreaches.forEach((issue) => defaultRuntime.error(`RISK_BREACH: ${issue}`));
+        }
+        decision.sizeCandidates.forEach((candidate) => {
+          defaultRuntime.log(
+            `candidate=${candidate.label} recommendation=${candidate.recommendation} weight_pct=${candidate.weightPct.toFixed(2)} risk_budget_pct=${candidate.riskBudgetPct.toFixed(2)} expected_pnl_pct=${candidate.expectedPnlPct.toFixed(2)} downside_pnl_pct=${candidate.downsidePnlPct.toFixed(2)} score=${candidate.score.toFixed(2)}`,
+          );
+        });
+        decision.stress.forEach((stress) => {
+          defaultRuntime.log(
+            `stress scenario=${stress.scenario} probability=${stress.probability.toFixed(2)} return_pct=${stress.returnPct.toFixed(2)} weighted_return_pct=${stress.weightedReturnPct.toFixed(2)} pnl_pct=${stress.pnlPct.toFixed(2)} risk_breach=${stress.breachesRiskBudget ? 1 : 0}`,
+          );
+        });
       });
     });
 
@@ -1654,6 +1717,9 @@ export function registerResearchCli(program: Command) {
         );
         defaultRuntime.log(
           `research_cell_passed=${result.researchCell.debate.passed ? 1 : 0} research_cell_consensus=${result.researchCell.debate.consensusScore.toFixed(2)} research_cell_final_stance=${result.researchCell.allocator.finalStance}`,
+        );
+        defaultRuntime.log(
+          `decision_recommendation=${result.portfolioDecision.recommendation} decision_score=${result.portfolioDecision.decisionScore.toFixed(2)} decision_confidence=${result.portfolioDecision.confidence.toFixed(2)} decision_breaches=${result.portfolioDecision.riskBreaches.length}`,
         );
         if (result.quality.requiredFailures.length) {
           defaultRuntime.error(`required_failures=${result.quality.requiredFailures.join(",")}`);

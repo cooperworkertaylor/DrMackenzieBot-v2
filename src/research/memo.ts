@@ -10,6 +10,7 @@ import {
 } from "./grade.js";
 import { buildTickerPointInTimeGraph, getTickerPointInTimeSnapshot } from "./knowledge-graph.js";
 import { addClaimEvidence, createResearchClaim, upsertResearchEntity } from "./memory-graph.js";
+import { composePortfolioDecision } from "./portfolio-decision.js";
 import { computePortfolioPlan, type PortfolioPlan } from "./portfolio.js";
 import { appendProvenanceEvent } from "./provenance.js";
 import { runAdversarialResearchCell } from "./research-cell.js";
@@ -218,6 +219,14 @@ export const generateMemoAsync = async (params: {
     finalConfidence: researchCell.allocator.confidence,
     passed: researchCell.debate.passed,
   };
+  const portfolioDecision = composePortfolioDecision({
+    ticker: params.ticker,
+    question: params.question,
+    portfolio,
+    valuation,
+    variant,
+    researchCell,
+  });
 
   const memo = [
     `# Research Memo: ${params.ticker.toUpperCase()}`,
@@ -342,6 +351,28 @@ export const generateMemoAsync = async (params: {
     ...portfolio.rationale.map((line) => `- Rationale: ${line}`),
     ...portfolio.reviewTriggers.map((line) => `- Review trigger: ${line}`),
     ``,
+    `## Portfolio Decision Layer`,
+    `- Recommendation: ${portfolioDecision.recommendation}`,
+    `- Final stance: ${portfolioDecision.finalStance}`,
+    `- Decision score: ${portfolioDecision.decisionScore.toFixed(2)}`,
+    `- Confidence: ${portfolioDecision.confidence.toFixed(2)}`,
+    `- Expected return: ${portfolioDecision.expectedReturnPct.toFixed(2)}%`,
+    `- Downside risk: ${portfolioDecision.downsideRiskPct.toFixed(2)}%`,
+    `- Risk breaches:`,
+    ...(portfolioDecision.riskBreaches.length
+      ? portfolioDecision.riskBreaches.map((issue, index) => `  ${index + 1}. ${issue}`)
+      : ["  1. None detected."]),
+    `- Size candidates:`,
+    ...portfolioDecision.sizeCandidates.map(
+      (candidate) =>
+        `  - ${candidate.label}: recommendation=${candidate.recommendation} weight=${candidate.weightPct.toFixed(2)}% risk_budget=${candidate.riskBudgetPct.toFixed(2)}% expected_pnl=${candidate.expectedPnlPct.toFixed(2)}% downside_pnl=${candidate.downsidePnlPct.toFixed(2)}% score=${candidate.score.toFixed(2)}`,
+    ),
+    `- Scenario stress:`,
+    ...portfolioDecision.stress.map(
+      (scenario) =>
+        `  - ${scenario.scenario}: probability=${scenario.probability.toFixed(2)} return=${scenario.returnPct.toFixed(2)}% pnl=${scenario.pnlPct.toFixed(2)}% weighted_return=${scenario.weightedReturnPct.toFixed(2)}% risk_breach=${scenario.breachesRiskBudget ? "yes" : "no"}`,
+    ),
+    ``,
     `## Citation Index`,
     ...citations.map(
       (c) =>
@@ -452,6 +483,9 @@ export const generateMemoAsync = async (params: {
     `- Contradictions: ${diagnostics.contradictions.length}`,
     `- Falsification triggers: ${diagnostics.falsificationTriggers.length}`,
     `- Portfolio stance: ${portfolio.stance}`,
+    `- Decision recommendation: ${portfolioDecision.recommendation}`,
+    `- Decision score: ${portfolioDecision.decisionScore.toFixed(2)}`,
+    `- Decision risk breaches: ${portfolioDecision.riskBreaches.length}`,
     typeof forecastId === "number" ? `- Forecast id: ${forecastId}` : "- Forecast id: n/a",
   ].join("\n");
   const memoHash = createHash("sha256").update(memoWithQuality).digest("hex");
@@ -482,6 +516,24 @@ export const generateMemoAsync = async (params: {
           disconfirming_evidence_count: researchCell.debate.disconfirmingEvidence.length,
           major_disagreements_count: researchCell.debate.majorDisagreements.length,
           unresolved_risks_count: researchCell.debate.unresolvedRisks.length,
+        },
+        portfolio_decision: {
+          recommendation: portfolioDecision.recommendation,
+          final_stance: portfolioDecision.finalStance,
+          decision_score: portfolioDecision.decisionScore,
+          confidence: portfolioDecision.confidence,
+          expected_return_pct: portfolioDecision.expectedReturnPct,
+          downside_risk_pct: portfolioDecision.downsideRiskPct,
+          risk_breaches: portfolioDecision.riskBreaches,
+          size_candidates: portfolioDecision.sizeCandidates.map((candidate) => ({
+            label: candidate.label,
+            recommendation: candidate.recommendation,
+            weight_pct: candidate.weightPct,
+            risk_budget_pct: candidate.riskBudgetPct,
+            expected_pnl_pct: candidate.expectedPnlPct,
+            downside_pnl_pct: candidate.downsidePnlPct,
+            score: candidate.score,
+          })),
         },
         point_in_time_graph: {
           snapshot_as_of: graphSnapshot.asOfDate,
@@ -521,6 +573,7 @@ export const generateMemoAsync = async (params: {
     portfolio,
     diagnostics,
     researchCell,
+    portfolioDecision,
     forecastId,
   };
 };
