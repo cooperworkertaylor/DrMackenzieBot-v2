@@ -7,6 +7,7 @@ import {
   type MemoDiagnostics,
   type MemoEvidenceClaim,
 } from "./grade.js";
+import { buildTickerPointInTimeGraph, getTickerPointInTimeSnapshot } from "./knowledge-graph.js";
 import { addClaimEvidence, createResearchClaim, upsertResearchEntity } from "./memory-graph.js";
 import { computePortfolioPlan, type PortfolioPlan } from "./portfolio.js";
 import { appendProvenanceEvent } from "./provenance.js";
@@ -177,6 +178,23 @@ export const generateMemoAsync = async (params: {
     valuation,
     portfolio,
   });
+  const graphBuild = buildTickerPointInTimeGraph({
+    ticker: params.ticker,
+    dbPath: params.dbPath,
+    maxFundamentalFacts: 400,
+    maxExpectations: 140,
+    maxFilings: 120,
+    maxTranscripts: 100,
+    maxCatalysts: 100,
+  });
+  const graphSnapshot = getTickerPointInTimeSnapshot({
+    ticker: params.ticker,
+    dbPath: params.dbPath,
+    lookbackDays: 730,
+    eventLimit: 24,
+    factLimit: 240,
+    metricLimit: 16,
+  });
 
   const memo = [
     `# Research Memo: ${params.ticker.toUpperCase()}`,
@@ -194,6 +212,23 @@ export const generateMemoAsync = async (params: {
         })
         .join(", ");
       return `${idx + 1}. ${line.claim}\n   Citations: ${refs}`;
+    }),
+    ``,
+    `## Point-in-Time Graph`,
+    `- Snapshot as-of: ${graphSnapshot.asOfDate}`,
+    `- Graph rows scanned: ${graphBuild.rowsScanned}`,
+    `- Graph events: ${graphSnapshot.events.length} (inserted=${graphBuild.eventsInserted}, updated=${graphBuild.eventsUpdated})`,
+    `- Graph facts: ${graphSnapshot.facts.length} (inserted=${graphBuild.factsInserted}, updated=${graphBuild.factsUpdated})`,
+    `- Key metrics:`,
+    ...graphSnapshot.metrics.slice(0, 8).map((metric) => {
+      if (typeof metric.latestValueNum === "number") {
+        return `  - ${metric.metricKey}: latest=${metric.latestValueNum.toFixed(4)}${typeof metric.previousValueNum === "number" ? ` prev=${metric.previousValueNum.toFixed(4)}` : ""}${typeof metric.deltaValueNum === "number" ? ` delta=${metric.deltaValueNum.toFixed(4)}` : ""} as_of=${metric.latestAsOfDate}`;
+      }
+      return `  - ${metric.metricKey}: latest_text=${metric.latestValueText ?? "n/a"} as_of=${metric.latestAsOfDate}`;
+    }),
+    `- Recent events:`,
+    ...graphSnapshot.events.slice(0, 6).map((event) => {
+      return `  - ${new Date(event.eventTime).toISOString().slice(0, 10)} ${event.eventType} (${event.sourceTable}:${event.sourceRefId}) ${event.title || ""}`.trim();
     }),
     ``,
     `## Variant Perception`,
@@ -376,6 +411,13 @@ export const generateMemoAsync = async (params: {
         quality_passed: quality.passed,
         required_failures: quality.requiredFailures,
         actionability_score: quality.actionabilityScore,
+        point_in_time_graph: {
+          snapshot_as_of: graphSnapshot.asOfDate,
+          rows_scanned: graphBuild.rowsScanned,
+          events: graphSnapshot.events.length,
+          facts: graphSnapshot.facts.length,
+          metrics: graphSnapshot.metrics.length,
+        },
         calibration: {
           mode: quality.calibration.mode,
           score: quality.calibration.score,

@@ -46,6 +46,10 @@ import {
   ingestPrices,
   ingestTranscript,
 } from "../research/ingest.js";
+import {
+  buildTickerPointInTimeGraph,
+  getTickerPointInTimeSnapshot,
+} from "../research/knowledge-graph.js";
 import { learningReport, logTaskOutcome, runLearningCalibration } from "../research/learning.js";
 import { generateMemoAsync } from "../research/memo.js";
 import { listEntityClaims, updateClaimStatus } from "../research/memory-graph.js";
@@ -1034,6 +1038,87 @@ export function registerResearchCli(program: Command) {
         defaultRuntime.log(
           `claim_id=${claim.id} status=${claim.status} confidence=${claim.confidence.toFixed(2)}`,
         );
+      });
+    });
+
+  research
+    .command("graph-build")
+    .description("Build/update point-in-time research graph for a ticker")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--max-fundamentals <n>", "Max fundamental fact rows", "500")
+    .option("--max-expectations <n>", "Max expectations rows", "160")
+    .option("--max-filings <n>", "Max filing rows", "160")
+    .option("--max-transcripts <n>", "Max transcript rows", "120")
+    .option("--max-catalysts <n>", "Max catalyst rows", "120")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const summary = buildTickerPointInTimeGraph({
+          ticker: opts.ticker as string,
+          maxFundamentalFacts: Number.parseInt(opts["maxFundamentals"] as string, 10) || 500,
+          maxExpectations: Number.parseInt(opts["maxExpectations"] as string, 10) || 160,
+          maxFilings: Number.parseInt(opts["maxFilings"] as string, 10) || 160,
+          maxTranscripts: Number.parseInt(opts["maxTranscripts"] as string, 10) || 120,
+          maxCatalysts: Number.parseInt(opts["maxCatalysts"] as string, 10) || 120,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `graph_build ticker=${summary.ticker} entity_id=${summary.entityId} rows=${summary.rowsScanned} events_inserted=${summary.eventsInserted} events_updated=${summary.eventsUpdated} facts_inserted=${summary.factsInserted} facts_updated=${summary.factsUpdated}`,
+        );
+        summary.sourceStats.forEach((row) => {
+          defaultRuntime.log(
+            `  source=${row.source} rows=${row.rowsScanned} events_inserted=${row.eventsInserted} events_updated=${row.eventsUpdated} facts_inserted=${row.factsInserted} facts_updated=${row.factsUpdated}`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("graph-snapshot")
+    .description("Query point-in-time graph snapshot for a ticker as of a date")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--as-of <date>", "As-of date (YYYY-MM-DD); default=today")
+    .option("--lookback-days <n>", "History window size", "730")
+    .option("--event-limit <n>", "Event row limit", "40")
+    .option("--fact-limit <n>", "Fact row limit", "300")
+    .option("--metric-limit <n>", "Metric summary limit", "40")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const snapshot = getTickerPointInTimeSnapshot({
+          ticker: opts.ticker as string,
+          asOfDate: opts["asOf"] as string | undefined,
+          lookbackDays: Number.parseInt(opts["lookbackDays"] as string, 10) || 730,
+          eventLimit: Number.parseInt(opts["eventLimit"] as string, 10) || 40,
+          factLimit: Number.parseInt(opts["factLimit"] as string, 10) || 300,
+          metricLimit: Number.parseInt(opts["metricLimit"] as string, 10) || 40,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `graph_snapshot ticker=${snapshot.ticker} as_of=${snapshot.asOfDate} window_start=${snapshot.windowStartDate} entity=${snapshot.entityName ?? "n/a"} events=${snapshot.events.length} facts=${snapshot.facts.length} metrics=${snapshot.metrics.length}`,
+        );
+        if (!snapshot.metrics.length && !snapshot.events.length) {
+          defaultRuntime.log(
+            "No graph data found. Run `openclaw research graph-build --ticker <TICKER>` first.",
+          );
+          return;
+        }
+        snapshot.metrics.forEach((metric) => {
+          if (typeof metric.latestValueNum === "number") {
+            defaultRuntime.log(
+              `metric=${metric.metricKey} latest=${metric.latestValueNum.toFixed(4)}${typeof metric.previousValueNum === "number" ? ` prev=${metric.previousValueNum.toFixed(4)}` : ""}${typeof metric.deltaValueNum === "number" ? ` delta=${metric.deltaValueNum.toFixed(4)}` : ""} unit=${metric.unit || "n/a"} as_of=${metric.latestAsOfDate} samples=${metric.samples}`,
+            );
+            return;
+          }
+          defaultRuntime.log(
+            `metric=${metric.metricKey} latest_text=${metric.latestValueText ?? "n/a"} as_of=${metric.latestAsOfDate} samples=${metric.samples}`,
+          );
+        });
+        snapshot.events.slice(0, 20).forEach((event) => {
+          defaultRuntime.log(
+            `event=${new Date(event.eventTime).toISOString()} type=${event.eventType} source=${event.sourceTable}:${event.sourceRefId} title=${event.title || "n/a"}`,
+          );
+        });
       });
     });
 

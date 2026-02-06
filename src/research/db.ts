@@ -549,6 +549,48 @@ const migrate = (db: ResearchDb) => {
       metadata text not null default '{}'
     );
 
+    create table if not exists research_events (
+      id integer primary key,
+      entity_id integer not null,
+      event_type text not null,
+      event_time integer not null,
+      period_start text not null default '',
+      period_end text not null default '',
+      source_table text not null default '',
+      source_ref_id integer not null default 0,
+      source_url text not null default '',
+      title text not null default '',
+      payload text not null default '{}',
+      event_hash text not null default '',
+      created_at integer not null,
+      updated_at integer not null,
+      unique (entity_id, event_hash)
+    );
+
+    create table if not exists research_facts (
+      id integer primary key,
+      entity_id integer not null,
+      event_id integer,
+      metric_key text not null,
+      metric_kind text not null default 'numeric',
+      value_num real,
+      value_text text not null default '',
+      unit text not null default '',
+      direction text not null default '',
+      confidence real not null default 0.5,
+      as_of_date text not null default '',
+      valid_from text not null default '',
+      valid_to text not null default '',
+      source_table text not null default '',
+      source_ref_id integer not null default 0,
+      source_url text not null default '',
+      metadata text not null default '{}',
+      fact_hash text not null default '',
+      created_at integer not null,
+      updated_at integer not null,
+      unique (entity_id, fact_hash)
+    );
+
     create table if not exists chunks (
       id integer primary key,
       source_table text not null,
@@ -698,6 +740,21 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_research_claim_status_lookup
       on research_claim_status_history (claim_id, changed_at desc);
+
+    create index if not exists idx_research_events_lookup
+      on research_events (entity_id, event_time desc, event_type);
+
+    create index if not exists idx_research_events_source
+      on research_events (source_table, source_ref_id, event_time desc);
+
+    create index if not exists idx_research_facts_lookup
+      on research_facts (entity_id, metric_key, as_of_date desc, updated_at desc);
+
+    create index if not exists idx_research_facts_validity
+      on research_facts (entity_id, valid_from, valid_to, as_of_date desc);
+
+    create index if not exists idx_research_facts_event
+      on research_facts (event_id, metric_key, as_of_date desc);
   `);
 
   ensureColumn(db, "filings", "accession_raw", "TEXT");

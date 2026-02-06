@@ -1,9 +1,16 @@
 import { runAllBenchmarksWithGovernance } from "../src/research/benchmark.js";
 import { runDecisionEval } from "../src/research/eval.js";
+import { buildTickerPointInTimeGraph } from "../src/research/knowledge-graph.js";
 import { runLearningCalibration } from "../src/research/learning.js";
 import { runPolicyGovernance } from "../src/research/policy.js";
 import { provenanceReport } from "../src/research/provenance.js";
 import { runResearchSecurityAudit } from "../src/research/security.js";
+
+const parseTickers = (value: string): string[] =>
+  value
+    .split(",")
+    .map((ticker) => ticker.trim().toUpperCase())
+    .filter(Boolean);
 
 const run = async () => {
   const decision = await runDecisionEval();
@@ -71,6 +78,25 @@ const run = async () => {
   console.log(
     `security: pass=${security.passCount} warn=${security.warnCount} fail=${security.failCount}`,
   );
+
+  const tickers = parseTickers(process.env.RESEARCH_TICKERS ?? "");
+  if (tickers.length) {
+    let totalRows = 0;
+    let totalEventsInserted = 0;
+    let totalFactsInserted = 0;
+    for (const ticker of tickers) {
+      const summary = buildTickerPointInTimeGraph({ ticker });
+      totalRows += summary.rowsScanned;
+      totalEventsInserted += summary.eventsInserted;
+      totalFactsInserted += summary.factsInserted;
+      console.log(
+        `graph ${ticker}: rows=${summary.rowsScanned} events_inserted=${summary.eventsInserted} facts_inserted=${summary.factsInserted}`,
+      );
+    }
+    console.log(
+      `graph totals: tickers=${tickers.length} rows=${totalRows} events_inserted=${totalEventsInserted} facts_inserted=${totalFactsInserted}`,
+    );
+  }
 };
 
 run().catch((err) => {
