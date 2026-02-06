@@ -74,6 +74,12 @@ import { computePortfolioPlan } from "../research/portfolio.js";
 import { provenanceReport } from "../research/provenance.js";
 import { indexRepo } from "../research/repo-index.js";
 import { runResearchSecurityAudit } from "../research/security.js";
+import {
+  getThemeConstituents,
+  listThemeDefinitions,
+  refreshThemeMembership,
+  upsertThemeDefinition,
+} from "../research/theme-ontology.js";
 import { computeSectorResearch, computeThemeResearch } from "../research/theme-sector.js";
 import { computeValuation, resolveMatureForecasts } from "../research/valuation.js";
 import { computeVariantPerception } from "../research/variant.js";
@@ -98,6 +104,11 @@ const parseTickersOption = (value: string): string[] =>
   value
     .split(",")
     .map((ticker) => ticker.trim().toUpperCase())
+    .filter(Boolean);
+const parseCsvListOption = (value: string): string[] =>
+  value
+    .split(",")
+    .map((entry) => entry.trim())
     .filter(Boolean);
 
 const parseSourceMixOption = (value: string): Record<string, number> => {
@@ -994,6 +1005,183 @@ export function registerResearchCli(program: Command) {
     });
 
   research
+    .command("theme-upsert")
+    .description("Create or update a versioned theme taxonomy definition")
+    .requiredOption("--theme <key>", "Theme key or name (e.g., ai-infrastructure)")
+    .option("--display-name <text>", "Display name")
+    .option("--description <text>", "Theme description")
+    .option("--parent <key>", "Optional parent theme key")
+    .option("--benchmark <text>", "Optional benchmark reference")
+    .option("--version <n>", "Explicit version to upsert")
+    .option("--activate", "Mark this version as active", false)
+    .option("--status <kind>", "active|inactive|draft")
+    .option("--include-keywords <csv>", "Include keyword list")
+    .option("--exclude-keywords <csv>", "Exclude keyword list")
+    .option("--required-sectors <csv>", "Required sector list")
+    .option("--excluded-sectors <csv>", "Excluded sector list")
+    .option("--required-industries <csv>", "Required industry terms")
+    .option("--excluded-industries <csv>", "Excluded industry terms")
+    .option("--allowlist <csv>", "Ticker allowlist")
+    .option("--blocklist <csv>", "Ticker blocklist")
+    .option("--min-membership-score <n>", "Membership score threshold [0-1]")
+    .option("--effective-from <date>", "YYYY-MM-DD")
+    .option("--effective-to <date>", "YYYY-MM-DD")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const includeKeywords = parseCsvListOption((opts["includeKeywords"] as string) ?? "");
+        const excludeKeywords = parseCsvListOption((opts["excludeKeywords"] as string) ?? "");
+        const requiredSectors = parseCsvListOption((opts["requiredSectors"] as string) ?? "");
+        const excludedSectors = parseCsvListOption((opts["excludedSectors"] as string) ?? "");
+        const requiredIndustries = parseCsvListOption((opts["requiredIndustries"] as string) ?? "");
+        const excludedIndustries = parseCsvListOption((opts["excludedIndustries"] as string) ?? "");
+        const allowlist = parseTickersOption((opts.allowlist as string) ?? "");
+        const blocklist = parseTickersOption((opts.blocklist as string) ?? "");
+        const minMembershipScore = parseOptionalNumber(opts["minMembershipScore"]);
+        const version = parseOptionalNumber(opts.version);
+        const statusRaw = typeof opts.status === "string" ? opts.status.trim().toLowerCase() : "";
+        const status =
+          statusRaw === "active" || statusRaw === "inactive" || statusRaw === "draft"
+            ? statusRaw
+            : undefined;
+        const definition = upsertThemeDefinition({
+          theme: opts.theme as string,
+          displayName: opts["displayName"] as string | undefined,
+          description: opts.description as string | undefined,
+          parentTheme: opts.parent as string | undefined,
+          benchmark: opts.benchmark as string | undefined,
+          version,
+          activate: Boolean(opts.activate),
+          status,
+          effectiveFrom: opts["effectiveFrom"] as string | undefined,
+          effectiveTo: opts["effectiveTo"] as string | undefined,
+          rules: {
+            includeKeywords,
+            excludeKeywords,
+            requiredSectors,
+            excludedSectors,
+            requiredIndustries,
+            excludedIndustries,
+            tickerAllowlist: allowlist,
+            tickerBlocklist: blocklist,
+            minMembershipScore:
+              typeof minMembershipScore === "number" ? minMembershipScore : undefined,
+          },
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `theme=${definition.themeKey} version=${definition.version} status=${definition.status} benchmark=${definition.benchmark || "n/a"} min_membership_score=${definition.rules.minMembershipScore.toFixed(2)}`,
+        );
+        defaultRuntime.log(
+          `rules include_keywords=${definition.rules.includeKeywords.length} exclude_keywords=${definition.rules.excludeKeywords.length} required_sectors=${definition.rules.requiredSectors.length} required_industries=${definition.rules.requiredIndustries.length} allowlist=${definition.rules.tickerAllowlist.length} blocklist=${definition.rules.tickerBlocklist.length}`,
+        );
+      });
+    });
+
+  research
+    .command("theme-list")
+    .description("List theme taxonomy definitions")
+    .option("--theme <key>", "Optional theme key filter")
+    .option("--all", "Include inactive versions", false)
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const rows = listThemeDefinitions({
+          theme: opts.theme as string | undefined,
+          includeInactive: Boolean(opts.all),
+          dbPath: opts.db as string,
+        });
+        if (!rows.length) {
+          defaultRuntime.log("No themes found.");
+          return;
+        }
+        rows.forEach((row) => {
+          defaultRuntime.log(
+            `theme=${row.themeKey} version=${row.version} status=${row.status} display_name=${row.displayName} benchmark=${row.benchmark || "n/a"} min_membership_score=${row.rules.minMembershipScore.toFixed(2)}`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("theme-membership-refresh")
+    .description("Recompute theme constituent membership scores from taxonomy rules")
+    .requiredOption("--theme <key>", "Theme key")
+    .option("--version <n>", "Optional theme version")
+    .option("--tickers <csv>", "Optional explicit candidate ticker universe")
+    .option("--min-score <n>", "Override minimum membership score [0-1]")
+    .option("--source <text>", "Membership source tag", "rule_engine")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const tickers =
+          typeof opts.tickers === "string" && opts.tickers.trim()
+            ? parseTickersOption(opts.tickers as string)
+            : undefined;
+        const result = refreshThemeMembership({
+          theme: opts.theme as string,
+          version: parseOptionalNumber(opts.version),
+          tickers,
+          minMembershipScore: parseOptionalNumber(opts["minScore"]),
+          source: opts.source as string | undefined,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `theme=${result.theme.themeKey} version=${result.theme.version} scored=${result.candidatesScored} active=${result.activeCount} candidate=${result.candidateCount} excluded=${result.excludedCount}`,
+        );
+        result.constituents.slice(0, 20).forEach((row) => {
+          defaultRuntime.log(
+            `member ticker=${row.ticker} score=${row.membershipScore.toFixed(3)} confidence=${row.confidence.toFixed(3)} status=${row.status} source=${row.source}`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("theme-membership-list")
+    .description("List scored theme constituents")
+    .requiredOption("--theme <key>", "Theme key")
+    .option("--version <n>", "Optional theme version")
+    .option("--status <kind>", "active|candidate|excluded|inactive|all", "active")
+    .option("--min-score <n>", "Minimum membership score", "0")
+    .option("--limit <n>", "Result limit", "200")
+    .option("--all", "Include inactive rows", false)
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const statusRaw = String(opts.status ?? "active")
+          .trim()
+          .toLowerCase();
+        const status =
+          statusRaw === "active" ||
+          statusRaw === "candidate" ||
+          statusRaw === "excluded" ||
+          statusRaw === "inactive" ||
+          statusRaw === "all"
+            ? statusRaw
+            : "active";
+        const rows = getThemeConstituents({
+          theme: opts.theme as string,
+          version: parseOptionalNumber(opts.version),
+          status,
+          minMembershipScore: parseOptionalNumber(opts["minScore"]) ?? 0,
+          limit: parseOptionalNumber(opts.limit) ?? 200,
+          includeInactive: Boolean(opts.all),
+          dbPath: opts.db as string,
+        });
+        if (!rows.length) {
+          defaultRuntime.log("No theme constituents found.");
+          return;
+        }
+        rows.forEach((row) => {
+          defaultRuntime.log(
+            `theme=${row.themeKey} version=${row.themeVersion} ticker=${row.ticker} score=${row.membershipScore.toFixed(3)} confidence=${row.confidence.toFixed(3)} status=${row.status} source=${row.source}`,
+          );
+        });
+      });
+    });
+
+  research
     .command("sector-research")
     .description("Generate institutional sector cross-sectional research")
     .requiredOption("--sector <name>", "Sector name")
@@ -1043,22 +1231,31 @@ export function registerResearchCli(program: Command) {
     .command("theme-research")
     .description("Generate institutional thematic cross-sector research")
     .requiredOption("--theme <name>", "Theme name")
-    .requiredOption("--tickers <csv>", "Thematic ticker basket")
+    .option("--tickers <csv>", "Optional thematic ticker basket override")
+    .option("--theme-version <n>", "Optional theme taxonomy version")
+    .option("--min-membership-score <n>", "Minimum active membership score for theme registry")
+    .option("--max-constituents <n>", "Max constituents to load from theme registry")
     .option("--lookback-days <n>", "Price lookback window", "365")
     .option("--top <n>", "Leaders/laggards count", "5")
     .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
-        const tickers = parseTickersOption(opts.tickers as string);
+        const tickers =
+          typeof opts.tickers === "string" && opts.tickers.trim()
+            ? parseTickersOption(opts.tickers as string)
+            : undefined;
         const result = computeThemeResearch({
           theme: opts.theme as string,
           tickers,
+          themeVersion: parseOptionalNumber(opts["themeVersion"]),
+          minMembershipScore: parseOptionalNumber(opts["minMembershipScore"]),
+          maxConstituents: parseOptionalNumber(opts["maxConstituents"]),
           lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 365,
           topN: parseOptionalNumber(opts.top) ?? 5,
           dbPath: opts.db as string,
         });
         defaultRuntime.log(
-          `theme=${result.theme} constituents=${result.metrics.constituentCount} regime=${result.metrics.regime} readiness_score=${result.metrics.institutionalReadinessScore.toFixed(2)} evidence_coverage=${result.metrics.evidenceCoverageScore.toFixed(2)}`,
+          `theme=${result.theme} constituents=${result.metrics.constituentCount} regime=${result.metrics.regime} readiness_score=${result.metrics.institutionalReadinessScore.toFixed(2)} evidence_coverage=${result.metrics.evidenceCoverageScore.toFixed(2)} registry_source=${result.usedThemeRegistry ? 1 : 0} theme_version=${typeof result.themeVersion === "number" ? result.themeVersion : "n/a"} min_membership_score=${typeof result.membershipMinScore === "number" ? result.membershipMinScore.toFixed(2) : "n/a"}`,
         );
         defaultRuntime.log(
           `breadth_20d_pct=${(result.metrics.breadthPositive20dPct * 100).toFixed(1)} breadth_63d_pct=${(result.metrics.breadthPositive63dPct * 100).toFixed(1)} median_return_63d_pct=${typeof result.metrics.medianReturn63dPct === "number" ? result.metrics.medianReturn63dPct.toFixed(2) : "n/a"} median_upside_pct=${typeof result.metrics.medianExpectedUpsidePct === "number" ? result.metrics.medianExpectedUpsidePct.toFixed(2) : "n/a"} dispersion_63d_pct=${typeof result.metrics.dispersion63dPct === "number" ? result.metrics.dispersion63dPct.toFixed(2) : "n/a"} avg_pairwise_corr_63d=${typeof result.metrics.averagePairwiseCorrelation63d === "number" ? result.metrics.averagePairwiseCorrelation63d.toFixed(3) : "n/a"}`,

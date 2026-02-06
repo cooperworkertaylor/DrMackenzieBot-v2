@@ -549,6 +549,41 @@ const migrate = (db: ResearchDb) => {
       metadata text not null default '{}'
     );
 
+    create table if not exists theme_taxonomy (
+      id integer primary key,
+      theme_key text not null,
+      version integer not null,
+      display_name text not null default '',
+      description text not null default '',
+      parent_theme_key text not null default '',
+      benchmark text not null default '',
+      rules text not null default '{}',
+      status text not null default 'active',
+      effective_from text not null default '',
+      effective_to text not null default '',
+      created_at integer not null,
+      updated_at integer not null,
+      unique (theme_key, version)
+    );
+
+    create table if not exists theme_constituents (
+      id integer primary key,
+      theme_key text not null,
+      theme_version integer not null,
+      ticker text not null,
+      membership_score real not null default 0,
+      confidence real not null default 0,
+      status text not null default 'candidate',
+      rationale text not null default '',
+      source text not null default 'rule_engine',
+      valid_from text not null default '',
+      valid_to text not null default '',
+      metadata text not null default '{}',
+      created_at integer not null,
+      updated_at integer not null,
+      unique (theme_key, theme_version, ticker)
+    );
+
     create table if not exists research_events (
       id integer primary key,
       entity_id integer not null,
@@ -740,6 +775,18 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_research_claim_status_lookup
       on research_claim_status_history (claim_id, changed_at desc);
+
+    create index if not exists idx_theme_taxonomy_lookup
+      on theme_taxonomy (theme_key, status, version desc, updated_at desc);
+
+    create index if not exists idx_theme_taxonomy_parent
+      on theme_taxonomy (parent_theme_key, status, updated_at desc);
+
+    create index if not exists idx_theme_constituents_lookup
+      on theme_constituents (theme_key, theme_version, status, membership_score desc);
+
+    create index if not exists idx_theme_constituents_ticker
+      on theme_constituents (ticker, status, membership_score desc);
 
     create index if not exists idx_research_events_lookup
       on research_events (entity_id, event_time desc, event_type);

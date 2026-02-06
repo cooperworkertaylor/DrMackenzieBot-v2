@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { openResearchDb } from "./db.js";
+import { refreshThemeMembership, upsertThemeDefinition } from "./theme-ontology.js";
 import { computeSectorResearch, computeThemeResearch } from "./theme-sector.js";
 
 const testDbPath = (name: string) =>
@@ -118,7 +119,7 @@ describe("theme and sector research", () => {
     expect(result.insightSummary.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("builds a thematic report with sector exposure decomposition", () => {
+  it("builds a thematic report with sector exposure decomposition from theme registry", () => {
     const dbPath = testDbPath("theme");
     const dates = generateDates(260, "2024-01-01");
     seedTicker({
@@ -155,14 +156,29 @@ describe("theme and sector research", () => {
       phase: 4,
     });
 
+    upsertThemeDefinition({
+      theme: "ai-compute-energy",
+      displayName: "AI Compute + Energy",
+      rules: {
+        tickerAllowlist: ["AAPL", "NVDA", "XOM"],
+        minMembershipScore: 0.5,
+      },
+      activate: true,
+      dbPath,
+    });
+    refreshThemeMembership({
+      theme: "ai-compute-energy",
+      dbPath,
+    });
+
     const result = computeThemeResearch({
-      theme: "AI Compute + Energy",
-      tickers: ["AAPL", "NVDA", "XOM"],
+      theme: "ai-compute-energy",
       lookbackDays: 240,
       topN: 2,
       dbPath,
     });
-    expect(result.theme).toBe("AI Compute + Energy");
+    expect(result.theme).toBe("ai-compute-energy");
+    expect(result.usedThemeRegistry).toBe(true);
     expect(result.metrics.constituentCount).toBe(3);
     expect(result.sectorExposure.length).toBeGreaterThanOrEqual(2);
     expect(result.sectorExposure.reduce((sum, row) => sum + row.sharePct, 0)).toBeCloseTo(1, 5);

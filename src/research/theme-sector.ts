@@ -2,6 +2,7 @@ import { getCatalystSummary } from "./catalyst.js";
 import { openResearchDb } from "./db.js";
 import { computePortfolioPlan } from "./portfolio.js";
 import { appendProvenanceEvent } from "./provenance.js";
+import { getThemeConstituents } from "./theme-ontology.js";
 import { computeValuation } from "./valuation.js";
 import { computeVariantPerception } from "./variant.js";
 
@@ -87,6 +88,9 @@ export type SectorResearchResult = {
 export type ThemeResearchResult = {
   generatedAt: string;
   theme: string;
+  themeVersion?: number;
+  usedThemeRegistry: boolean;
+  membershipMinScore?: number;
   tickers: string[];
   lookbackDays: number;
   metrics: CrossSectionMetrics;
@@ -767,17 +771,39 @@ export const computeSectorResearch = (params: {
 
 export const computeThemeResearch = (params: {
   theme: string;
-  tickers: string[];
+  tickers?: string[];
+  themeVersion?: number;
+  minMembershipScore?: number;
+  maxConstituents?: number;
   lookbackDays?: number;
   topN?: number;
   dbPath?: string;
 }): ThemeResearchResult => {
   const theme = params.theme.trim();
   if (!theme) throw new Error("theme is required");
-  const normalizedTickers = Array.from(
-    new Set(params.tickers.map(normalizeTicker).filter(Boolean)),
+  let normalizedTickers = Array.from(
+    new Set((params.tickers ?? []).map(normalizeTicker).filter(Boolean)),
   );
-  if (!normalizedTickers.length) throw new Error("tickers are required");
+  let usedThemeRegistry = false;
+  let resolvedThemeVersion: number | undefined;
+  if (!normalizedTickers.length) {
+    const membershipRows = getThemeConstituents({
+      theme,
+      version: params.themeVersion,
+      status: "active",
+      minMembershipScore: params.minMembershipScore,
+      limit: Math.max(5, Math.round(params.maxConstituents ?? 400)),
+      dbPath: params.dbPath,
+    });
+    if (!membershipRows.length) {
+      throw new Error(
+        "No active theme membership found; pass --tickers or refresh theme membership first.",
+      );
+    }
+    normalizedTickers = membershipRows.map((row) => normalizeTicker(row.ticker));
+    usedThemeRegistry = true;
+    resolvedThemeVersion = membershipRows[0]?.themeVersion;
+  }
   const lookbackDays = Math.max(90, Math.round(params.lookbackDays ?? 365));
   const topN = Math.max(1, Math.round(params.topN ?? 5));
   const rows = deriveConstituentSet({
@@ -826,6 +852,10 @@ export const computeThemeResearch = (params: {
       },
       metadata: {
         lookback_days: lookbackDays,
+        used_theme_registry: usedThemeRegistry,
+        theme_version: resolvedThemeVersion ?? null,
+        membership_min_score:
+          typeof params.minMembershipScore === "number" ? params.minMembershipScore : null,
       },
       dbPath: params.dbPath,
     });
@@ -835,6 +865,9 @@ export const computeThemeResearch = (params: {
   return {
     generatedAt: new Date().toISOString(),
     theme,
+    themeVersion: resolvedThemeVersion,
+    usedThemeRegistry,
+    membershipMinScore: params.minMembershipScore,
     tickers: rows.map((row) => row.ticker),
     lookbackDays,
     metrics,
