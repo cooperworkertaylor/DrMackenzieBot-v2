@@ -126,6 +126,7 @@
     "research:nightly": "node --import tsx scripts/research-nightly.ts",
     "research:embed-nightly": "node --import tsx scripts/research-embed-nightly.ts",
     "research:eval-nightly": "node --import tsx scripts/research-eval-nightly.ts",
+    "research:benchmark-nightly": "node --import tsx scripts/research-benchmark-nightly.ts",
     "research:learning-nightly": "node --import tsx scripts/research-learning-nightly.ts",
     "start": "node scripts/run-node.mjs",
     "test": "node scripts/test-parallel.mjs",

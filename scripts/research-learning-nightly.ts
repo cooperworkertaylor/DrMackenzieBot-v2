@@ -1,4 +1,5 @@
 import { runDecisionEval } from "../src/research/eval.js";
+import { runAllBenchmarksWithGovernance } from "../src/research/benchmark.js";
 import { runLearningCalibration } from "../src/research/learning.js";
 import { runPolicyGovernance } from "../src/research/policy.js";
 
@@ -25,6 +26,19 @@ const run = async () => {
       );
     });
   }
+
+  const benchmark = runAllBenchmarksWithGovernance({
+    lookbackDays: 90,
+    mode: "champion_vs_challenger",
+  });
+  console.log(
+    `benchmark governance: suites=${benchmark.suiteCount} runs=${benchmark.runCount} failures=${benchmark.failures}`,
+  );
+  benchmark.decisions.slice(0, 20).forEach((decision) => {
+    console.log(
+      `benchmark run=${decision.runId} ${decision.decisionType} applied=${decision.applied ? 1 : 0} ${decision.championBefore || "none"} -> ${decision.championAfter || "none"} (${decision.reason})`,
+    );
+  });
 
   const governance = runPolicyGovernance({
     days: 60,

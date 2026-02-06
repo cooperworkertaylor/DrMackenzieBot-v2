@@ -10,6 +10,16 @@ import {
   timeSeriesToMarkdown,
 } from "../agents/sec-xbrl-timeseries.js";
 import {
+  applyBenchmarkGovernance,
+  benchmarkReport,
+  listBenchmarkCases,
+  listBenchmarkSuites,
+  runAllBenchmarksWithGovernance,
+  runBenchmarkReplay,
+  upsertBenchmarkCase,
+  upsertBenchmarkSuite,
+} from "../research/benchmark.js";
+import {
   addCatalyst,
   cancelCatalyst,
   getCatalystSummary,
@@ -988,6 +998,250 @@ export function registerResearchCli(program: Command) {
         result.decisions.slice(0, 20).forEach((decision) => {
           defaultRuntime.log(
             `${new Date(decision.createdAt).toISOString()} decision=${decision.decisionType} task=${decision.taskType}:${decision.taskArchetype || "default"} before=${decision.championBefore || "none"} after=${decision.championAfter || "none"} reason=${decision.reason}`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("benchmark-suite-upsert")
+    .description("Create or update a benchmark suite")
+    .requiredOption("--name <text>", "Suite name")
+    .requiredOption("--task-type <kind>", "investment|coding|other")
+    .option("--archetype <name>", "Task archetype", "")
+    .option("--description <text>", "Suite description", "")
+    .option("--active <bool>", "true|false", "true")
+    .option("--gating-min-samples <n>", "Promotion gate minimum samples", "25")
+    .option("--gating-min-lift <n>", "Promotion gate minimum score lift", "0.03")
+    .option("--gating-max-risk-breaches <n>", "Promotion gate max risk breaches", "0")
+    .option("--canary-drop-threshold <n>", "Canary rollback threshold [0-1]", "0.07")
+    .option("--metadata <json>", "JSON metadata")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const suite = upsertBenchmarkSuite({
+          name: opts.name as string,
+          taskType: opts["taskType"] as string,
+          taskArchetype: opts.archetype as string,
+          description: opts.description as string,
+          active: parseBooleanOption(opts.active as string),
+          gatingMinSamples: Number.parseInt(opts["gatingMinSamples"] as string, 10) || 25,
+          gatingMinLift: parseOptionalNumber(opts["gatingMinLift"]),
+          gatingMaxRiskBreaches: Number.parseInt(opts["gatingMaxRiskBreaches"] as string, 10) || 0,
+          canaryDropThreshold: parseOptionalNumber(opts["canaryDropThreshold"]),
+          metadata: parseOptionalJsonObject(opts.metadata),
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `suite=${suite.name} task_type=${suite.taskType} archetype=${suite.taskArchetype || "default"} active=${suite.active ? 1 : 0} min_samples=${suite.gatingMinSamples} min_lift=${suite.gatingMinLift.toFixed(3)} canary_drop=${suite.canaryDropThreshold.toFixed(3)}`,
+        );
+      });
+    });
+
+  research
+    .command("benchmark-suite-list")
+    .description("List benchmark suites")
+    .option("--task-type <kind>", "investment|coding|other")
+    .option("--archetype <name>", "Task archetype", "")
+    .option("--include-inactive", "Include inactive suites", false)
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const suites = listBenchmarkSuites({
+          taskType: opts["taskType"] as string | undefined,
+          taskArchetype: opts.archetype as string,
+          activeOnly: !Boolean(opts["includeInactive"]),
+          dbPath: opts.db as string,
+        });
+        if (!suites.length) {
+          defaultRuntime.log("No benchmark suites found.");
+          return;
+        }
+        suites.forEach((suite) => {
+          defaultRuntime.log(
+            `suite=${suite.name} task_type=${suite.taskType} archetype=${suite.taskArchetype || "default"} active=${suite.active ? 1 : 0} min_samples=${suite.gatingMinSamples} min_lift=${suite.gatingMinLift.toFixed(3)} max_risk_breaches=${suite.gatingMaxRiskBreaches} canary_drop=${suite.canaryDropThreshold.toFixed(3)}`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("benchmark-case-upsert")
+    .description("Create or update a benchmark case in a suite")
+    .requiredOption("--suite <name>", "Suite name")
+    .requiredOption("--task-type <kind>", "investment|coding|other")
+    .option("--suite-archetype <name>", "Suite archetype", "")
+    .requiredOption("--case <name>", "Case name")
+    .option("--case-archetype <name>", "Case archetype", "")
+    .option("--ticker <symbol>", "Ticker filter")
+    .option("--repo-root <path>", "Repo root filter")
+    .option("--input <text>", "Input summary")
+    .option("--prompt <text>", "Prompt template used by case")
+    .option("--expected <json>", "Expected metrics JSON")
+    .option("--weight <n>", "Case weight", "1")
+    .option("--active <bool>", "true|false", "true")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const benchmarkCase = upsertBenchmarkCase({
+          suiteName: opts.suite as string,
+          taskType: opts["taskType"] as string,
+          taskArchetype: opts["suiteArchetype"] as string,
+          caseName: opts.case as string,
+          caseArchetype: opts["caseArchetype"] as string,
+          ticker: opts.ticker as string | undefined,
+          repoRoot: opts["repoRoot"] as string | undefined,
+          inputSummary: opts.input as string | undefined,
+          promptText: opts.prompt as string | undefined,
+          expected: parseOptionalJsonObject(opts.expected),
+          weight: parseOptionalNumber(opts.weight),
+          active: parseBooleanOption(opts.active as string),
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `case=${benchmarkCase.caseName} suite_id=${benchmarkCase.suiteId} archetype=${benchmarkCase.taskArchetype || "default"} ticker=${benchmarkCase.ticker || "n/a"} repo_root=${benchmarkCase.repoRoot || "n/a"} weight=${benchmarkCase.weight.toFixed(2)} active=${benchmarkCase.active ? 1 : 0}`,
+        );
+      });
+    });
+
+  research
+    .command("benchmark-case-list")
+    .description("List benchmark cases in a suite")
+    .requiredOption("--suite <name>", "Suite name")
+    .requiredOption("--task-type <kind>", "investment|coding|other")
+    .option("--suite-archetype <name>", "Suite archetype", "")
+    .option("--include-inactive", "Include inactive cases", false)
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const cases = listBenchmarkCases({
+          suiteName: opts.suite as string,
+          taskType: opts["taskType"] as string,
+          taskArchetype: opts["suiteArchetype"] as string,
+          activeOnly: !Boolean(opts["includeInactive"]),
+          dbPath: opts.db as string,
+        });
+        if (!cases.length) {
+          defaultRuntime.log("No benchmark cases found.");
+          return;
+        }
+        cases.forEach((benchmarkCase) => {
+          defaultRuntime.log(
+            `case=${benchmarkCase.caseName} archetype=${benchmarkCase.taskArchetype || "default"} ticker=${benchmarkCase.ticker || "n/a"} repo_root=${benchmarkCase.repoRoot || "n/a"} weight=${benchmarkCase.weight.toFixed(2)} active=${benchmarkCase.active ? 1 : 0}`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("benchmark-run")
+    .description("Run deterministic benchmark replay against champion/challengers")
+    .requiredOption("--suite <name>", "Suite name")
+    .requiredOption("--task-type <kind>", "investment|coding|other")
+    .option("--suite-archetype <name>", "Suite archetype", "")
+    .option(
+      "--mode <kind>",
+      "champion_vs_challenger|all_policies|champion_only",
+      "champion_vs_challenger",
+    )
+    .option("--lookback-days <n>", "Lookback days for replay samples", "90")
+    .option("--seed <text>", "Deterministic seed")
+    .option("--apply-governance", "Apply benchmark gate decision to policy champion", false)
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const run = runBenchmarkReplay({
+          suiteName: opts.suite as string,
+          taskType: opts["taskType"] as string,
+          taskArchetype: opts["suiteArchetype"] as string,
+          mode: opts.mode as string,
+          lookbackDays: Number.parseInt(opts["lookbackDays"] as string, 10) || 90,
+          seed: opts.seed as string | undefined,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `benchmark_run id=${run.runId} suite=${run.suite.name} mode=${run.mode} cases=${run.caseCount} lookback_days=${run.lookbackDays}`,
+        );
+        run.policySummaries.forEach((summary) => {
+          defaultRuntime.log(
+            `policy=${summary.policyName} status=${summary.status} score=${summary.weightedScore.toFixed(3)} win=${(summary.weightedWinRate * 100).toFixed(1)}% risk_breaches=${summary.riskBreaches} samples=${summary.totalSamples}`,
+          );
+        });
+        defaultRuntime.log(
+          `gate champion=${run.gate.championPolicy ?? "none"} promote_allowed=${run.gate.promoteAllowed ? 1 : 0} promote_candidate=${run.gate.promoteCandidate ?? "none"} canary_breach=${run.gate.canaryBreach ? 1 : 0} rollback_candidate=${run.gate.rollbackCandidate ?? "none"}`,
+        );
+        if (Boolean(opts["applyGovernance"])) {
+          const decision = applyBenchmarkGovernance({
+            runId: run.runId,
+            dbPath: opts.db as string,
+          });
+          defaultRuntime.log(
+            `benchmark_governance decision=${decision.decisionType} applied=${decision.applied ? 1 : 0} before=${decision.championBefore || "none"} after=${decision.championAfter || "none"} reason=${decision.reason}`,
+          );
+        }
+      });
+    });
+
+  research
+    .command("benchmark-report")
+    .description("Show benchmark run history and gate outcomes")
+    .requiredOption("--suite <name>", "Suite name")
+    .requiredOption("--task-type <kind>", "investment|coding|other")
+    .option("--suite-archetype <name>", "Suite archetype", "")
+    .option("--limit <n>", "Number of runs", "20")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const report = benchmarkReport({
+          suiteName: opts.suite as string,
+          taskType: opts["taskType"] as string,
+          taskArchetype: opts["suiteArchetype"] as string,
+          limit: Number.parseInt(opts.limit as string, 10) || 20,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `benchmark_report suite=${report.suite.name} task_type=${report.suite.taskType} archetype=${report.suite.taskArchetype || "default"} runs=${report.runs.length}`,
+        );
+        report.runs.forEach((run) => {
+          defaultRuntime.log(
+            `${new Date(run.completedAt).toISOString()} run_id=${run.id} mode=${run.mode} cases=${run.summary.caseCount} champion=${run.summary.gate.championPolicy ?? "none"} promote_allowed=${run.summary.gate.promoteAllowed ? 1 : 0} canary_breach=${run.summary.gate.canaryBreach ? 1 : 0}`,
+          );
+          run.summary.policySummaries.forEach((summary) => {
+            defaultRuntime.log(
+              `  policy=${summary.policyName} score=${summary.weightedScore.toFixed(3)} win=${(summary.weightedWinRate * 100).toFixed(1)}% risk_breaches=${summary.riskBreaches} samples=${summary.totalSamples}`,
+            );
+          });
+        });
+      });
+    });
+
+  research
+    .command("benchmark-nightly")
+    .description("Run all active benchmark suites and apply governance decisions")
+    .option("--task-type <kind>", "investment|coding|other")
+    .option("--suite-archetype <name>", "Task archetype", "")
+    .option("--lookback-days <n>", "Lookback days", "90")
+    .option(
+      "--mode <kind>",
+      "champion_vs_challenger|all_policies|champion_only",
+      "champion_vs_challenger",
+    )
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const result = runAllBenchmarksWithGovernance({
+          taskType: opts["taskType"] as string | undefined,
+          taskArchetype: opts["suiteArchetype"] as string,
+          lookbackDays: Number.parseInt(opts["lookbackDays"] as string, 10) || 90,
+          mode: opts.mode as string,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `benchmark_nightly suites=${result.suiteCount} runs=${result.runCount} failures=${result.failures}`,
+        );
+        result.decisions.forEach((decision) => {
+          defaultRuntime.log(
+            `  run_id=${decision.runId} decision=${decision.decisionType} applied=${decision.applied ? 1 : 0} before=${decision.championBefore || "none"} after=${decision.championAfter || "none"} reason=${decision.reason}`,
           );
         });
       });

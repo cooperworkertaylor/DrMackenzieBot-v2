@@ -301,6 +301,69 @@ const migrate = (db: ResearchDb) => {
       created_at integer not null
     );
 
+    create table if not exists benchmark_suites (
+      id integer primary key,
+      name text not null,
+      task_type text not null,
+      task_archetype text not null default '',
+      description text not null default '',
+      active integer not null default 1,
+      gating_min_samples integer not null default 25,
+      gating_min_lift real not null default 0.03,
+      gating_max_risk_breaches integer not null default 0,
+      canary_drop_threshold real not null default 0.07,
+      metadata text not null default '{}',
+      created_at integer not null,
+      updated_at integer not null,
+      unique (name, task_type, task_archetype)
+    );
+
+    create table if not exists benchmark_cases (
+      id integer primary key,
+      suite_id integer not null,
+      case_name text not null,
+      task_archetype text not null default '',
+      ticker text not null default '',
+      repo_root text not null default '',
+      input_summary text not null default '',
+      prompt_text text not null default '',
+      expected text not null default '{}',
+      weight real not null default 1.0,
+      active integer not null default 1,
+      created_at integer not null,
+      updated_at integer not null,
+      unique (suite_id, case_name)
+    );
+
+    create table if not exists benchmark_runs (
+      id integer primary key,
+      suite_id integer not null,
+      run_mode text not null default 'champion_vs_challenger',
+      seed text not null default '',
+      status text not null default 'completed',
+      summary text not null default '{}',
+      started_at integer not null,
+      completed_at integer not null,
+      created_at integer not null
+    );
+
+    create table if not exists benchmark_results (
+      id integer primary key,
+      run_id integer not null,
+      case_id integer not null,
+      task_type text not null,
+      task_archetype text not null default '',
+      policy_name text not null,
+      policy_role text not null default 'primary',
+      sample_count integer not null default 0,
+      score real not null default 0,
+      win integer not null default 0,
+      risk_breach integer not null default 0,
+      metrics text not null default '{}',
+      created_at integer not null,
+      unique (run_id, case_id, policy_name, policy_role)
+    );
+
     create table if not exists chunks (
       id integer primary key,
       source_table text not null,
@@ -408,6 +471,18 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_policy_decisions_lookup
       on policy_decisions (task_type, task_archetype, created_at desc);
+
+    create index if not exists idx_benchmark_suites_lookup
+      on benchmark_suites (task_type, task_archetype, active, updated_at desc);
+
+    create index if not exists idx_benchmark_cases_lookup
+      on benchmark_cases (suite_id, active, updated_at desc);
+
+    create index if not exists idx_benchmark_runs_lookup
+      on benchmark_runs (suite_id, created_at desc);
+
+    create index if not exists idx_benchmark_results_lookup
+      on benchmark_results (run_id, task_type, task_archetype, policy_name, score desc);
   `);
 
   ensureColumn(db, "filings", "accession_raw", "TEXT");
