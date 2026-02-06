@@ -2,6 +2,8 @@ import { runAllBenchmarksWithGovernance } from "../src/research/benchmark.js";
 import { runDecisionEval } from "../src/research/eval.js";
 import { runLearningCalibration } from "../src/research/learning.js";
 import { runPolicyGovernance } from "../src/research/policy.js";
+import { provenanceReport } from "../src/research/provenance.js";
+import { runResearchSecurityAudit } from "../src/research/security.js";
 
 const run = async () => {
   const decision = await runDecisionEval();
@@ -58,6 +60,17 @@ const run = async () => {
       `${new Date(decision.createdAt).toISOString()} ${decision.decisionType} ${decision.taskType}:${decision.taskArchetype || "default"} ${decision.championBefore || "none"} -> ${decision.championAfter || "none"} (${decision.reason})`,
     );
   });
+
+  const provenance = provenanceReport({ limit: 400 });
+  console.log(
+    `provenance: events=${provenance.totalEvents} chain_valid=${provenance.chainValid ? 1 : 0} signature_coverage=${(provenance.signatureCoverage * 100).toFixed(1)}%`,
+  );
+  provenance.issues.slice(0, 20).forEach((issue) => console.log(`provenance_issue: ${issue}`));
+
+  const security = runResearchSecurityAudit();
+  console.log(
+    `security: pass=${security.passCount} warn=${security.warnCount} fail=${security.failCount}`,
+  );
 };
 
 run().catch((err) => {

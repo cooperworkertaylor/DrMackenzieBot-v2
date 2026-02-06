@@ -88,6 +88,11 @@ type PolicyReport = {
 const clamp = (value: number, min: number, max: number): number =>
   Math.max(min, Math.min(max, value));
 
+const mean = (values: number[]): number | undefined => {
+  if (!values.length) return undefined;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+};
+
 const normalizeTaskType = (taskType?: string): LearningTaskType => {
   const normalized = taskType?.trim().toLowerCase();
   if (normalized === "investment") return "investment";
@@ -318,6 +323,51 @@ const pickWeighted = <T extends { weight: number }>(rows: T[], unit: number): T 
   return rows[rows.length - 1];
 };
 
+const outcomeCoverage = (rows: Array<{ user_score?: number; realized_outcome_score?: number }>) => {
+  if (!rows.length) return 0;
+  const covered = rows.filter(
+    (row) =>
+      typeof toFiniteOrUndefined(row.realized_outcome_score) === "number" ||
+      typeof toFiniteOrUndefined(row.user_score) === "number",
+  ).length;
+  return covered / rows.length;
+};
+
+const policyUncertaintyScore = (params: {
+  variant?: PolicyVariant;
+  dbPath?: string;
+  lookbackDays?: number;
+}): number => {
+  if (!params.variant) return 1;
+  const lookbackDays = Math.max(7, params.lookbackDays ?? 45);
+  const endMs = Date.now();
+  const startMs = endMs - lookbackDays * 86_400_000;
+  const rows = performanceRows({
+    taskType: params.variant.taskType,
+    taskArchetype: params.variant.taskArchetype,
+    policyName: params.variant.policyName,
+    startMs,
+    endMs,
+    dbPath: params.dbPath,
+  });
+  if (!rows.length) return 1;
+  const sampleFactor = clamp(rows.length / 30, 0, 1);
+  const coverage = outcomeCoverage(rows);
+  const calibrationRows = rows
+    .map((row) => {
+      const confidence = toFiniteOrUndefined(row.confidence);
+      const realized = toFiniteOrUndefined(row.realized_outcome_score);
+      const user = toFiniteOrUndefined(row.user_score);
+      const outcome = realized ?? user;
+      if (typeof confidence !== "number" || typeof outcome !== "number") return undefined;
+      return Math.abs(confidence - outcome);
+    })
+    .filter((value): value is number => typeof value === "number");
+  const calibrationError = mean(calibrationRows) ?? 0.2;
+  const calibrationPenalty = clamp(calibrationError / 0.3, 0, 1);
+  return clamp(0.4 * (1 - sampleFactor) + 0.35 * (1 - coverage) + 0.25 * calibrationPenalty, 0, 1);
+};
+
 export const routePolicyAssignment = (params: {
   taskType: LearningTaskType | string;
   taskArchetype?: string;
@@ -331,6 +381,8 @@ export const routePolicyAssignment = (params: {
   primary?: PolicyVariant;
   shadows: PolicyVariant[];
   experimentGroup: string;
+  dynamicExplorationRate: number;
+  uncertaintyScore: number;
 } => {
   const taskType = normalizeTaskType(params.taskType);
   const taskArchetype = (params.taskArchetype ?? "").trim();
@@ -348,6 +400,8 @@ export const routePolicyAssignment = (params: {
       primary: undefined,
       shadows: [],
       experimentGroup,
+      dynamicExplorationRate: 0,
+      uncertaintyScore: 1,
     };
   }
 
@@ -358,15 +412,38 @@ export const routePolicyAssignment = (params: {
 
   const seed = params.seed?.trim() || `${experimentGroup}:${Date.now()}`;
   const primaryUnit = toUnit(`${seed}:primary`);
-  const explorationRate = clamp(params.explorationRate ?? 0.15, 0, 1);
-  const explore = challengers.length > 0 && primaryUnit < explorationRate;
+  const explicitExplorationRate = typeof params.explorationRate === "number";
+  const baseExplorationRate = clamp(params.explorationRate ?? 0.15, 0, 1);
+  const uncertaintyScore = policyUncertaintyScore({
+    variant: champion,
+    dbPath: params.dbPath,
+  });
+  const dynamicExplorationRate = explicitExplorationRate
+    ? baseExplorationRate
+    : clamp(baseExplorationRate + uncertaintyScore * 0.25, 0, 0.6);
+  const explore = challengers.length > 0 && primaryUnit < dynamicExplorationRate;
 
   const primary = explore
     ? pickWeighted(
-        challengers.map((variant) => ({
-          variant,
-          weight: variant.trafficWeight > 0 ? variant.trafficWeight : 1,
-        })),
+        challengers.map((variant) => {
+          const perf = computeVariantPerformance({
+            variant,
+            days: 60,
+            dbPath: params.dbPath,
+          });
+          const rewardModel = clamp(
+            0.45 * (perf.score ?? 0.5) +
+              0.25 * (perf.winRate ?? 0.5) +
+              0.2 * (1 - (perf.calibrationError ?? 0.25)) +
+              0.1 * (1 - (perf.quarantineRate ?? 0.1)),
+            0,
+            1,
+          );
+          return {
+            variant,
+            weight: (variant.trafficWeight > 0 ? variant.trafficWeight : 1) * (0.5 + rewardModel),
+          };
+        }),
         toUnit(`${seed}:explore`),
       )?.variant
     : champion;
@@ -383,6 +460,8 @@ export const routePolicyAssignment = (params: {
     primary,
     shadows,
     experimentGroup,
+    dynamicExplorationRate,
+    uncertaintyScore,
   };
 };
 

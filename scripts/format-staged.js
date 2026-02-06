@@ -88,7 +88,12 @@ function stageFiles(repoRoot, files) {
   if (files.length === 0) {
     return true;
   }
-  const result = runGitCommand(["add", "--", ...files], { cwd: repoRoot, stdio: "inherit" });
+  // Some tracked files live under ignored directories (for example `src/memory`).
+  // Re-staging with `-f` keeps pre-commit formatting functional for those files.
+  const result = runGitCommand(["add", "-f", "--", ...files], {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
   return result.status === 0;
 }
 

@@ -7,19 +7,98 @@ export type ResearchDb = DatabaseSync;
 
 const DEFAULT_DB_PATH = path.join(process.cwd(), "data", "research.db");
 
+export type ResearchDbOptions = {
+  allowExtensions?: boolean;
+  encryptionKey?: string;
+  requireEncryption?: boolean;
+};
+
 export const ensureDir = (dir: string) => {
   fs.mkdirSync(dir, { recursive: true });
 };
 
 export const resolveResearchDbPath = (dbPath = DEFAULT_DB_PATH) => path.resolve(dbPath);
 
-export const openResearchDb = (dbPath = DEFAULT_DB_PATH): ResearchDb => {
+const parseBoolEnv = (value: string | undefined): boolean | undefined => {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return undefined;
+};
+
+const sqlQuote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+
+const resolveAllowExtensions = (options?: ResearchDbOptions): boolean =>
+  options?.allowExtensions ?? parseBoolEnv(process.env.RESEARCH_DB_ALLOW_EXTENSIONS) ?? false;
+
+const resolveEncryptionKey = (options?: ResearchDbOptions): string | undefined => {
+  const fromOptions = options?.encryptionKey?.trim();
+  if (fromOptions) return fromOptions;
+  const fromEnv = process.env.RESEARCH_DB_KEY?.trim();
+  return fromEnv || undefined;
+};
+
+const resolveRequireEncryption = (options?: ResearchDbOptions): boolean =>
+  options?.requireEncryption ?? parseBoolEnv(process.env.RESEARCH_DB_REQUIRE_ENCRYPTION) ?? false;
+
+const applyDbEncryption = (
+  db: ResearchDb,
+  params: { encryptionKey?: string; require: boolean },
+) => {
+  if (!params.encryptionKey) {
+    if (params.require) {
+      throw new Error(
+        "Research DB encryption required but RESEARCH_DB_KEY/encryptionKey is not set.",
+      );
+    }
+    return;
+  }
+
+  try {
+    db.exec(`PRAGMA key = ${sqlQuote(params.encryptionKey)};`);
+  } catch (err) {
+    if (params.require) {
+      throw new Error(
+        `Research DB encryption key failed to apply: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return;
+  }
+
+  const cipherVersionRow = db.prepare("PRAGMA cipher_version;").get() as
+    | { cipher_version?: string }
+    | undefined;
+  const cipherVersion = cipherVersionRow?.cipher_version?.trim();
+  if (!cipherVersion && params.require) {
+    throw new Error(
+      "Research DB encryption required but SQLCipher codec is unavailable (PRAGMA cipher_version returned empty).",
+    );
+  }
+};
+
+export const openResearchDb = (
+  dbPath = DEFAULT_DB_PATH,
+  options?: ResearchDbOptions,
+): ResearchDb => {
   const abs = resolveResearchDbPath(dbPath);
   ensureDir(path.dirname(abs));
+  if (!fs.existsSync(abs)) {
+    fs.closeSync(fs.openSync(abs, "a", 0o600));
+  } else {
+    fs.chmodSync(abs, 0o600);
+  }
   const { DatabaseSync } = requireNodeSqlite();
-  const db = new DatabaseSync(abs, { allowExtension: true });
+  const db = new DatabaseSync(abs, { allowExtension: resolveAllowExtensions(options) });
+  applyDbEncryption(db, {
+    encryptionKey: resolveEncryptionKey(options),
+    require: resolveRequireEncryption(options),
+  });
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA synchronous = NORMAL;");
+  db.exec("PRAGMA foreign_keys = ON;");
+  db.exec("PRAGMA trusted_schema = OFF;");
   migrate(db);
   return db;
 };
@@ -409,6 +488,67 @@ const migrate = (db: ResearchDb) => {
       unique (trace_id, seq)
     );
 
+    create table if not exists provenance_events (
+      id integer primary key,
+      event_type text not null,
+      entity_type text not null default '',
+      entity_id text not null default '',
+      payload_hash text not null default '',
+      prev_hash text not null default '',
+      event_hash text not null default '',
+      signature text not null default '',
+      key_id text not null default '',
+      metadata text not null default '{}',
+      created_at integer not null
+    );
+
+    create table if not exists research_entities (
+      id integer primary key,
+      kind text not null default 'company',
+      canonical_name text not null,
+      ticker text not null default '',
+      metadata text not null default '{}',
+      created_at integer not null,
+      updated_at integer not null,
+      unique (kind, canonical_name, ticker)
+    );
+
+    create table if not exists research_claims (
+      id integer primary key,
+      entity_id integer not null,
+      claim_text text not null,
+      claim_type text not null default 'thesis',
+      confidence real not null default 0.5,
+      valid_from text not null default '',
+      valid_to text not null default '',
+      status text not null default 'active',
+      source_task_outcome_id integer,
+      metadata text not null default '{}',
+      created_at integer not null,
+      updated_at integer not null
+    );
+
+    create table if not exists research_claim_evidence (
+      id integer primary key,
+      claim_id integer not null,
+      source_table text not null default '',
+      ref_id integer not null default 0,
+      citation_url text not null default '',
+      excerpt_hash text not null default '',
+      metadata text not null default '{}',
+      created_at integer not null
+    );
+
+    create table if not exists research_claim_status_history (
+      id integer primary key,
+      claim_id integer not null,
+      status text not null,
+      reason text not null default '',
+      confidence real,
+      changed_at integer not null,
+      metadata text not null default '{}'
+    );
+
     create table if not exists chunks (
       id integer primary key,
       source_table text not null,
@@ -537,6 +677,27 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_execution_trace_steps_lookup
       on execution_trace_steps (trace_id, seq);
+
+    create index if not exists idx_provenance_events_lookup
+      on provenance_events (event_type, entity_type, entity_id, created_at desc);
+
+    create index if not exists idx_provenance_events_hash
+      on provenance_events (event_hash, created_at desc);
+
+    create index if not exists idx_research_entities_lookup
+      on research_entities (kind, ticker, canonical_name);
+
+    create index if not exists idx_research_claims_lookup
+      on research_claims (entity_id, status, confidence desc, updated_at desc);
+
+    create index if not exists idx_research_claims_validity
+      on research_claims (valid_from, valid_to, updated_at desc);
+
+    create index if not exists idx_research_claim_evidence_lookup
+      on research_claim_evidence (claim_id, source_table, ref_id);
+
+    create index if not exists idx_research_claim_status_lookup
+      on research_claim_status_history (claim_id, changed_at desc);
   `);
 
   ensureColumn(db, "filings", "accession_raw", "TEXT");

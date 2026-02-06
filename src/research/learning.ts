@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { openResearchDb } from "./db.js";
+import { appendProvenanceEvent } from "./provenance.js";
 import { forecastDecisionMetrics, resolveMatureForecasts } from "./valuation.js";
 
 export type LearningTaskType = "investment" | "coding" | "other";
@@ -103,6 +104,24 @@ type LearningReport = {
     score: number;
     samples: number;
   }>;
+  rewardModels: Array<{
+    taskType: LearningTaskType;
+    taskArchetype: string;
+    policyName: string;
+    reward: number;
+    samples: number;
+    avgOutcome: number;
+    trustRate: number;
+    quarantineRate: number;
+  }>;
+  learningDynamics: {
+    outcomeCoverageRate: number;
+    pendingOutcomeRate: number;
+    delayedFeedbackRate: number;
+    avgFeedbackLagDays?: number;
+    confidenceCalibrationMae?: number;
+    lowConfidenceRate: number;
+  };
   calibration: {
     forecastSampleCount: number;
     forecastMae?: number;
@@ -489,6 +508,24 @@ export const logTaskOutcome = (
   statusReason: string;
   outputHash: string;
 } => {
+  const writeProvenance = (payload: Record<string, unknown>) => {
+    try {
+      appendProvenanceEvent({
+        eventType: "task_outcome",
+        entityType: "task_outcomes",
+        entityId: payload.id as number | string | undefined,
+        payload,
+        metadata: {
+          task_type: payload.task_type,
+          task_archetype: payload.task_archetype,
+        },
+        dbPath: params.dbPath,
+      });
+    } catch {
+      // Provenance should not block critical task logging path.
+    }
+  };
+
   const db = openResearchDb(params.dbPath);
   const now = Date.now();
   const existing =
@@ -581,6 +618,22 @@ export const logTaskOutcome = (
       now,
       existing.id,
     );
+    writeProvenance({
+      id: existing.id,
+      mode: "update",
+      task_type: taskType,
+      task_archetype: taskArchetype,
+      policy_name: policyName,
+      policy_role: policyRole,
+      experiment_group: experimentGroup,
+      ticker,
+      repo_root: repoRoot,
+      output_hash: outputHash,
+      grader_score: evaluated.graderScore,
+      status: evaluated.status,
+      status_reason: evaluated.statusReason,
+      updated_at: now,
+    });
     return {
       id: existing.id,
       taskType,
@@ -633,6 +686,23 @@ export const logTaskOutcome = (
       now,
       now,
     ) as { id: number };
+
+  writeProvenance({
+    id: row.id,
+    mode: "insert",
+    task_type: taskType,
+    task_archetype: taskArchetype,
+    policy_name: policyName,
+    policy_role: policyRole,
+    experiment_group: experimentGroup,
+    ticker,
+    repo_root: repoRoot,
+    output_hash: outputHash,
+    grader_score: evaluated.graderScore,
+    status: evaluated.status,
+    status_reason: evaluated.statusReason,
+    created_at: now,
+  });
 
   return {
     id: row.id,
@@ -941,6 +1011,97 @@ export const learningReport = (params: LearningReportParams = {}): LearningRepor
   );
   const trusted = rows.filter((row) => row.status === "trusted").length;
   const quarantined = rows.filter((row) => row.status === "quarantine").length;
+  const rowsWithOutcome = rows.filter(
+    (row) => typeof row.realizedOutcomeScore === "number" || typeof row.userScore === "number",
+  );
+  const rowsWithResolvedOutcome = rows.filter(
+    (row) => typeof row.realizedOutcomeScore === "number",
+  );
+  const pendingOutcomeRate =
+    rows.length > 0 ? (rows.length - rowsWithOutcome.length) / rows.length : 0;
+  const delayedFeedbackRows = rowsWithResolvedOutcome.filter(
+    (row) => row.updatedAt - row.createdAt > 6 * 60 * 60 * 1000,
+  );
+  const delayedFeedbackRate =
+    rowsWithResolvedOutcome.length > 0
+      ? delayedFeedbackRows.length / rowsWithResolvedOutcome.length
+      : 0;
+  const avgFeedbackLagDays = mean(
+    rowsWithResolvedOutcome.map((row) => Math.max(0, row.updatedAt - row.createdAt) / 86_400_000),
+  );
+  const confidenceCalibrationMae = mean(
+    rows
+      .map((row) => {
+        if (typeof row.confidence !== "number") return undefined;
+        const outcome = row.realizedOutcomeScore ?? row.userScore;
+        if (typeof outcome !== "number") return undefined;
+        return Math.abs(row.confidence - outcome);
+      })
+      .filter((value): value is number => typeof value === "number"),
+  );
+  const lowConfidenceRate =
+    rows.length > 0
+      ? rows.filter((row) => (row.confidence ?? row.graderScore) < 0.55).length / rows.length
+      : 0;
+
+  const rewardBuckets = new Map<
+    string,
+    {
+      taskType: LearningTaskType;
+      taskArchetype: string;
+      policyName: string;
+      samples: number;
+      outcomeSum: number;
+      trust: number;
+      quarantine: number;
+      scoreSum: number;
+    }
+  >();
+  for (const row of rows) {
+    if (!row.policyName.trim()) continue;
+    const key = `${row.taskType}|${row.taskArchetype || "default"}|${row.policyName}`;
+    const bucket = rewardBuckets.get(key) ?? {
+      taskType: row.taskType,
+      taskArchetype: row.taskArchetype || "default",
+      policyName: row.policyName,
+      samples: 0,
+      outcomeSum: 0,
+      trust: 0,
+      quarantine: 0,
+      scoreSum: 0,
+    };
+    bucket.samples += 1;
+    bucket.scoreSum += row.graderScore;
+    bucket.outcomeSum += row.realizedOutcomeScore ?? row.userScore ?? row.graderScore;
+    if (row.status === "trusted") bucket.trust += 1;
+    if (row.status === "quarantine") bucket.quarantine += 1;
+    rewardBuckets.set(key, bucket);
+  }
+  const rewardModels = Array.from(rewardBuckets.values())
+    .filter((bucket) => bucket.samples >= minSamples)
+    .map((bucket) => {
+      const avgOutcome = bucket.outcomeSum / bucket.samples;
+      const avgScore = bucket.scoreSum / bucket.samples;
+      const trustRate = bucket.trust / bucket.samples;
+      const quarantineRate = bucket.quarantine / bucket.samples;
+      const reward = clamp(
+        0.45 * avgScore + 0.35 * avgOutcome + 0.12 * trustRate + 0.08 * (1 - quarantineRate),
+        0,
+        1,
+      );
+      return {
+        taskType: bucket.taskType,
+        taskArchetype: bucket.taskArchetype,
+        policyName: bucket.policyName,
+        reward,
+        samples: bucket.samples,
+        avgOutcome,
+        trustRate,
+        quarantineRate,
+      };
+    })
+    .sort((a, b) => b.reward - a.reward)
+    .slice(0, 30);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -954,6 +1115,15 @@ export const learningReport = (params: LearningReportParams = {}): LearningRepor
     byTaskType,
     routing,
     sourceEffectiveness: sourceRanking(globalSourceAcc, 8),
+    rewardModels,
+    learningDynamics: {
+      outcomeCoverageRate: rows.length > 0 ? rowsWithOutcome.length / rows.length : 0,
+      pendingOutcomeRate,
+      delayedFeedbackRate,
+      avgFeedbackLagDays,
+      confidenceCalibrationMae,
+      lowConfidenceRate,
+    },
     calibration: loadCalibrationSnapshot(params.dbPath),
   };
 };

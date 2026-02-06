@@ -26,6 +26,9 @@ export type SearchHit = {
   table: SearchTable;
   id: number;
   score: number;
+  rerankScore?: number;
+  noveltyScore?: number;
+  diversityPenalty?: number;
   vectorScore: number;
   lexicalScore: number;
   sourceQualityScore: number;
@@ -185,6 +188,79 @@ export const blendRankSignals = (scores: {
 const tryLoadVecExtension = async (db: ResearchDb): Promise<boolean> => {
   const loaded = await loadSqliteVecExtension({ db });
   return loaded.ok;
+};
+
+const jaccard = (a: Set<string>, b: Set<string>): number => {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  for (const token of a) {
+    if (b.has(token)) intersection += 1;
+  }
+  const union = a.size + b.size - intersection;
+  if (union <= 0) return 0;
+  return intersection / union;
+};
+
+const rerankWithDiversity = (
+  hits: SearchHit[],
+  query: string,
+  params: {
+    limit: number;
+    rerankTopK: number;
+    diversityLambda: number;
+  },
+): SearchHit[] => {
+  if (hits.length <= 1) return hits.slice(0, params.limit);
+  const tokensById = new Map<number, Set<string>>();
+  const queryTokens = new Set(tokenizeForRank(query));
+  hits.forEach((hit) => {
+    tokensById.set(hit.id, new Set(tokenizeForRank(`${hit.text} ${hit.meta ?? ""}`)));
+  });
+  const topK = Math.max(params.limit, Math.min(hits.length, params.rerankTopK));
+  const candidatePool = hits.slice(0, topK);
+  const remaining = [...candidatePool];
+  const selected: SearchHit[] = [];
+  const lambda = clamp01(params.diversityLambda);
+
+  while (selected.length < params.limit && remaining.length > 0) {
+    let bestIdx = 0;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    for (let i = 0; i < remaining.length; i += 1) {
+      const candidate = remaining[i]!;
+      const candidateTokens = tokensById.get(candidate.id) ?? new Set<string>();
+      const semanticNovelty =
+        1 -
+        Math.max(
+          ...selected.map((item) => {
+            const selectedTokens = tokensById.get(item.id) ?? new Set<string>();
+            return jaccard(candidateTokens, selectedTokens);
+          }),
+          0,
+        );
+      const queryAffinity = jaccard(candidateTokens, queryTokens);
+      const noveltyScore = clamp01(0.8 * semanticNovelty + 0.2 * queryAffinity);
+      const diversityPenalty = 1 - noveltyScore;
+      const rerankScore = lambda * candidate.score + (1 - lambda) * noveltyScore;
+      if (rerankScore > bestScore) {
+        bestScore = rerankScore;
+        bestIdx = i;
+      }
+      candidate.noveltyScore = noveltyScore;
+      candidate.diversityPenalty = diversityPenalty;
+      candidate.rerankScore = rerankScore;
+    }
+    const [picked] = remaining.splice(bestIdx, 1);
+    if (!picked) break;
+    selected.push(picked);
+  }
+
+  if (selected.length < params.limit) {
+    const extra = hits
+      .filter((hit) => !selected.some((picked) => picked.id === hit.id))
+      .slice(0, params.limit - selected.length);
+    selected.push(...extra);
+  }
+  return selected.slice(0, params.limit);
 };
 
 const ensureVecTables = (db: ResearchDb, dims: number) => {
@@ -376,6 +452,9 @@ const scoreCandidates = (params: {
   queryVec: number[];
   query: string;
   source: "research" | "code";
+  limit: number;
+  rerankTopK: number;
+  diversityLambda: number;
 }): SearchHit[] => {
   const { rows, queryVec, query, source } = params;
   const hits: SearchHit[] = [];
@@ -411,7 +490,12 @@ const scoreCandidates = (params: {
       citationUrl: row.citation_url,
     });
   }
-  return hits.toSorted((a, b) => b.score - a.score);
+  const sorted = hits.toSorted((a, b) => b.score - a.score);
+  return rerankWithDiversity(sorted, query, {
+    limit: params.limit,
+    rerankTopK: params.rerankTopK,
+    diversityLambda: params.diversityLambda,
+  });
 };
 
 const searchWithProvider = async (params: {
@@ -422,6 +506,8 @@ const searchWithProvider = async (params: {
   source: "research" | "code";
   limit: number;
   candidateMultiplier: number;
+  rerankTopK: number;
+  diversityLambda: number;
 }): Promise<SearchHit[]> => {
   const expandedQuery = buildFinancialQueryExpansion(params.query);
   const queryVec = await params.provider.embedQuery(`query: ${expandedQuery}`);
@@ -440,7 +526,10 @@ const searchWithProvider = async (params: {
     queryVec,
     query: expandedQuery,
     source: params.source,
-  }).slice(0, params.limit);
+    limit: params.limit,
+    rerankTopK: params.rerankTopK,
+    diversityLambda: params.diversityLambda,
+  });
 };
 
 export const searchResearch = async (params: {
@@ -450,6 +539,8 @@ export const searchResearch = async (params: {
   dbPath?: string;
   source?: "research" | "code";
   candidateMultiplier?: number;
+  rerankTopK?: number;
+  diversityLambda?: number;
 }) => {
   const db = openResearchDb(params.dbPath);
   const limit = Math.max(1, params.limit ?? 8);
@@ -458,6 +549,8 @@ export const searchResearch = async (params: {
     4,
     params.candidateMultiplier ?? DEFAULT_CANDIDATE_MULTIPLIER,
   );
+  const rerankTopK = Math.max(limit, Math.round(params.rerankTopK ?? limit * 4));
+  const diversityLambda = clamp01(params.diversityLambda ?? 0.78);
   const ticker = params.ticker?.trim().toUpperCase();
 
   const selection = await createResearchEmbeddingProvider();
@@ -469,6 +562,8 @@ export const searchResearch = async (params: {
     source,
     limit,
     candidateMultiplier,
+    rerankTopK,
+    diversityLambda,
   });
 
   if (!hits.length && selection.provider.id !== "hash") {
@@ -481,6 +576,8 @@ export const searchResearch = async (params: {
       source,
       limit,
       candidateMultiplier,
+      rerankTopK,
+      diversityLambda,
     });
   }
   return hits;

@@ -48,6 +48,7 @@ import {
 } from "../research/ingest.js";
 import { learningReport, logTaskOutcome, runLearningCalibration } from "../research/learning.js";
 import { generateMemoAsync } from "../research/memo.js";
+import { listEntityClaims, updateClaimStatus } from "../research/memory-graph.js";
 import { monitorTicker, monitorTickers } from "../research/monitor.js";
 import {
   listPolicyVariants,
@@ -57,7 +58,9 @@ import {
   runPolicyGovernance,
 } from "../research/policy.js";
 import { computePortfolioPlan } from "../research/portfolio.js";
+import { provenanceReport } from "../research/provenance.js";
 import { indexRepo } from "../research/repo-index.js";
+import { runResearchSecurityAudit } from "../research/security.js";
 import { computeValuation, resolveMatureForecasts } from "../research/valuation.js";
 import { computeVariantPerception } from "../research/variant.js";
 import { searchResearch, syncEmbeddings, writeBackup } from "../research/vector-search.js";
@@ -827,6 +830,26 @@ export function registerResearchCli(program: Command) {
           );
         }
         defaultRuntime.log(
+          `learning_dynamics outcome_coverage=${(report.learningDynamics.outcomeCoverageRate * 100).toFixed(1)}% pending=${(report.learningDynamics.pendingOutcomeRate * 100).toFixed(1)}% delayed_feedback=${(report.learningDynamics.delayedFeedbackRate * 100).toFixed(1)}% low_confidence=${(report.learningDynamics.lowConfidenceRate * 100).toFixed(1)}%`,
+        );
+        if (typeof report.learningDynamics.avgFeedbackLagDays === "number") {
+          defaultRuntime.log(
+            `learning_feedback_lag_days=${report.learningDynamics.avgFeedbackLagDays.toFixed(2)}`,
+          );
+        }
+        if (typeof report.learningDynamics.confidenceCalibrationMae === "number") {
+          defaultRuntime.log(
+            `learning_confidence_mae=${report.learningDynamics.confidenceCalibrationMae.toFixed(3)}`,
+          );
+        }
+        if (report.rewardModels.length) {
+          report.rewardModels.slice(0, 10).forEach((model) => {
+            defaultRuntime.log(
+              `reward_model type=${model.taskType} archetype=${model.taskArchetype} policy=${model.policyName} reward=${model.reward.toFixed(3)} samples=${model.samples} outcome=${model.avgOutcome.toFixed(3)} trust=${(model.trustRate * 100).toFixed(1)}% quarantine=${(model.quarantineRate * 100).toFixed(1)}%`,
+            );
+          });
+        }
+        defaultRuntime.log(
           `calibration forecast_samples=${report.calibration.forecastSampleCount} forecast_mae=${typeof report.calibration.forecastMae === "number" ? report.calibration.forecastMae.toFixed(3) : "n/a"} directional=${typeof report.calibration.forecastDirectionalAccuracy === "number" ? report.calibration.forecastDirectionalAccuracy.toFixed(3) : "n/a"}`,
         );
         defaultRuntime.log(
@@ -960,6 +983,108 @@ export function registerResearchCli(program: Command) {
     });
 
   research
+    .command("memory-claims")
+    .description("List structured memory-graph claims and evidence counts")
+    .option("--ticker <symbol>", "Ticker filter")
+    .option("--entity <name>", "Entity name filter")
+    .option("--status <value>", "active|draft|contested|retired")
+    .option("--limit <n>", "Result limit", "100")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const rows = listEntityClaims({
+          ticker: opts.ticker as string | undefined,
+          entityName: opts.entity as string | undefined,
+          status: opts.status as string | undefined,
+          limit: Number.parseInt(opts.limit as string, 10) || 100,
+          dbPath: opts.db as string,
+        });
+        if (!rows.length) {
+          defaultRuntime.log("No claims found.");
+          return;
+        }
+        rows.forEach((row) => {
+          defaultRuntime.log(
+            `claim_id=${row.claim.id} entity=${row.entity.canonicalName} ticker=${row.entity.ticker || "n/a"} status=${row.claim.status} confidence=${row.claim.confidence.toFixed(2)} evidence=${row.evidenceCount}`,
+          );
+          defaultRuntime.log(`  claim=${row.claim.claimText}`);
+        });
+      });
+    });
+
+  research
+    .command("claim-status")
+    .description("Update a memory-graph claim status")
+    .requiredOption("--claim-id <id>", "Claim id")
+    .requiredOption("--status <value>", "active|draft|contested|retired")
+    .option("--reason <text>", "Status update reason", "")
+    .option("--confidence <n>", "Optional confidence [0-1]")
+    .option("--metadata <json>", "JSON metadata")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const claim = updateClaimStatus({
+          claimId: Number.parseInt(opts["claimId"] as string, 10),
+          status: opts.status as string,
+          reason: opts.reason as string,
+          confidence: parseOptionalNumber(opts.confidence),
+          metadata: parseOptionalJsonObject(opts.metadata),
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `claim_id=${claim.id} status=${claim.status} confidence=${claim.confidence.toFixed(2)}`,
+        );
+      });
+    });
+
+  research
+    .command("provenance-report")
+    .description("Audit tamper-evident provenance chain and signatures")
+    .option("--event-type <name>", "Filter by event type")
+    .option("--entity-type <name>", "Filter by entity type")
+    .option("--entity-id <id>", "Filter by entity id")
+    .option("--limit <n>", "Max events", "200")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const report = provenanceReport({
+          eventType: opts["eventType"] as string | undefined,
+          entityType: opts["entityType"] as string | undefined,
+          entityId: opts["entityId"] as string | undefined,
+          limit: Number.parseInt(opts.limit as string, 10) || 200,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `provenance total=${report.totalEvents} chain_valid=${report.chainValid ? 1 : 0} signature_coverage=${(report.signatureCoverage * 100).toFixed(1)}% signature_valid=${typeof report.signatureValidRate === "number" ? `${(report.signatureValidRate * 100).toFixed(1)}%` : "n/a"}`,
+        );
+        report.issues.slice(0, 20).forEach((issue) => defaultRuntime.error(`ISSUE: ${issue}`));
+      });
+    });
+
+  research
+    .command("security-audit")
+    .description("Run research-stack security baseline checks")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const report = runResearchSecurityAudit({
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `security_audit pass=${report.passCount} warn=${report.warnCount} fail=${report.failCount} generated=${report.generatedAt}`,
+        );
+        report.controls.forEach((control) => {
+          const prefix = control.status.toUpperCase();
+          if (control.status === "fail") {
+            defaultRuntime.error(`${prefix} ${control.id}: ${control.detail}`);
+          } else {
+            defaultRuntime.log(`${prefix} ${control.id}: ${control.detail}`);
+          }
+        });
+      });
+    });
+
+  research
     .command("learn-calibrate")
     .description("Run learning calibration cycle (forecast sync + regrade + report)")
     .option("--days <n>", "Lookback window for report", "90")
@@ -1070,6 +1195,9 @@ export function registerResearchCli(program: Command) {
           dbPath: opts.db as string,
         });
         defaultRuntime.log(`experiment_group=${route.experimentGroup}`);
+        defaultRuntime.log(
+          `dynamic_exploration_rate=${route.dynamicExplorationRate.toFixed(3)} uncertainty=${route.uncertaintyScore.toFixed(3)}`,
+        );
         defaultRuntime.log(`primary=${route.primary?.policyName ?? "none"}`);
         if (route.shadows.length) {
           defaultRuntime.log(

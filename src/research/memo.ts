@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
 import { openResearchDb } from "./db.js";
+import { addClaimEvidence, createResearchClaim, upsertResearchEntity } from "./memory-graph.js";
 import { computePortfolioPlan, type PortfolioPlan } from "./portfolio.js";
+import { appendProvenanceEvent } from "./provenance.js";
 import { computeValuation, recordValuationForecast, type ValuationResult } from "./valuation.js";
 import { computeVariantPerception, type VariantPerceptionResult } from "./variant.js";
 import { searchResearch } from "./vector-search.js";
@@ -17,6 +20,14 @@ type QualityGateResult = {
   score: number;
   checks: QualityGateCheck[];
   passed: boolean;
+};
+
+type CitationRow = {
+  id: number;
+  source_table: string;
+  ref_id: number;
+  metadata?: string;
+  url?: string;
 };
 
 type Contradiction = {
@@ -170,13 +181,7 @@ export const generateMemoAsync = async (params: {
          .map(() => "?")
          .join(",")})`,
     )
-    .all(...lines.flatMap((l) => l.citationIds)) as Array<{
-    id: number;
-    source_table: string;
-    ref_id: number;
-    metadata?: string;
-    url?: string;
-  }>;
+    .all(...lines.flatMap((l) => l.citationIds)) as CitationRow[];
   const byId = new Map(citations.map((c) => [c.id, c]));
   const variant = computeVariantPerception({
     ticker: params.ticker,
@@ -294,6 +299,51 @@ export const generateMemoAsync = async (params: {
     );
   }
 
+  const entity = upsertResearchEntity({
+    kind: "company",
+    canonicalName: params.ticker.toUpperCase(),
+    ticker: params.ticker,
+    metadata: {
+      source: "memo",
+      question: params.question,
+    },
+    dbPath: params.dbPath,
+  });
+  const claimIds: number[] = [];
+  for (const line of lines) {
+    const claim = createResearchClaim({
+      entityId: entity.id,
+      claimText: line.claim,
+      claimType: "memo_claim",
+      confidence: quality.score,
+      validFrom: new Date().toISOString().slice(0, 10),
+      status: quality.passed ? "active" : "draft",
+      metadata: {
+        question: params.question,
+        quality_score: quality.score,
+        citation_ids: line.citationIds,
+      },
+      dbPath: params.dbPath,
+    });
+    claimIds.push(claim.id);
+    for (const citationId of line.citationIds) {
+      const citation = byId.get(citationId);
+      if (!citation) continue;
+      addClaimEvidence({
+        claimId: claim.id,
+        sourceTable: citation.source_table,
+        refId: citation.ref_id,
+        citationUrl: citation.url,
+        excerptText: line.claim,
+        metadata: {
+          chunk_id: citation.id,
+          chunk_metadata: citation.metadata ?? "",
+        },
+        dbPath: params.dbPath,
+      });
+    }
+  }
+
   let forecastId: number | undefined;
   if (
     typeof valuation.currentPrice === "number" &&
@@ -323,6 +373,32 @@ export const generateMemoAsync = async (params: {
     `- Portfolio stance: ${portfolio.stance}`,
     typeof forecastId === "number" ? `- Forecast id: ${forecastId}` : "- Forecast id: n/a",
   ].join("\n");
+  const memoHash = createHash("sha256").update(memoWithQuality).digest("hex");
+  try {
+    appendProvenanceEvent({
+      eventType: "memo_deliverable",
+      entityType: "research_memo",
+      entityId: `${params.ticker.toUpperCase()}:${forecastId ?? "na"}:${memoHash.slice(0, 12)}`,
+      payload: {
+        ticker: params.ticker.toUpperCase(),
+        question: params.question,
+        memo_hash: memoHash,
+        claims: lines.length,
+        citations: citations.length,
+        quality_score: quality.score,
+        quality_passed: quality.passed,
+        forecast_id: forecastId ?? null,
+        claim_ids: claimIds,
+      },
+      metadata: {
+        min_quality_score: minQualityScore,
+        enforce_institutional_grade: enforceInstitutionalGrade,
+      },
+      dbPath: params.dbPath,
+    });
+  } catch {
+    // Preserve memo path even if provenance persistence fails.
+  }
 
   return {
     memo: memoWithQuality,
@@ -345,10 +421,55 @@ const summarizeText = (text: string, maxChars: number): string => {
   return `${clipped.slice(0, Math.max(0, lastSpace))}...`;
 };
 
+const parseJsonObject = <T extends object>(value: unknown, fallback: T): T => {
+  if (typeof value !== "string" || !value.trim()) return fallback;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fallback;
+    return parsed as T;
+  } catch {
+    return fallback;
+  }
+};
+
+const toDateMs = (value: unknown): number | undefined => {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00.000Z` : value;
+  const ts = Date.parse(normalized);
+  return Number.isFinite(ts) ? ts : undefined;
+};
+
+const citationRecencyMs = (citation: CitationRow): number | undefined => {
+  const metadata = parseJsonObject<Record<string, unknown>>(citation.metadata, {});
+  for (const key of [
+    "asOfDate",
+    "periodEnd",
+    "filingDate",
+    "filed",
+    "event_date",
+    "eventDate",
+    "acceptedAt",
+  ]) {
+    const ts = toDateMs(metadata[key]);
+    if (typeof ts === "number") return ts;
+  }
+  const fromUrl = citation.url?.match(/\b\d{4}-\d{2}-\d{2}\b/)?.[0];
+  return typeof fromUrl === "string" ? toDateMs(fromUrl) : undefined;
+};
+
+const extractCitationHost = (url?: string): string | undefined => {
+  if (!url?.trim()) return undefined;
+  try {
+    return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return undefined;
+  }
+};
+
 const assessInstitutionalQuality = (params: {
   hitsCount: number;
   lines: MemoLine[];
-  citations: Array<{ id: number; source_table: string; url?: string }>;
+  citations: CitationRow[];
   variant: VariantPerceptionResult;
   valuation: ValuationResult;
   portfolio: PortfolioPlan;
@@ -362,7 +483,24 @@ const assessInstitutionalQuality = (params: {
   const uniqueUrls = new Set(
     params.citations.map((c) => c.url?.trim()).filter((u): u is string => Boolean(u)),
   ).size;
+  const uniqueHosts = new Set(
+    params.citations
+      .map((citation) => extractCitationHost(citation.url))
+      .filter((value): value is string => Boolean(value)),
+  ).size;
   const uniqueSourceTables = new Set(params.citations.map((c) => c.source_table)).size;
+  const datedCitations = params.citations
+    .map((citation) => citationRecencyMs(citation))
+    .filter((value): value is number => typeof value === "number");
+  const freshCutoff = Date.now() - 730 * 86_400_000;
+  const freshRatio =
+    datedCitations.length > 0
+      ? datedCitations.filter((timestamp) => timestamp >= freshCutoff).length /
+        datedCitations.length
+      : 0;
+  const mediumContradictions = params.diagnostics.contradictions.filter(
+    (item) => item.severity === "medium",
+  ).length;
 
   checks.push({
     name: "claim_count",
@@ -380,7 +518,19 @@ const assessInstitutionalQuality = (params: {
     name: "source_diversity",
     passed: uniqueUrls >= 3 || uniqueSourceTables >= 2,
     detail: `unique_urls=${uniqueUrls}, source_tables=${uniqueSourceTables} (required urls>=3 or sources>=2)`,
-    weight: 0.12,
+    weight: 0.1,
+  });
+  checks.push({
+    name: "source_independence",
+    passed: uniqueHosts >= 2 || uniqueSourceTables >= 3,
+    detail: `unique_hosts=${uniqueHosts}, source_tables=${uniqueSourceTables} (required hosts>=2 or sources>=3)`,
+    weight: 0.1,
+  });
+  checks.push({
+    name: "evidence_freshness",
+    passed: freshRatio >= 0.6 || datedCitations.length === 0,
+    detail: `fresh_ratio=${(freshRatio * 100).toFixed(1)}% dated_citations=${datedCitations.length} (required >= 60%)`,
+    weight: 0.08,
   });
   checks.push({
     name: "retrieval_depth",
@@ -415,7 +565,13 @@ const assessInstitutionalQuality = (params: {
     passed:
       params.diagnostics.contradictions.filter((item) => item.severity === "high").length === 0,
     detail: `high_severity_contradictions=${params.diagnostics.contradictions.filter((item) => item.severity === "high").length} (required = 0)`,
-    weight: 0.08,
+    weight: 0.07,
+  });
+  checks.push({
+    name: "contradiction_resolution",
+    passed: mediumContradictions <= 1,
+    detail: `medium_severity_contradictions=${mediumContradictions} (required <= 1)`,
+    weight: 0.07,
   });
   checks.push({
     name: "falsification_depth",
@@ -433,7 +589,9 @@ const assessInstitutionalQuality = (params: {
     weight: 0.06,
   });
 
-  const score = checks.reduce((s, c) => s + (c.passed ? c.weight : 0), 0);
+  const totalWeight = checks.reduce((sum, check) => sum + Math.max(0, check.weight), 0);
+  const scoreRaw = checks.reduce((sum, check) => sum + (check.passed ? check.weight : 0), 0);
+  const score = totalWeight > 1e-9 ? scoreRaw / totalWeight : 0;
   return {
     score,
     checks,

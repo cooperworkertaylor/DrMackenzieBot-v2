@@ -1,5 +1,7 @@
 import { runAllBenchmarksWithGovernance } from "../src/research/benchmark.js";
 import { runPolicyGovernance } from "../src/research/policy.js";
+import { provenanceReport } from "../src/research/provenance.js";
+import { runResearchSecurityAudit } from "../src/research/security.js";
 
 const run = async () => {
   const benchmark = runAllBenchmarksWithGovernance({
@@ -29,6 +31,16 @@ const run = async () => {
   });
   console.log(
     `policy promoted=${policy.promoted} rolled_back=${policy.rolledBack} held=${policy.held}`,
+  );
+
+  const provenance = provenanceReport({ limit: 400 });
+  console.log(
+    `provenance events=${provenance.totalEvents} chain_valid=${provenance.chainValid ? 1 : 0} signature_coverage=${(provenance.signatureCoverage * 100).toFixed(1)}%`,
+  );
+
+  const security = runResearchSecurityAudit();
+  console.log(
+    `security pass=${security.passCount} warn=${security.warnCount} fail=${security.failCount}`,
   );
 };
 

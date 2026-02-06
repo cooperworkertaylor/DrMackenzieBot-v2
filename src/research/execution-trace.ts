@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { LearningTaskType } from "./learning.js";
 import { openResearchDb } from "./db.js";
+import { appendProvenanceEvent } from "./provenance.js";
 
 export type ExecutionTraceStepInput = {
   seq?: number;
@@ -425,6 +426,39 @@ export const logExecutionTrace = (params: LogExecutionTraceParams): ExecutionTra
     });
 
     db.exec("COMMIT");
+    try {
+      appendProvenanceEvent({
+        eventType: "execution_trace",
+        entityType: "execution_traces",
+        entityId: traceId,
+        payload: {
+          trace_id: traceId,
+          task_type: taskType,
+          task_archetype: taskArchetype,
+          policy_name: policyName,
+          policy_role: policyRole,
+          experiment_group: experimentGroup,
+          ticker,
+          repo_root: repoRoot,
+          seed,
+          trace_hash: traceHash,
+          output_hash: outputHash,
+          success: success ? 1 : 0,
+          step_count: steps.length,
+          retry_count: retryCount,
+          error_count: errorCount,
+          timeout_count: timeoutCount,
+          total_latency_ms: totalLatencyMs,
+          completed_at: completedAt,
+        },
+        metadata: {
+          source: "execution_trace",
+        },
+        dbPath: params.dbPath,
+      });
+    } catch {
+      // Keep trace pipeline non-blocking if provenance write fails.
+    }
     return {
       id: traceId,
       taskType,
