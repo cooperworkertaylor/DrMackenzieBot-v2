@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { addCatalyst } from "./catalyst.js";
 import { openResearchDb } from "./db.js";
+import { upsertMacroFactorObservations } from "./macro-factors.js";
 import { refreshThemeMembership, upsertThemeDefinition } from "./theme-ontology.js";
 import { computeSectorResearch, computeThemeResearch } from "./theme-sector.js";
 
@@ -20,6 +21,29 @@ const generateDates = (count: number, startDate: string): string[] => {
 
 const futureDate = (daysAhead: number): string =>
   new Date(Date.now() + daysAhead * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+const seedMacroFactors = (params: { dbPath: string; dates: string[] }) => {
+  const seriesDates = params.dates.slice(1);
+  const factorBase: Record<string, number> = {
+    rates: 0.0002,
+    credit_spread: -0.0001,
+    dollar: 0.00015,
+    oil: 0.00025,
+    vix: 0.0003,
+  };
+  for (const [factorKey, base] of Object.entries(factorBase)) {
+    upsertMacroFactorObservations({
+      factorKey,
+      observations: seriesDates.map((date, index) => ({
+        date,
+        value: base * Math.cos((index + 3) / 11),
+        source: "test_macro",
+        sourceUrl: "https://example.test/macro",
+      })),
+      dbPath: params.dbPath,
+    });
+  }
+};
 
 const seedTicker = (params: {
   dbPath: string;
@@ -115,6 +139,7 @@ describe("theme and sector research", () => {
       drift: 0.0007,
       phase: 6,
     });
+    seedMacroFactors({ dbPath, dates });
 
     const result = computeSectorResearch({
       sector: "Technology",
@@ -137,6 +162,9 @@ describe("theme and sector research", () => {
     expect(result.factorAttribution?.benchmarkTicker).toBe("QQQ");
     expect(result.factorAttribution?.sampleSize).toBeGreaterThanOrEqual(40);
     expect(result.factorAttribution?.factorBetas.benchmark).toBeTypeOf("number");
+    expect(result.factorAttribution?.macroFactors.length).toBe(5);
+    expect(result.factorAttribution?.rollingWindows.length).toBeGreaterThan(0);
+    expect(result.factorAttribution?.macroFactors[0]?.coveragePct).toBeGreaterThan(90);
     expect(result.insightSummary.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -187,6 +215,7 @@ describe("theme and sector research", () => {
       drift: 0.0007,
       phase: 6,
     });
+    seedMacroFactors({ dbPath, dates });
 
     upsertThemeDefinition({
       theme: "ai-compute-energy",
@@ -255,6 +284,9 @@ describe("theme and sector research", () => {
     expect(result.factorAttribution?.benchmarkTicker).toBe("QQQ");
     expect(result.factorAttribution?.sampleSize).toBeGreaterThanOrEqual(40);
     expect(result.factorAttribution?.annualizedAlphaPct).toBeTypeOf("number");
+    expect(result.factorAttribution?.macroFactors.length).toBe(5);
+    expect(result.factorAttribution?.rollingWindows.length).toBeGreaterThan(0);
+    expect(result.factorAttribution?.macroFactors[0]?.coveragePct).toBeGreaterThan(90);
     expect(result.sectorExposure.length).toBeGreaterThanOrEqual(2);
     expect(result.sectorExposure.reduce((sum, row) => sum + row.sharePct, 0)).toBeCloseTo(1, 5);
     expect(result.leaders.length).toBeGreaterThan(0);

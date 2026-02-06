@@ -1,5 +1,10 @@
 import { getCatalystSummary } from "./catalyst.js";
 import { openResearchDb } from "./db.js";
+import {
+  listMacroFactorObservations,
+  loadMacroFactorSeries,
+  type MacroFactorKey,
+} from "./macro-factors.js";
 import { computePortfolioPlan } from "./portfolio.js";
 import { appendProvenanceEvent } from "./provenance.js";
 import { getThemeConstituents, listThemeDefinitions } from "./theme-ontology.js";
@@ -214,7 +219,25 @@ export type CrossSectionFactorAttribution = {
     quality: number;
     size: number;
   };
-  dominantContributionFactor: "benchmark" | CrossSectionFactor;
+  macroFactors: Array<{
+    factorKey: MacroFactorKey;
+    beta: number;
+    annualizedContributionPct: number;
+    coveragePct: number;
+    source: string;
+  }>;
+  rollingWindows: Array<{
+    startDate: string;
+    endDate: string;
+    sampleSize: number;
+    annualizedActiveReturnPct: number;
+    annualizedAlphaPct: number;
+    rSquared: number;
+    dominantContributionFactor: "benchmark" | CrossSectionFactor | MacroFactorKey;
+  }>;
+  windowDays: number;
+  stepDays: number;
+  dominantContributionFactor: "benchmark" | CrossSectionFactor | MacroFactorKey;
 };
 
 const clamp = (value: number, min: number, max: number): number =>
@@ -993,20 +1016,47 @@ const computeCrossSectionFactorAttribution = (params: {
     .filter((date) => benchmarkByDate.has(date))
     .sort((left, right) => left.localeCompare(right));
   if (dates.length < 30) return undefined;
+  const macroFactorKeys: MacroFactorKey[] = ["rates", "credit_spread", "dollar", "oil", "vix"];
+  const macroSourceByKey = new Map<MacroFactorKey, string>();
+  for (const key of macroFactorKeys) {
+    const latest = listMacroFactorObservations({
+      factorKey: key,
+      limit: 1,
+      dbPath: params.dbPath,
+    })[0];
+    if (latest?.source?.trim()) macroSourceByKey.set(key, latest.source.trim());
+  }
+  const macroByKey = loadMacroFactorSeries({
+    factorKeys: macroFactorKeys,
+    startDate: dates[0],
+    endDate: dates[dates.length - 1],
+    dbPath: params.dbPath,
+  });
   const themeSeries = dates.map((date) => themeByDate.get(date) ?? 0);
   const benchmarkSeries = dates.map((date) => benchmarkByDate.get(date) ?? 0);
   const momentumSeries = dates.map((date) => momentumByDate.get(date) ?? 0);
   const valueSeries = dates.map((date) => valueByDate.get(date) ?? 0);
   const qualitySeries = dates.map((date) => qualityByDate.get(date) ?? 0);
   const sizeSeries = dates.map((date) => sizeByDate.get(date) ?? 0);
+  const macroSeriesByKey = new Map<MacroFactorKey, number[]>();
+  const macroCoverageByKey = new Map<MacroFactorKey, number>();
+  for (const key of macroFactorKeys) {
+    const factorSeries = macroByKey[key];
+    const values = dates.map((date) => factorSeries?.get(date) ?? 0);
+    const covered = dates.reduce((count, date) => count + (factorSeries?.has(date) ? 1 : 0), 0);
+    macroSeriesByKey.set(key, values);
+    macroCoverageByKey.set(key, dates.length ? (covered / dates.length) * 100 : 0);
+  }
   const activeSeries = themeSeries.map((value, index) => value - (benchmarkSeries[index] ?? 0));
-  const regression = runOls(activeSeries, [
+  const predictorSeries = [
     benchmarkSeries,
     momentumSeries,
     valueSeries,
     qualitySeries,
     sizeSeries,
-  ]);
+    ...macroFactorKeys.map((key) => macroSeriesByKey.get(key) ?? []),
+  ];
+  const regression = runOls(activeSeries, predictorSeries);
   if (!regression) return undefined;
   const alphaDaily = regression.coefficients[0] ?? 0;
   const betaBenchmark = regression.coefficients[1] ?? 0;
@@ -1014,24 +1064,122 @@ const computeCrossSectionFactorAttribution = (params: {
   const betaValue = regression.coefficients[3] ?? 0;
   const betaQuality = regression.coefficients[4] ?? 0;
   const betaSize = regression.coefficients[5] ?? 0;
+  const macroBetas = macroFactorKeys.map((key, index) => ({
+    factorKey: key,
+    beta: regression.coefficients[6 + index] ?? 0,
+  }));
   const annualizedBenchmark = betaBenchmark * mean(benchmarkSeries) * 252 * 100;
   const annualizedMomentum = betaMomentum * mean(momentumSeries) * 252 * 100;
   const annualizedValue = betaValue * mean(valueSeries) * 252 * 100;
   const annualizedQuality = betaQuality * mean(qualitySeries) * 252 * 100;
   const annualizedSize = betaSize * mean(sizeSeries) * 252 * 100;
+  const macroFactors = macroBetas.map((row) => {
+    const factorSeries = macroSeriesByKey.get(row.factorKey) ?? [];
+    return {
+      factorKey: row.factorKey,
+      beta: row.beta,
+      annualizedContributionPct: row.beta * mean(factorSeries) * 252 * 100,
+      coveragePct: macroCoverageByKey.get(row.factorKey) ?? 0,
+      source: macroSourceByKey.get(row.factorKey) ?? "macro_factor_observations",
+    };
+  });
   const annualizedActiveReturnPct = mean(activeSeries) * 252 * 100;
   const annualizedAlphaPct = alphaDaily * 252 * 100;
   const annualizedResidualPct = mean(regression.residuals) * 252 * 100;
-  const dominantEntries: Array<["benchmark" | CrossSectionFactor, number]> = [
+  const dominantEntries: Array<["benchmark" | CrossSectionFactor | MacroFactorKey, number]> = [
     ["benchmark", annualizedBenchmark],
     ["momentum", annualizedMomentum],
     ["value", annualizedValue],
     ["quality", annualizedQuality],
     ["size", annualizedSize],
+    ...macroFactors.map(
+      (factor) =>
+        [factor.factorKey, factor.annualizedContributionPct] as [
+          "benchmark" | CrossSectionFactor | MacroFactorKey,
+          number,
+        ],
+    ),
   ];
   const dominantContributionFactor =
     dominantEntries.sort((left, right) => Math.abs(right[1]) - Math.abs(left[1]))[0]?.[0] ??
     "benchmark";
+  const windowDays = 63;
+  const stepDays = 21;
+  const rollingWindows: CrossSectionFactorAttribution["rollingWindows"] = [];
+  for (let start = 0; start + windowDays <= dates.length; start += stepDays) {
+    const end = start + windowDays;
+    const activeSlice = activeSeries.slice(start, end);
+    if (activeSlice.length < 30) continue;
+    const predictorSlices = predictorSeries.map((series) => series.slice(start, end));
+    const windowRegression = runOls(activeSlice, predictorSlices);
+    if (!windowRegression) continue;
+    const contributionEntries: Array<["benchmark" | CrossSectionFactor | MacroFactorKey, number]> =
+      [
+        [
+          "benchmark",
+          (windowRegression.coefficients[1] ?? 0) *
+            mean(benchmarkSeries.slice(start, end)) *
+            252 *
+            100,
+        ],
+        [
+          "momentum",
+          (windowRegression.coefficients[2] ?? 0) *
+            mean(momentumSeries.slice(start, end)) *
+            252 *
+            100,
+        ],
+        [
+          "value",
+          (windowRegression.coefficients[3] ?? 0) * mean(valueSeries.slice(start, end)) * 252 * 100,
+        ],
+        [
+          "quality",
+          (windowRegression.coefficients[4] ?? 0) *
+            mean(qualitySeries.slice(start, end)) *
+            252 *
+            100,
+        ],
+        [
+          "size",
+          (windowRegression.coefficients[5] ?? 0) * mean(sizeSeries.slice(start, end)) * 252 * 100,
+        ],
+      ];
+    for (let macroIndex = 0; macroIndex < macroFactorKeys.length; macroIndex += 1) {
+      const key = macroFactorKeys[macroIndex]!;
+      const series = macroSeriesByKey.get(key) ?? [];
+      contributionEntries.push([
+        key,
+        (windowRegression.coefficients[6 + macroIndex] ?? 0) *
+          mean(series.slice(start, end)) *
+          252 *
+          100,
+      ]);
+    }
+    const dominantWindowContribution =
+      contributionEntries.sort((left, right) => Math.abs(right[1]) - Math.abs(left[1]))[0]?.[0] ??
+      "benchmark";
+    rollingWindows.push({
+      startDate: dates[start]!,
+      endDate: dates[end - 1]!,
+      sampleSize: activeSlice.length,
+      annualizedActiveReturnPct: mean(activeSlice) * 252 * 100,
+      annualizedAlphaPct: (windowRegression.coefficients[0] ?? 0) * 252 * 100,
+      rSquared: windowRegression.rSquared,
+      dominantContributionFactor: dominantWindowContribution,
+    });
+  }
+  if (!rollingWindows.length) {
+    rollingWindows.push({
+      startDate: dates[0]!,
+      endDate: dates[dates.length - 1]!,
+      sampleSize: dates.length,
+      annualizedActiveReturnPct,
+      annualizedAlphaPct,
+      rSquared: regression.rSquared,
+      dominantContributionFactor,
+    });
+  }
   return {
     benchmarkTicker,
     sampleSize: dates.length,
@@ -1053,6 +1201,10 @@ const computeCrossSectionFactorAttribution = (params: {
       quality: annualizedQuality,
       size: annualizedSize,
     },
+    macroFactors,
+    rollingWindows,
+    windowDays,
+    stepDays,
     dominantContributionFactor,
   };
 };

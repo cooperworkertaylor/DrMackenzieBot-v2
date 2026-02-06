@@ -51,6 +51,11 @@ import {
   getTickerPointInTimeSnapshot,
 } from "../research/knowledge-graph.js";
 import { learningReport, logTaskOutcome, runLearningCalibration } from "../research/learning.js";
+import {
+  DEFAULT_MACRO_FACTOR_KEYS,
+  ingestDefaultMacroFactors,
+  listMacroFactorObservations,
+} from "../research/macro-factors.js";
 import { generateMemoAsync } from "../research/memo.js";
 import { listEntityClaims, updateClaimStatus } from "../research/memory-graph.js";
 import { monitorTicker, monitorTickers } from "../research/monitor.js";
@@ -252,6 +257,59 @@ export function registerResearchCli(program: Command) {
         const db = openResearchDb(opts.path);
         void db;
         defaultRuntime.log(`Research DB ready at ${resolveResearchDbPath(opts.path as string)}`);
+      });
+    });
+
+  research
+    .command("macro-ingest")
+    .description("Ingest default external macro factor proxies (Alpha Vantage)")
+    .option("--api-key <value>", "Alpha Vantage API key (or ALPHAVANTAGE_API_KEY env)")
+    .option("--retries <n>", "Retry count", "3")
+    .option("--pause-ms <n>", "Pause between requests (ms)", "12500")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const result = await ingestDefaultMacroFactors({
+          apiKey: opts["apiKey"] as string | undefined,
+          retries: parseOptionalNumber(opts.retries),
+          pauseMs: parseOptionalNumber(opts["pauseMs"]),
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(`macro_ingest fetched_at=${result.fetchedAt}`);
+        result.factors.forEach((factor) => {
+          defaultRuntime.log(
+            `macro_factor factor=${factor.factorKey} observations=${factor.observations} start_date=${factor.startDate || "n/a"} end_date=${factor.endDate || "n/a"}`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("macro-list")
+    .description("List stored macro factor observations")
+    .option("--factor <key>", `Macro factor key (${DEFAULT_MACRO_FACTOR_KEYS.join(",")})`)
+    .option("--start-date <date>", "Start date (YYYY-MM-DD)")
+    .option("--end-date <date>", "End date (YYYY-MM-DD)")
+    .option("--limit <n>", "Result limit", "200")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const rows = listMacroFactorObservations({
+          factorKey: opts.factor as string | undefined,
+          startDate: opts["startDate"] as string | undefined,
+          endDate: opts["endDate"] as string | undefined,
+          limit: parseOptionalNumber(opts.limit) ?? 200,
+          dbPath: opts.db as string,
+        });
+        if (!rows.length) {
+          defaultRuntime.log("No macro factor observations found.");
+          return;
+        }
+        rows.forEach((row) => {
+          defaultRuntime.log(
+            `macro_factor factor=${row.factorKey} date=${row.date} value=${row.value.toFixed(6)} source=${row.source} fetched_at=${new Date(row.fetchedAt).toISOString()}`,
+          );
+        });
       });
     });
 
@@ -1236,6 +1294,16 @@ export function registerResearchCli(program: Command) {
           defaultRuntime.log(
             `factor_contrib_ann_pct benchmark=${result.factorAttribution.annualizedContributionPct.benchmark.toFixed(2)} momentum=${result.factorAttribution.annualizedContributionPct.momentum.toFixed(2)} value=${result.factorAttribution.annualizedContributionPct.value.toFixed(2)} quality=${result.factorAttribution.annualizedContributionPct.quality.toFixed(2)} size=${result.factorAttribution.annualizedContributionPct.size.toFixed(2)}`,
           );
+          result.factorAttribution.macroFactors.forEach((factor) => {
+            defaultRuntime.log(
+              `macro_factor factor=${factor.factorKey} beta=${factor.beta.toFixed(3)} contrib_ann_pct=${factor.annualizedContributionPct.toFixed(2)} coverage_pct=${factor.coveragePct.toFixed(1)} source=${factor.source}`,
+            );
+          });
+          result.factorAttribution.rollingWindows.forEach((window, index) => {
+            defaultRuntime.log(
+              `rolling_factor_window idx=${index + 1} start=${window.startDate} end=${window.endDate} sample_size=${window.sampleSize} active_return_ann_pct=${window.annualizedActiveReturnPct.toFixed(2)} alpha_ann_pct=${window.annualizedAlphaPct.toFixed(2)} r2=${window.rSquared.toFixed(2)} dominant_driver=${window.dominantContributionFactor}`,
+            );
+          });
         }
         result.insightSummary.forEach((line, index) => {
           defaultRuntime.log(`insight_${index + 1}=${line}`);
@@ -1320,6 +1388,16 @@ export function registerResearchCli(program: Command) {
           defaultRuntime.log(
             `factor_contrib_ann_pct benchmark=${result.factorAttribution.annualizedContributionPct.benchmark.toFixed(2)} momentum=${result.factorAttribution.annualizedContributionPct.momentum.toFixed(2)} value=${result.factorAttribution.annualizedContributionPct.value.toFixed(2)} quality=${result.factorAttribution.annualizedContributionPct.quality.toFixed(2)} size=${result.factorAttribution.annualizedContributionPct.size.toFixed(2)}`,
           );
+          result.factorAttribution.macroFactors.forEach((factor) => {
+            defaultRuntime.log(
+              `macro_factor factor=${factor.factorKey} beta=${factor.beta.toFixed(3)} contrib_ann_pct=${factor.annualizedContributionPct.toFixed(2)} coverage_pct=${factor.coveragePct.toFixed(1)} source=${factor.source}`,
+            );
+          });
+          result.factorAttribution.rollingWindows.forEach((window, index) => {
+            defaultRuntime.log(
+              `rolling_factor_window idx=${index + 1} start=${window.startDate} end=${window.endDate} sample_size=${window.sampleSize} active_return_ann_pct=${window.annualizedActiveReturnPct.toFixed(2)} alpha_ann_pct=${window.annualizedAlphaPct.toFixed(2)} r2=${window.rSquared.toFixed(2)} dominant_driver=${window.dominantContributionFactor}`,
+            );
+          });
         }
         result.sectorExposure.forEach((row) => {
           defaultRuntime.log(

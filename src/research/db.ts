@@ -584,6 +584,18 @@ const migrate = (db: ResearchDb) => {
       unique (theme_key, theme_version, ticker)
     );
 
+    create table if not exists macro_factor_observations (
+      id integer primary key,
+      factor_key text not null,
+      date text not null,
+      value real not null,
+      source text not null default '',
+      source_url text not null default '',
+      metadata text not null default '{}',
+      fetched_at integer not null,
+      unique (factor_key, date, source)
+    );
+
     create table if not exists research_events (
       id integer primary key,
       entity_id integer not null,
@@ -787,6 +799,12 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_theme_constituents_ticker
       on theme_constituents (ticker, status, membership_score desc);
+
+    create index if not exists idx_macro_factor_lookup
+      on macro_factor_observations (factor_key, date desc, source);
+
+    create index if not exists idx_macro_factor_date
+      on macro_factor_observations (date desc, factor_key);
 
     create index if not exists idx_research_events_lookup
       on research_events (entity_id, event_time desc, event_type);
