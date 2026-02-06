@@ -2,7 +2,7 @@ import { getCatalystSummary } from "./catalyst.js";
 import { openResearchDb } from "./db.js";
 import { computePortfolioPlan } from "./portfolio.js";
 import { appendProvenanceEvent } from "./provenance.js";
-import { getThemeConstituents } from "./theme-ontology.js";
+import { getThemeConstituents, listThemeDefinitions } from "./theme-ontology.js";
 import { computeValuation } from "./valuation.js";
 import { computeVariantPerception } from "./variant.js";
 
@@ -40,11 +40,12 @@ type CrossSectionConstituentInternal = {
   conviction: "long-bias" | "short-bias" | "neutral";
   notes: string[];
   returnsByDate63d: Map<string, number>;
+  returnsByDateLookback: Map<string, number>;
 };
 
 export type CrossSectionConstituentSnapshot = Omit<
   CrossSectionConstituentInternal,
-  "returnsByDate63d"
+  "returnsByDate63d" | "returnsByDateLookback"
 >;
 
 export type CrossSectionMetrics = {
@@ -91,6 +92,7 @@ export type ThemeResearchResult = {
   themeVersion?: number;
   usedThemeRegistry: boolean;
   membershipMinScore?: number;
+  benchmarkRelative?: ThemeBenchmarkRelativeMetrics;
   tickers: string[];
   lookbackDays: number;
   metrics: CrossSectionMetrics;
@@ -105,6 +107,24 @@ export type ThemeResearchResult = {
   constituents: CrossSectionConstituentSnapshot[];
   riskFlags: string[];
   insightSummary: string[];
+};
+
+export type ThemeBenchmarkRelativeMetrics = {
+  benchmarkTicker: string;
+  sampleSize: number;
+  lookbackDays: number;
+  themeReturnPct: number;
+  benchmarkReturnPct: number;
+  relativeReturnPct: number;
+  activeHitRatePct: number;
+  annualizedActiveReturnPct?: number;
+  annualizedAlphaPct?: number;
+  beta?: number;
+  correlation?: number;
+  trackingErrorPct?: number;
+  informationRatio?: number;
+  upsideCapturePct?: number;
+  downsideCapturePct?: number;
 };
 
 const clamp = (value: number, min: number, max: number): number =>
@@ -128,6 +148,17 @@ const stddev = (values: number[]): number | undefined => {
   const avg = mean(values);
   const variance = values.reduce((sum, value) => sum + (value - avg) ** 2, 0) / (values.length - 1);
   return Math.sqrt(Math.max(0, variance));
+};
+
+const compoundedReturnPct = (returns: number[]): number | undefined => {
+  if (!returns.length) return undefined;
+  let compounded = 1;
+  for (const ret of returns) {
+    if (!Number.isFinite(ret)) continue;
+    compounded *= 1 + ret;
+  }
+  if (!Number.isFinite(compounded) || compounded <= 0) return undefined;
+  return (compounded - 1) * 100;
 };
 
 const covariance = (left: number[], right: number[]): number | undefined => {
@@ -289,6 +320,7 @@ const derivePriceSignals = (
   avgDailyDollarVolumeUsd?: number;
   avgDailyShareVolume?: number;
   returnsByDate63d: Map<string, number>;
+  returnsByDateLookback: Map<string, number>;
 } => {
   const currentPrice = prices[prices.length - 1]?.close;
   const return20dPct = nthReturnPct(prices, 20);
@@ -303,19 +335,25 @@ const derivePriceSignals = (
       ? (currentPrice / maxClose63 - 1) * 100
       : undefined;
   const returnsByDate63d = new Map<string, number>();
-  const returnValues: number[] = [];
-  const startIndex = Math.max(1, prices.length - 63);
-  for (let index = startIndex; index < prices.length; index += 1) {
+  const returnsByDateLookback = new Map<string, number>();
+  const returnValues63d: number[] = [];
+  const startIndex63 = Math.max(1, prices.length - 63);
+  for (let index = 1; index < prices.length; index += 1) {
     const current = prices[index];
     const prior = prices[index - 1];
     if (!current || !prior || Math.abs(prior.close) <= 1e-9) continue;
     const ret = current.close / prior.close - 1;
     if (!Number.isFinite(ret)) continue;
-    returnsByDate63d.set(current.date, ret);
-    returnValues.push(ret);
+    returnsByDateLookback.set(current.date, ret);
+    if (index >= startIndex63) {
+      returnsByDate63d.set(current.date, ret);
+      returnValues63d.push(ret);
+    }
   }
   const volatility63dPct =
-    returnValues.length >= 15 ? (stddev(returnValues) ?? 0) * Math.sqrt(252) * 100 : undefined;
+    returnValues63d.length >= 15
+      ? (stddev(returnValues63d) ?? 0) * Math.sqrt(252) * 100
+      : undefined;
 
   const dollarVolumes: number[] = [];
   const shareVolumes: number[] = [];
@@ -334,6 +372,7 @@ const derivePriceSignals = (
     avgDailyDollarVolumeUsd: dollarVolumes.length ? mean(dollarVolumes) : undefined,
     avgDailyShareVolume: shareVolumes.length ? mean(shareVolumes) : undefined,
     returnsByDate63d,
+    returnsByDateLookback,
   };
 };
 
@@ -476,6 +515,7 @@ const buildConstituentSnapshot = (params: {
     conviction,
     notes,
     returnsByDate63d: priceSignals.returnsByDate63d,
+    returnsByDateLookback: priceSignals.returnsByDateLookback,
   };
 };
 
@@ -604,6 +644,7 @@ const computeCrossSectionMetrics = (
 const buildRiskFlags = (params: {
   metrics: CrossSectionMetrics;
   rows: CrossSectionConstituentInternal[];
+  benchmarkRelative?: ThemeBenchmarkRelativeMetrics;
 }): string[] => {
   const out: string[] = [];
   if (
@@ -642,6 +683,34 @@ const buildRiskFlags = (params: {
   if (liquidityTail.length >= Math.max(2, Math.ceil(params.rows.length * 0.25))) {
     out.push("Liquidity tail is material; execution slippage risk may dominate alpha at size.");
   }
+  if (params.benchmarkRelative) {
+    const relative = params.benchmarkRelative;
+    if (relative.relativeReturnPct <= -8) {
+      out.push(
+        `Theme underperforms ${relative.benchmarkTicker} by ${Math.abs(relative.relativeReturnPct).toFixed(1)}% over the sampled window.`,
+      );
+    }
+    if (
+      typeof relative.informationRatio === "number" &&
+      typeof relative.trackingErrorPct === "number" &&
+      relative.informationRatio < -0.25 &&
+      relative.trackingErrorPct >= 20
+    ) {
+      out.push(
+        "Active risk is high while information ratio is negative; benchmark-relative thesis quality is weak.",
+      );
+    }
+    if (
+      typeof relative.beta === "number" &&
+      relative.beta >= 1.3 &&
+      typeof relative.downsideCapturePct === "number" &&
+      relative.downsideCapturePct > 110
+    ) {
+      out.push(
+        "Theme has high beta and elevated downside capture versus benchmark; downside convexity is unfavorable.",
+      );
+    }
+  }
   return out;
 };
 
@@ -651,6 +720,7 @@ const buildInsightSummary = (params: {
   leaders: CrossSectionConstituentInternal[];
   laggards: CrossSectionConstituentInternal[];
   riskFlags: string[];
+  benchmarkRelative?: ThemeBenchmarkRelativeMetrics;
 }): string[] => {
   const out: string[] = [];
   out.push(
@@ -676,6 +746,12 @@ const buildInsightSummary = (params: {
             `${row.ticker}(${row.compositeScore.toFixed(2)}, ${typeof row.return63dPct === "number" ? row.return63dPct.toFixed(1) : "n/a"}%)`,
         )
         .join(", ")}.`,
+    );
+  }
+  if (params.benchmarkRelative) {
+    const bench = params.benchmarkRelative;
+    out.push(
+      `Benchmark ${bench.benchmarkTicker}: theme=${bench.themeReturnPct.toFixed(1)}%, benchmark=${bench.benchmarkReturnPct.toFixed(1)}%, relative=${bench.relativeReturnPct >= 0 ? "+" : ""}${bench.relativeReturnPct.toFixed(1)}%, beta=${typeof bench.beta === "number" ? bench.beta.toFixed(2) : "n/a"}, IR=${typeof bench.informationRatio === "number" ? bench.informationRatio.toFixed(2) : "n/a"}.`,
     );
   }
   if (params.riskFlags.length) out.push(`Primary risk: ${params.riskFlags[0]}`);
@@ -704,6 +780,163 @@ const deriveConstituentSet = (params: {
       dbPath: params.dbPath,
     }),
   );
+};
+
+const resolveThemeDefinitionForReport = (params: {
+  theme: string;
+  preferredVersion?: number;
+  fallbackVersion?: number;
+  dbPath?: string;
+}) => {
+  const definitions = listThemeDefinitions({
+    theme: params.theme,
+    includeInactive: true,
+    dbPath: params.dbPath,
+  });
+  if (!definitions.length) return undefined;
+  const versionsToTry = [params.preferredVersion, params.fallbackVersion].filter(
+    (value): value is number => typeof value === "number" && Number.isFinite(value),
+  );
+  for (const version of versionsToTry) {
+    const found = definitions.find((row) => row.version === Math.round(version));
+    if (found) return found;
+  }
+  const active = definitions.find((row) => row.status === "active");
+  return active ?? definitions[0];
+};
+
+const computeThemeBenchmarkRelative = (params: {
+  rows: CrossSectionConstituentInternal[];
+  benchmarkTicker: string;
+  lookbackDays: number;
+  dbPath?: string;
+}): ThemeBenchmarkRelativeMetrics | undefined => {
+  const benchmarkTicker = normalizeTicker(params.benchmarkTicker);
+  if (!benchmarkTicker) return undefined;
+  const themeByDate = new Map<string, number[]>();
+  for (const row of params.rows) {
+    for (const [date, ret] of row.returnsByDateLookback) {
+      const bucket = themeByDate.get(date) ?? [];
+      bucket.push(ret);
+      themeByDate.set(date, bucket);
+    }
+  }
+  if (!themeByDate.size) return undefined;
+  const themeReturnByDate = new Map<string, number>();
+  for (const [date, values] of themeByDate) {
+    if (!values.length) continue;
+    themeReturnByDate.set(date, mean(values));
+  }
+  const benchmarkReturns = derivePriceSignals(
+    loadPrices({
+      ticker: benchmarkTicker,
+      lookbackDays: params.lookbackDays,
+      dbPath: params.dbPath,
+    }),
+  ).returnsByDateLookback;
+  if (!benchmarkReturns.size) return undefined;
+  const overlapDates = Array.from(themeReturnByDate.keys())
+    .filter((date) => benchmarkReturns.has(date))
+    .sort((left, right) => left.localeCompare(right));
+  if (overlapDates.length < 30) return undefined;
+
+  const themeSeries: number[] = [];
+  const benchmarkSeries: number[] = [];
+  for (const date of overlapDates) {
+    const themeRet = themeReturnByDate.get(date);
+    const benchmarkRet = benchmarkReturns.get(date);
+    if (typeof themeRet !== "number" || typeof benchmarkRet !== "number") continue;
+    themeSeries.push(themeRet);
+    benchmarkSeries.push(benchmarkRet);
+  }
+  if (themeSeries.length < 30 || benchmarkSeries.length < 30) return undefined;
+
+  const activeSeries = themeSeries.map((ret, index) => ret - (benchmarkSeries[index] ?? 0));
+  const themeReturnPct = compoundedReturnPct(themeSeries);
+  const benchmarkReturnPct = compoundedReturnPct(benchmarkSeries);
+  if (typeof themeReturnPct !== "number" || typeof benchmarkReturnPct !== "number")
+    return undefined;
+
+  const covThemeBenchmark = covariance(themeSeries, benchmarkSeries);
+  const benchmarkVariance = covariance(benchmarkSeries, benchmarkSeries);
+  const beta =
+    typeof covThemeBenchmark === "number" &&
+    typeof benchmarkVariance === "number" &&
+    benchmarkVariance > 1e-9
+      ? covThemeBenchmark / benchmarkVariance
+      : undefined;
+  const themeVol = stddev(themeSeries);
+  const benchmarkVol = stddev(benchmarkSeries);
+  const correlation =
+    typeof covThemeBenchmark === "number" &&
+    typeof themeVol === "number" &&
+    themeVol > 1e-9 &&
+    typeof benchmarkVol === "number" &&
+    benchmarkVol > 1e-9
+      ? clamp(covThemeBenchmark / (themeVol * benchmarkVol), -1, 1)
+      : undefined;
+  const activeStd = stddev(activeSeries);
+  const trackingErrorPct =
+    typeof activeStd === "number" && activeStd > 1e-9
+      ? activeStd * Math.sqrt(252) * 100
+      : undefined;
+  const informationRatio =
+    typeof activeStd === "number" && activeStd > 1e-9
+      ? (mean(activeSeries) / activeStd) * Math.sqrt(252)
+      : undefined;
+  const annualizedActiveReturnPct = mean(activeSeries) * 252 * 100;
+  const annualizedAlphaPct =
+    typeof beta === "number"
+      ? (mean(themeSeries) - beta * mean(benchmarkSeries)) * 252 * 100
+      : undefined;
+
+  const upTheme: number[] = [];
+  const upBenchmark: number[] = [];
+  const downTheme: number[] = [];
+  const downBenchmark: number[] = [];
+  for (let index = 0; index < benchmarkSeries.length; index += 1) {
+    const benchmarkRet = benchmarkSeries[index] ?? 0;
+    const themeRet = themeSeries[index] ?? 0;
+    if (benchmarkRet > 0) {
+      upBenchmark.push(benchmarkRet);
+      upTheme.push(themeRet);
+    } else if (benchmarkRet < 0) {
+      downBenchmark.push(benchmarkRet);
+      downTheme.push(themeRet);
+    }
+  }
+  const upsideBenchmarkMean = upBenchmark.length ? mean(upBenchmark) : undefined;
+  const downsideBenchmarkMean = downBenchmark.length ? mean(downBenchmark) : undefined;
+  const upsideCapturePct =
+    typeof upsideBenchmarkMean === "number" && Math.abs(upsideBenchmarkMean) > 1e-9
+      ? (mean(upTheme) / upsideBenchmarkMean) * 100
+      : undefined;
+  const downsideCapturePct =
+    typeof downsideBenchmarkMean === "number" && Math.abs(downsideBenchmarkMean) > 1e-9
+      ? (mean(downTheme) / downsideBenchmarkMean) * 100
+      : undefined;
+  const activeHitRatePct =
+    activeSeries.length > 0
+      ? (activeSeries.filter((value) => value > 0).length / activeSeries.length) * 100
+      : 0;
+
+  return {
+    benchmarkTicker,
+    sampleSize: activeSeries.length,
+    lookbackDays: params.lookbackDays,
+    themeReturnPct,
+    benchmarkReturnPct,
+    relativeReturnPct: themeReturnPct - benchmarkReturnPct,
+    activeHitRatePct,
+    annualizedActiveReturnPct,
+    annualizedAlphaPct,
+    beta,
+    correlation,
+    trackingErrorPct,
+    informationRatio,
+    upsideCapturePct,
+    downsideCapturePct,
+  };
 };
 
 export const computeSectorResearch = (params: {
@@ -804,6 +1037,18 @@ export const computeThemeResearch = (params: {
     usedThemeRegistry = true;
     resolvedThemeVersion = membershipRows[0]?.themeVersion;
   }
+  const resolvedThemeDefinition = resolveThemeDefinitionForReport({
+    theme,
+    preferredVersion: params.themeVersion,
+    fallbackVersion: resolvedThemeVersion,
+    dbPath: params.dbPath,
+  });
+  if (typeof resolvedThemeVersion !== "number" && resolvedThemeDefinition) {
+    resolvedThemeVersion = resolvedThemeDefinition.version;
+  }
+  const benchmarkTicker = resolvedThemeDefinition?.benchmark
+    ? normalizeTicker(resolvedThemeDefinition.benchmark)
+    : "";
   const lookbackDays = Math.max(90, Math.round(params.lookbackDays ?? 365));
   const topN = Math.max(1, Math.round(params.topN ?? 5));
   const rows = deriveConstituentSet({
@@ -811,6 +1056,15 @@ export const computeThemeResearch = (params: {
     lookbackDays,
     dbPath: params.dbPath,
   });
+  const benchmarkRelative =
+    benchmarkTicker && benchmarkTicker.length
+      ? computeThemeBenchmarkRelative({
+          rows,
+          benchmarkTicker,
+          lookbackDays,
+          dbPath: params.dbPath,
+        })
+      : undefined;
   const metrics = computeCrossSectionMetrics(rows);
   const sorted = [...rows].sort((left, right) => right.compositeScore - left.compositeScore);
   const leaders = sorted.slice(0, Math.min(topN, sorted.length));
@@ -829,13 +1083,14 @@ export const computeThemeResearch = (params: {
       avgCompositeScore: mean(group.map((row) => row.compositeScore)),
     }))
     .sort((left, right) => right.sharePct - left.sharePct);
-  const riskFlags = buildRiskFlags({ metrics, rows });
+  const riskFlags = buildRiskFlags({ metrics, rows, benchmarkRelative });
   const insightSummary = buildInsightSummary({
     label: `Theme ${theme}`,
     metrics,
     leaders,
     laggards,
     riskFlags,
+    benchmarkRelative,
   });
   try {
     appendProvenanceEvent({
@@ -849,6 +1104,9 @@ export const computeThemeResearch = (params: {
         sector_exposure: sectorExposure,
         institutional_readiness: metrics.institutionalReadinessScore,
         risk_flags: riskFlags,
+        benchmark_ticker: benchmarkTicker || null,
+        benchmark_relative_return_pct: benchmarkRelative?.relativeReturnPct ?? null,
+        benchmark_information_ratio: benchmarkRelative?.informationRatio ?? null,
       },
       metadata: {
         lookback_days: lookbackDays,
@@ -868,6 +1126,7 @@ export const computeThemeResearch = (params: {
     themeVersion: resolvedThemeVersion,
     usedThemeRegistry,
     membershipMinScore: params.minMembershipScore,
+    benchmarkRelative,
     tickers: rows.map((row) => row.ticker),
     lookbackDays,
     metrics,

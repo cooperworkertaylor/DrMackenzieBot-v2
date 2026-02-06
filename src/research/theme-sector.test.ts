@@ -155,10 +155,22 @@ describe("theme and sector research", () => {
       drift: 0.0001,
       phase: 4,
     });
+    seedTicker({
+      dbPath,
+      ticker: "QQQ",
+      name: "Invesco QQQ Trust",
+      sector: "ETF",
+      industry: "Index Fund",
+      dates,
+      basePrice: 300,
+      drift: 0.0007,
+      phase: 6,
+    });
 
     upsertThemeDefinition({
       theme: "ai-compute-energy",
       displayName: "AI Compute + Energy",
+      benchmark: "QQQ",
       rules: {
         tickerAllowlist: ["AAPL", "NVDA", "XOM"],
         minMembershipScore: 0.5,
@@ -173,13 +185,17 @@ describe("theme and sector research", () => {
 
     const result = computeThemeResearch({
       theme: "ai-compute-energy",
-      lookbackDays: 240,
+      lookbackDays: 1200,
       topN: 2,
       dbPath,
     });
     expect(result.theme).toBe("ai-compute-energy");
     expect(result.usedThemeRegistry).toBe(true);
     expect(result.metrics.constituentCount).toBe(3);
+    expect(result.benchmarkRelative?.benchmarkTicker).toBe("QQQ");
+    expect(result.benchmarkRelative?.sampleSize).toBeGreaterThanOrEqual(30);
+    expect(result.benchmarkRelative?.themeReturnPct).toBeTypeOf("number");
+    expect(result.benchmarkRelative?.benchmarkReturnPct).toBeTypeOf("number");
     expect(result.sectorExposure.length).toBeGreaterThanOrEqual(2);
     expect(result.sectorExposure.reduce((sum, row) => sum + row.sharePct, 0)).toBeCloseTo(1, 5);
     expect(result.leaders.length).toBeGreaterThan(0);

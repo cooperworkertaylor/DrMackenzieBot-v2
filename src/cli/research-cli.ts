@@ -1260,6 +1260,11 @@ export function registerResearchCli(program: Command) {
         defaultRuntime.log(
           `breadth_20d_pct=${(result.metrics.breadthPositive20dPct * 100).toFixed(1)} breadth_63d_pct=${(result.metrics.breadthPositive63dPct * 100).toFixed(1)} median_return_63d_pct=${typeof result.metrics.medianReturn63dPct === "number" ? result.metrics.medianReturn63dPct.toFixed(2) : "n/a"} median_upside_pct=${typeof result.metrics.medianExpectedUpsidePct === "number" ? result.metrics.medianExpectedUpsidePct.toFixed(2) : "n/a"} dispersion_63d_pct=${typeof result.metrics.dispersion63dPct === "number" ? result.metrics.dispersion63dPct.toFixed(2) : "n/a"} avg_pairwise_corr_63d=${typeof result.metrics.averagePairwiseCorrelation63d === "number" ? result.metrics.averagePairwiseCorrelation63d.toFixed(3) : "n/a"}`,
         );
+        if (result.benchmarkRelative) {
+          defaultRuntime.log(
+            `benchmark ticker=${result.benchmarkRelative.benchmarkTicker} sample_size=${result.benchmarkRelative.sampleSize} relative_return_pct=${result.benchmarkRelative.relativeReturnPct.toFixed(2)} theme_return_pct=${result.benchmarkRelative.themeReturnPct.toFixed(2)} benchmark_return_pct=${result.benchmarkRelative.benchmarkReturnPct.toFixed(2)} beta=${typeof result.benchmarkRelative.beta === "number" ? result.benchmarkRelative.beta.toFixed(2) : "n/a"} tracking_error_pct=${typeof result.benchmarkRelative.trackingErrorPct === "number" ? result.benchmarkRelative.trackingErrorPct.toFixed(2) : "n/a"} info_ratio=${typeof result.benchmarkRelative.informationRatio === "number" ? result.benchmarkRelative.informationRatio.toFixed(2) : "n/a"} upside_capture_pct=${typeof result.benchmarkRelative.upsideCapturePct === "number" ? result.benchmarkRelative.upsideCapturePct.toFixed(1) : "n/a"} downside_capture_pct=${typeof result.benchmarkRelative.downsideCapturePct === "number" ? result.benchmarkRelative.downsideCapturePct.toFixed(1) : "n/a"}`,
+          );
+        }
         result.sectorExposure.forEach((row) => {
           defaultRuntime.log(
             `sector_exposure sector=${row.sector} count=${row.count} share_pct=${(row.sharePct * 100).toFixed(1)} avg_score=${row.avgCompositeScore.toFixed(2)}`,
