@@ -1562,6 +1562,14 @@ export function registerResearchCli(program: Command) {
         }
         defaultRuntime.log(`claims=${result.claims} citations=${result.citations}`);
         defaultRuntime.log(`quality_score=${result.quality.score.toFixed(2)}`);
+        defaultRuntime.log(`quality_passed=${result.quality.passed ? 1 : 0}`);
+        defaultRuntime.log(`quality_min_score=${result.quality.minScore.toFixed(2)}`);
+        defaultRuntime.log(
+          `actionability_score=${result.quality.actionabilityScore.toFixed(2)} calibration_mode=${result.quality.calibration.mode} calibration_score=${result.quality.calibration.score.toFixed(2)} calibration_samples=${result.quality.calibration.sampleCount}`,
+        );
+        if (result.quality.requiredFailures.length) {
+          defaultRuntime.error(`required_failures=${result.quality.requiredFailures.join(",")}`);
+        }
       });
     });
 

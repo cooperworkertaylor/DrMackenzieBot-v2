@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
 import { openResearchDb } from "./db.js";
+import {
+  gradeInstitutionalMemo,
+  type MemoCitation,
+  type MemoContradiction,
+  type MemoDiagnostics,
+  type MemoEvidenceClaim,
+} from "./grade.js";
 import { addClaimEvidence, createResearchClaim, upsertResearchEntity } from "./memory-graph.js";
 import { computePortfolioPlan, type PortfolioPlan } from "./portfolio.js";
 import { appendProvenanceEvent } from "./provenance.js";
@@ -7,45 +14,15 @@ import { computeValuation, recordValuationForecast, type ValuationResult } from 
 import { computeVariantPerception, type VariantPerceptionResult } from "./variant.js";
 import { searchResearch } from "./vector-search.js";
 
-type MemoLine = { claim: string; citationIds: number[] };
-
-type QualityGateCheck = {
-  name: string;
-  passed: boolean;
-  detail: string;
-  weight: number;
-};
-
-type QualityGateResult = {
-  score: number;
-  checks: QualityGateCheck[];
-  passed: boolean;
-};
-
-type CitationRow = {
-  id: number;
-  source_table: string;
-  ref_id: number;
-  metadata?: string;
-  url?: string;
-};
-
-type Contradiction = {
-  severity: "high" | "medium";
-  detail: string;
-};
-
-type MemoDiagnostics = {
-  contradictions: Contradiction[];
-  falsificationTriggers: string[];
-};
+type MemoLine = MemoEvidenceClaim;
+type CitationRow = MemoCitation;
 
 const buildDiagnostics = (params: {
   variant: VariantPerceptionResult;
   valuation: ValuationResult;
   portfolio: PortfolioPlan;
 }): MemoDiagnostics => {
-  const contradictions: Contradiction[] = [];
+  const contradictions: MemoContradiction[] = [];
   const impliedStance = params.valuation.impliedExpectations?.stance;
   const expectedUpside =
     params.valuation.expectedUpsideWithCatalystsPct ?? params.valuation.expectedUpsidePct;
@@ -280,22 +257,27 @@ export const generateMemoAsync = async (params: {
     ),
   ].join("\n");
 
-  const quality = assessInstitutionalQuality({
+  const quality = gradeInstitutionalMemo({
     hitsCount: hits.length,
-    lines,
+    claims: lines,
     citations,
     variant,
     valuation,
     portfolio,
     diagnostics,
-    minQualityScore,
+    minScore: minQualityScore,
+    dbPath: params.dbPath,
   });
 
   if (enforceInstitutionalGrade && !quality.passed) {
     const failed = quality.checks.filter((c) => !c.passed);
     const details = failed.map((f) => `${f.name}: ${f.detail}`).join("; ");
+    const requiredFailures =
+      quality.requiredFailures.length > 0
+        ? ` required_failures=${quality.requiredFailures.join(",")};`
+        : "";
     throw new Error(
-      `Institutional-grade quality gate failed (score=${quality.score.toFixed(2)} < ${minQualityScore.toFixed(2)}): ${details}`,
+      `Institutional-grade quality gate failed (score=${quality.score.toFixed(2)} < ${minQualityScore.toFixed(2)};${requiredFailures}): ${details}`,
     );
   }
 
@@ -365,8 +347,13 @@ export const generateMemoAsync = async (params: {
     "",
     "## Quality Gate",
     `- Score: ${quality.score.toFixed(2)} (threshold ${minQualityScore.toFixed(2)})`,
+    `- Passed: ${quality.passed ? "yes" : "no"}`,
+    `- Required failures: ${quality.requiredFailures.length ? quality.requiredFailures.join(", ") : "none"}`,
+    `- Calibration: mode=${quality.calibration.mode} score=${quality.calibration.score.toFixed(2)} sample=${quality.calibration.sampleCount}`,
+    `- Actionability score: ${quality.actionabilityScore.toFixed(2)}`,
     ...quality.checks.map(
-      (c) => `- ${c.passed ? "PASS" : "FAIL"} ${c.name}: ${c.detail} (weight ${c.weight})`,
+      (c) =>
+        `- ${c.passed ? "PASS" : "FAIL"} ${c.name}: ${c.detail} (weight ${c.weight}, score ${c.score.toFixed(2)}, required ${c.required ? "yes" : "no"})`,
     ),
     `- Contradictions: ${diagnostics.contradictions.length}`,
     `- Falsification triggers: ${diagnostics.falsificationTriggers.length}`,
@@ -387,6 +374,16 @@ export const generateMemoAsync = async (params: {
         citations: citations.length,
         quality_score: quality.score,
         quality_passed: quality.passed,
+        required_failures: quality.requiredFailures,
+        actionability_score: quality.actionabilityScore,
+        calibration: {
+          mode: quality.calibration.mode,
+          score: quality.calibration.score,
+          sample_count: quality.calibration.sampleCount,
+          mae: quality.calibration.mae ?? null,
+          directional_accuracy: quality.calibration.directionalAccuracy ?? null,
+          confidence_outcome_mae: quality.calibration.confidenceOutcomeMae ?? null,
+        },
         forecast_id: forecastId ?? null,
         claim_ids: claimIds,
       },
@@ -419,182 +416,4 @@ const summarizeText = (text: string, maxChars: number): string => {
   const clipped = cleaned.slice(0, maxChars);
   const lastSpace = clipped.lastIndexOf(" ");
   return `${clipped.slice(0, Math.max(0, lastSpace))}...`;
-};
-
-const parseJsonObject = <T extends object>(value: unknown, fallback: T): T => {
-  if (typeof value !== "string" || !value.trim()) return fallback;
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fallback;
-    return parsed as T;
-  } catch {
-    return fallback;
-  }
-};
-
-const toDateMs = (value: unknown): number | undefined => {
-  if (typeof value !== "string" || !value.trim()) return undefined;
-  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00.000Z` : value;
-  const ts = Date.parse(normalized);
-  return Number.isFinite(ts) ? ts : undefined;
-};
-
-const citationRecencyMs = (citation: CitationRow): number | undefined => {
-  const metadata = parseJsonObject<Record<string, unknown>>(citation.metadata, {});
-  for (const key of [
-    "asOfDate",
-    "periodEnd",
-    "filingDate",
-    "filed",
-    "event_date",
-    "eventDate",
-    "acceptedAt",
-  ]) {
-    const ts = toDateMs(metadata[key]);
-    if (typeof ts === "number") return ts;
-  }
-  const fromUrl = citation.url?.match(/\b\d{4}-\d{2}-\d{2}\b/)?.[0];
-  return typeof fromUrl === "string" ? toDateMs(fromUrl) : undefined;
-};
-
-const extractCitationHost = (url?: string): string | undefined => {
-  if (!url?.trim()) return undefined;
-  try {
-    return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
-  } catch {
-    return undefined;
-  }
-};
-
-const assessInstitutionalQuality = (params: {
-  hitsCount: number;
-  lines: MemoLine[];
-  citations: CitationRow[];
-  variant: VariantPerceptionResult;
-  valuation: ValuationResult;
-  portfolio: PortfolioPlan;
-  diagnostics: MemoDiagnostics;
-  minQualityScore: number;
-}): QualityGateResult => {
-  const checks: QualityGateCheck[] = [];
-  const claimCount = params.lines.length;
-  const citationsPerClaim =
-    claimCount > 0 ? params.lines.reduce((s, l) => s + l.citationIds.length, 0) / claimCount : 0;
-  const uniqueUrls = new Set(
-    params.citations.map((c) => c.url?.trim()).filter((u): u is string => Boolean(u)),
-  ).size;
-  const uniqueHosts = new Set(
-    params.citations
-      .map((citation) => extractCitationHost(citation.url))
-      .filter((value): value is string => Boolean(value)),
-  ).size;
-  const uniqueSourceTables = new Set(params.citations.map((c) => c.source_table)).size;
-  const datedCitations = params.citations
-    .map((citation) => citationRecencyMs(citation))
-    .filter((value): value is number => typeof value === "number");
-  const freshCutoff = Date.now() - 730 * 86_400_000;
-  const freshRatio =
-    datedCitations.length > 0
-      ? datedCitations.filter((timestamp) => timestamp >= freshCutoff).length /
-        datedCitations.length
-      : 0;
-  const mediumContradictions = params.diagnostics.contradictions.filter(
-    (item) => item.severity === "medium",
-  ).length;
-
-  checks.push({
-    name: "claim_count",
-    passed: claimCount >= 4,
-    detail: `claims=${claimCount} (required >= 4)`,
-    weight: 0.16,
-  });
-  checks.push({
-    name: "citations_per_claim",
-    passed: citationsPerClaim >= 2,
-    detail: `avg=${citationsPerClaim.toFixed(2)} (required >= 2.00)`,
-    weight: 0.18,
-  });
-  checks.push({
-    name: "source_diversity",
-    passed: uniqueUrls >= 3 || uniqueSourceTables >= 2,
-    detail: `unique_urls=${uniqueUrls}, source_tables=${uniqueSourceTables} (required urls>=3 or sources>=2)`,
-    weight: 0.1,
-  });
-  checks.push({
-    name: "source_independence",
-    passed: uniqueHosts >= 2 || uniqueSourceTables >= 3,
-    detail: `unique_hosts=${uniqueHosts}, source_tables=${uniqueSourceTables} (required hosts>=2 or sources>=3)`,
-    weight: 0.1,
-  });
-  checks.push({
-    name: "evidence_freshness",
-    passed: freshRatio >= 0.6 || datedCitations.length === 0,
-    detail: `fresh_ratio=${(freshRatio * 100).toFixed(1)}% dated_citations=${datedCitations.length} (required >= 60%)`,
-    weight: 0.08,
-  });
-  checks.push({
-    name: "retrieval_depth",
-    passed: params.hitsCount >= 8,
-    detail: `hits=${params.hitsCount} (required >= 8)`,
-    weight: 0.08,
-  });
-  checks.push({
-    name: "expectation_coverage",
-    passed: params.variant.expectationObservations >= 4,
-    detail: `expectation_observations=${params.variant.expectationObservations} (required >= 4)`,
-    weight: 0.08,
-  });
-  checks.push({
-    name: "variant_confidence",
-    passed: params.variant.confidence >= 0.55,
-    detail: `variant_confidence=${params.variant.confidence.toFixed(2)} (required >= 0.55)`,
-    weight: 0.08,
-  });
-  checks.push({
-    name: "valuation_coverage",
-    passed:
-      params.valuation.confidence >= 0.6 &&
-      params.valuation.scenarios.filter(
-        (scenario) => typeof scenario.impliedSharePrice === "number",
-      ).length >= 2,
-    detail: `valuation_confidence=${params.valuation.confidence.toFixed(2)} priced_scenarios=${params.valuation.scenarios.filter((scenario) => typeof scenario.impliedSharePrice === "number").length} (required confidence>=0.60 and priced>=2)`,
-    weight: 0.08,
-  });
-  checks.push({
-    name: "contradiction_check",
-    passed:
-      params.diagnostics.contradictions.filter((item) => item.severity === "high").length === 0,
-    detail: `high_severity_contradictions=${params.diagnostics.contradictions.filter((item) => item.severity === "high").length} (required = 0)`,
-    weight: 0.07,
-  });
-  checks.push({
-    name: "contradiction_resolution",
-    passed: mediumContradictions <= 1,
-    detail: `medium_severity_contradictions=${mediumContradictions} (required <= 1)`,
-    weight: 0.07,
-  });
-  checks.push({
-    name: "falsification_depth",
-    passed: params.diagnostics.falsificationTriggers.length >= 4,
-    detail: `triggers=${params.diagnostics.falsificationTriggers.length} (required >= 4)`,
-    weight: 0.08,
-  });
-  checks.push({
-    name: "portfolio_viability",
-    passed:
-      params.portfolio.stance !== "insufficient-evidence" &&
-      params.portfolio.recommendedWeightPct > 0 &&
-      params.portfolio.maxRiskBudgetPct > 0,
-    detail: `stance=${params.portfolio.stance} weight=${params.portfolio.recommendedWeightPct.toFixed(2)} risk_budget=${params.portfolio.maxRiskBudgetPct.toFixed(2)} (required actionable stance and positive sizing)`,
-    weight: 0.06,
-  });
-
-  const totalWeight = checks.reduce((sum, check) => sum + Math.max(0, check.weight), 0);
-  const scoreRaw = checks.reduce((sum, check) => sum + (check.passed ? check.weight : 0), 0);
-  const score = totalWeight > 1e-9 ? scoreRaw / totalWeight : 0;
-  return {
-    score,
-    checks,
-    passed: score >= params.minQualityScore,
-  };
 };
