@@ -1,4 +1,5 @@
 import { openResearchDb } from "./db.js";
+import { computeValuation, type ValuationResult } from "./valuation.js";
 import { computeVariantPerception, type VariantPerceptionResult } from "./variant.js";
 import { searchResearch } from "./vector-search.js";
 
@@ -82,6 +83,10 @@ export const generateMemoAsync = async (params: {
     ticker: params.ticker,
     dbPath: params.dbPath,
   });
+  const valuation = computeValuation({
+    ticker: params.ticker,
+    dbPath: params.dbPath,
+  });
 
   const memo = [
     `# Research Memo: ${params.ticker.toUpperCase()}`,
@@ -115,6 +120,24 @@ export const generateMemoAsync = async (params: {
     `- Margin delta signal: ${typeof variant.metrics.marginDelta === "number" ? variant.metrics.marginDelta.toFixed(3) : "n/a"}`,
     ...(variant.notes.length ? variant.notes.map((note) => `- Note: ${note}`) : []),
     ``,
+    `## Valuation Scenarios`,
+    `- Confidence: ${valuation.confidence.toFixed(2)}`,
+    `- Current price: ${typeof valuation.currentPrice === "number" ? valuation.currentPrice.toFixed(2) : "n/a"}`,
+    `- Expected value/share: ${typeof valuation.expectedSharePrice === "number" ? valuation.expectedSharePrice.toFixed(2) : "n/a"}`,
+    `- Expected upside: ${typeof valuation.expectedUpsidePct === "number" ? `${(valuation.expectedUpsidePct * 100).toFixed(1)}%` : "n/a"}`,
+    ...valuation.scenarios.map(
+      (scenario) =>
+        `- ${scenario.name.toUpperCase()}: growth=${(scenario.revenueGrowth * 100).toFixed(1)}% margin=${(scenario.operatingMargin * 100).toFixed(1)}% wacc=${(scenario.wacc * 100).toFixed(1)}% implied_price=${typeof scenario.impliedSharePrice === "number" ? scenario.impliedSharePrice.toFixed(2) : "n/a"}`,
+    ),
+    ...(valuation.impliedExpectations
+      ? [
+          `- Market implied stance: ${valuation.impliedExpectations.stance}`,
+          `- Implied growth vs model: ${(valuation.impliedExpectations.impliedRevenueGrowth * 100).toFixed(1)}% vs ${(valuation.impliedExpectations.modelRevenueGrowth * 100).toFixed(1)}%`,
+          `- Implied margin vs model: ${(valuation.impliedExpectations.impliedOperatingMargin * 100).toFixed(1)}% vs ${(valuation.impliedExpectations.modelOperatingMargin * 100).toFixed(1)}%`,
+        ]
+      : ["- Market implied stance: insufficient-evidence"]),
+    ...(valuation.notes.length ? valuation.notes.map((note) => `- Note: ${note}`) : []),
+    ``,
     `## Citation Index`,
     ...citations.map(
       (c) =>
@@ -127,6 +150,7 @@ export const generateMemoAsync = async (params: {
     lines,
     citations,
     variant,
+    valuation,
     minQualityScore,
   });
 
@@ -154,6 +178,7 @@ export const generateMemoAsync = async (params: {
     claims: lines.length,
     quality,
     variant,
+    valuation,
   };
 };
 
@@ -170,6 +195,7 @@ const assessInstitutionalQuality = (params: {
   lines: MemoLine[];
   citations: Array<{ id: number; source_table: string; url?: string }>;
   variant: VariantPerceptionResult;
+  valuation: ValuationResult;
   minQualityScore: number;
 }): QualityGateResult => {
   const checks: QualityGateCheck[] = [];
@@ -185,25 +211,25 @@ const assessInstitutionalQuality = (params: {
     name: "claim_count",
     passed: claimCount >= 4,
     detail: `claims=${claimCount} (required >= 4)`,
-    weight: 0.2,
+    weight: 0.18,
   });
   checks.push({
     name: "citations_per_claim",
     passed: citationsPerClaim >= 2,
     detail: `avg=${citationsPerClaim.toFixed(2)} (required >= 2.00)`,
-    weight: 0.25,
+    weight: 0.22,
   });
   checks.push({
     name: "source_diversity",
     passed: uniqueUrls >= 3 || uniqueSourceTables >= 2,
     detail: `unique_urls=${uniqueUrls}, source_tables=${uniqueSourceTables} (required urls>=3 or sources>=2)`,
-    weight: 0.2,
+    weight: 0.18,
   });
   checks.push({
     name: "retrieval_depth",
     passed: params.hitsCount >= 8,
     detail: `hits=${params.hitsCount} (required >= 8)`,
-    weight: 0.15,
+    weight: 0.12,
   });
   checks.push({
     name: "expectation_coverage",
@@ -215,6 +241,16 @@ const assessInstitutionalQuality = (params: {
     name: "variant_confidence",
     passed: params.variant.confidence >= 0.55,
     detail: `variant_confidence=${params.variant.confidence.toFixed(2)} (required >= 0.55)`,
+    weight: 0.1,
+  });
+  checks.push({
+    name: "valuation_coverage",
+    passed:
+      params.valuation.confidence >= 0.6 &&
+      params.valuation.scenarios.filter(
+        (scenario) => typeof scenario.impliedSharePrice === "number",
+      ).length >= 2,
+    detail: `valuation_confidence=${params.valuation.confidence.toFixed(2)} priced_scenarios=${params.valuation.scenarios.filter((scenario) => typeof scenario.impliedSharePrice === "number").length} (required confidence>=0.60 and priced>=2)`,
     weight: 0.1,
   });
 

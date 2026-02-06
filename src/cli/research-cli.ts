@@ -25,6 +25,7 @@ import {
 } from "../research/ingest.js";
 import { generateMemoAsync } from "../research/memo.js";
 import { indexRepo } from "../research/repo-index.js";
+import { computeValuation } from "../research/valuation.js";
 import { computeVariantPerception } from "../research/variant.js";
 import { searchResearch, syncEmbeddings, writeBackup } from "../research/vector-search.js";
 import { defaultRuntime } from "../runtime.js";
@@ -289,6 +290,52 @@ export function registerResearchCli(program: Command) {
         defaultRuntime.log(`fundamental_observations=${result.fundamentalObservations}`);
         if (result.notes.length) {
           result.notes.forEach((note) => defaultRuntime.error(`NOTE: ${note}`));
+        }
+      });
+    });
+
+  research
+    .command("valuation")
+    .description("Compute base/bull/bear valuation and market-implied expectations")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const valuation = computeValuation({
+          ticker: opts.ticker as string,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(`ticker=${valuation.ticker}`);
+        if (typeof valuation.currentPrice === "number") {
+          defaultRuntime.log(`current_price=${valuation.currentPrice.toFixed(2)}`);
+        } else {
+          defaultRuntime.log("current_price=n/a");
+        }
+        defaultRuntime.log(`confidence=${valuation.confidence.toFixed(2)}`);
+        if (typeof valuation.expectedSharePrice === "number") {
+          defaultRuntime.log(`expected_share_price=${valuation.expectedSharePrice.toFixed(2)}`);
+        }
+        if (typeof valuation.expectedUpsidePct === "number") {
+          defaultRuntime.log(
+            `expected_upside_pct=${(valuation.expectedUpsidePct * 100).toFixed(1)}%`,
+          );
+        }
+        valuation.scenarios.forEach((scenario) => {
+          defaultRuntime.log(
+            `${scenario.name}: growth=${(scenario.revenueGrowth * 100).toFixed(1)}% margin=${(scenario.operatingMargin * 100).toFixed(1)}% wacc=${(scenario.wacc * 100).toFixed(1)}% price=${typeof scenario.impliedSharePrice === "number" ? scenario.impliedSharePrice.toFixed(2) : "n/a"}`,
+          );
+        });
+        if (valuation.impliedExpectations) {
+          defaultRuntime.log(`implied_stance=${valuation.impliedExpectations.stance}`);
+          defaultRuntime.log(
+            `implied_growth=${(valuation.impliedExpectations.impliedRevenueGrowth * 100).toFixed(1)}% model_growth=${(valuation.impliedExpectations.modelRevenueGrowth * 100).toFixed(1)}%`,
+          );
+          defaultRuntime.log(
+            `implied_margin=${(valuation.impliedExpectations.impliedOperatingMargin * 100).toFixed(1)}% model_margin=${(valuation.impliedExpectations.modelOperatingMargin * 100).toFixed(1)}%`,
+          );
+        }
+        if (valuation.notes.length) {
+          valuation.notes.forEach((note) => defaultRuntime.error(`NOTE: ${note}`));
         }
       });
     });

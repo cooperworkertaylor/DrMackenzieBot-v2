@@ -1,4 +1,5 @@
 import { openResearchDb } from "./db.js";
+import { computeValuation } from "./valuation.js";
 import { computeVariantPerception } from "./variant.js";
 import { searchResearch, type SearchHit } from "./vector-search.js";
 
@@ -104,6 +105,15 @@ export const runFinanceEval = async () => {
       name: `variant_confidence_${ticker}`,
       passed: variant.confidence >= 0.55 && variant.stance !== "insufficient-evidence",
       detail: `confidence=${variant.confidence.toFixed(2)} stance=${variant.stance}`,
+    });
+    const valuation = computeValuation({ ticker });
+    checks.push({
+      name: `valuation_${ticker}`,
+      passed:
+        valuation.confidence >= 0.6 &&
+        valuation.scenarios.filter((scenario) => typeof scenario.impliedSharePrice === "number")
+          .length >= 2,
+      detail: `valuation_confidence=${valuation.confidence.toFixed(2)} priced_scenarios=${valuation.scenarios.filter((scenario) => typeof scenario.impliedSharePrice === "number").length}`,
     });
   }
   return persistEval("finance", checks);
