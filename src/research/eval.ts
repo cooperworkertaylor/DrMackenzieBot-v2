@@ -1,5 +1,5 @@
 import { openResearchDb } from "./db.js";
-import { computeValuation } from "./valuation.js";
+import { computeValuation, forecastDecisionMetrics, resolveMatureForecasts } from "./valuation.js";
 import { computeVariantPerception } from "./variant.js";
 import { searchResearch, type SearchHit } from "./vector-search.js";
 
@@ -239,6 +239,107 @@ export const runCodingEval = async (repoRoot: string) => {
     detail: `avg_score=${avgScore.toFixed(2)} (threshold=0.35)`,
   });
   return persistEval("coding", checks);
+};
+
+export const runDecisionEval = async () => {
+  resolveMatureForecasts();
+  const checks: EvalCheck[] = [];
+  const metrics = forecastDecisionMetrics();
+  checks.push({
+    name: "forecast_sample_size",
+    passed: metrics.count >= 10,
+    detail: `count=${metrics.count} (threshold=10)`,
+  });
+  checks.push({
+    name: "forecast_mae",
+    passed: typeof metrics.mae === "number" && metrics.mae <= 0.3,
+    detail:
+      typeof metrics.mae === "number"
+        ? `mae=${metrics.mae.toFixed(3)} (threshold<=0.300)`
+        : "mae=n/a",
+  });
+  checks.push({
+    name: "forecast_directional_accuracy",
+    passed: typeof metrics.directionalAccuracy === "number" && metrics.directionalAccuracy >= 0.52,
+    detail:
+      typeof metrics.directionalAccuracy === "number"
+        ? `directional_accuracy=${metrics.directionalAccuracy.toFixed(3)} (threshold>=0.520)`
+        : "directional_accuracy=n/a",
+  });
+
+  const db = openResearchDb();
+  const catalystRows = db
+    .prepare(
+      `SELECT c.probability, c.impact_bps, c.confidence, o.occurred, o.realized_impact_bps
+       FROM catalysts c
+       JOIN catalyst_outcomes o ON o.catalyst_id=c.id
+       ORDER BY o.resolved_at DESC
+       LIMIT 300`,
+    )
+    .all() as Array<{
+    probability: number;
+    impact_bps: number;
+    confidence: number;
+    occurred: number;
+    realized_impact_bps?: number | null;
+  }>;
+  checks.push({
+    name: "catalyst_sample_size",
+    passed: catalystRows.length >= 8,
+    detail: `count=${catalystRows.length} (threshold=8)`,
+  });
+  if (catalystRows.length) {
+    const brierScore =
+      catalystRows.reduce((sumValue, row) => {
+        const p = Math.max(0, Math.min(1, row.probability));
+        const y = row.occurred ? 1 : 0;
+        return sumValue + (p - y) ** 2;
+      }, 0) / catalystRows.length;
+    checks.push({
+      name: "catalyst_brier",
+      passed: brierScore <= 0.24,
+      detail: `brier=${brierScore.toFixed(3)} (threshold<=0.240)`,
+    });
+
+    const impactRows = catalystRows.filter(
+      (row) =>
+        typeof row.realized_impact_bps === "number" && Number.isFinite(row.realized_impact_bps),
+    );
+    if (impactRows.length) {
+      const impactMae =
+        impactRows.reduce((sumValue, row) => {
+          const predicted = row.impact_bps * row.confidence;
+          const realized = row.realized_impact_bps as number;
+          return sumValue + Math.abs(predicted - realized);
+        }, 0) / impactRows.length;
+      checks.push({
+        name: "catalyst_impact_mae_bps",
+        passed: impactMae <= 250,
+        detail: `impact_mae_bps=${impactMae.toFixed(1)} (threshold<=250.0)`,
+      });
+    } else {
+      checks.push({
+        name: "catalyst_impact_mae_bps",
+        passed: false,
+        detail: "impact_mae_bps=n/a (no realized impact values)",
+      });
+    }
+  }
+
+  const unresolvedHighAlerts = db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM thesis_alerts
+       WHERE resolved=0 AND severity='high'`,
+    )
+    .get() as { count: number };
+  checks.push({
+    name: "high_alert_backlog",
+    passed: unresolvedHighAlerts.count <= 10,
+    detail: `open_high_alerts=${unresolvedHighAlerts.count} (threshold<=10)`,
+  });
+
+  return persistEval("decision", checks);
 };
 
 export const latestEvalReport = () => {

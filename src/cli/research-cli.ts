@@ -9,10 +9,18 @@ import {
   timeSeriesToCsv,
   timeSeriesToMarkdown,
 } from "../agents/sec-xbrl-timeseries.js";
+import {
+  addCatalyst,
+  cancelCatalyst,
+  getCatalystSummary,
+  listCatalysts,
+  resolveCatalyst,
+} from "../research/catalyst.js";
 import { openResearchDb, resolveResearchDbPath } from "../research/db.js";
 import {
   latestEvalReport,
   runCodingEval,
+  runDecisionEval,
   runFinanceEval,
   runRetrievalEval,
 } from "../research/eval.js";
@@ -24,8 +32,10 @@ import {
   ingestTranscript,
 } from "../research/ingest.js";
 import { generateMemoAsync } from "../research/memo.js";
+import { monitorTicker, monitorTickers } from "../research/monitor.js";
+import { computePortfolioPlan } from "../research/portfolio.js";
 import { indexRepo } from "../research/repo-index.js";
-import { computeValuation } from "../research/valuation.js";
+import { computeValuation, resolveMatureForecasts } from "../research/valuation.js";
 import { computeVariantPerception } from "../research/variant.js";
 import { searchResearch, syncEmbeddings, writeBackup } from "../research/vector-search.js";
 import { defaultRuntime } from "../runtime.js";
@@ -44,6 +54,18 @@ type SecXbrlOptions = {
 };
 
 const collectOption = (value: string, previous: string[]): string[] => [...previous, value];
+const parseTickersOption = (value: string): string[] =>
+  value
+    .split(",")
+    .map((ticker) => ticker.trim().toUpperCase())
+    .filter(Boolean);
+
+const parseBooleanOption = (value: string): boolean => {
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "y"].includes(normalized)) return true;
+  if (["0", "false", "no", "n"].includes(normalized)) return false;
+  throw new Error(`Invalid boolean value: ${value}`);
+};
 
 export function registerResearchCli(program: Command) {
   const research = program
@@ -308,6 +330,9 @@ export function registerResearchCli(program: Command) {
         defaultRuntime.log(`ticker=${valuation.ticker}`);
         if (typeof valuation.currentPrice === "number") {
           defaultRuntime.log(`current_price=${valuation.currentPrice.toFixed(2)}`);
+          if (valuation.currentPriceDate) {
+            defaultRuntime.log(`current_price_date=${valuation.currentPriceDate}`);
+          }
         } else {
           defaultRuntime.log("current_price=n/a");
         }
@@ -318,6 +343,16 @@ export function registerResearchCli(program: Command) {
         if (typeof valuation.expectedUpsidePct === "number") {
           defaultRuntime.log(
             `expected_upside_pct=${(valuation.expectedUpsidePct * 100).toFixed(1)}%`,
+          );
+        }
+        if (typeof valuation.expectedUpsideWithCatalystsPct === "number") {
+          defaultRuntime.log(
+            `expected_upside_with_catalysts_pct=${(valuation.expectedUpsideWithCatalystsPct * 100).toFixed(1)}%`,
+          );
+        }
+        if (valuation.catalystSummary) {
+          defaultRuntime.log(
+            `catalysts_open=${valuation.catalystSummary.openCount} expected_impact_pct=${(valuation.catalystSummary.expectedImpactPct * 100).toFixed(2)}% weighted_confidence=${valuation.catalystSummary.weightedConfidence.toFixed(2)}`,
           );
         }
         valuation.scenarios.forEach((scenario) => {
@@ -337,6 +372,255 @@ export function registerResearchCli(program: Command) {
         if (valuation.notes.length) {
           valuation.notes.forEach((note) => defaultRuntime.error(`NOTE: ${note}`));
         }
+      });
+    });
+
+  research
+    .command("catalyst-add")
+    .description("Add a thesis catalyst with expected probability/impact")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .requiredOption("--name <text>", "Catalyst name")
+    .requiredOption("--probability <n>", "Probability [0-1]")
+    .requiredOption("--impact-bps <n>", "Expected impact in basis points (+/-)")
+    .option("--confidence <n>", "Confidence [0-1]", "0.6")
+    .option("--category <text>", "Category tag", "company")
+    .option("--start <date>", "Window start date (YYYY-MM-DD)")
+    .option("--end <date>", "Window end date (YYYY-MM-DD)")
+    .option("--direction <kind>", "up|down|both", "both")
+    .option("--source <text>", "Source provenance", "manual")
+    .option("--notes <text>", "Optional notes", "")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const probability = Number.parseFloat(opts.probability as string);
+        const impactBps = Number.parseFloat(opts["impactBps"] as string);
+        const confidence = Number.parseFloat(opts.confidence as string);
+        if (
+          !Number.isFinite(probability) ||
+          !Number.isFinite(impactBps) ||
+          !Number.isFinite(confidence)
+        ) {
+          throw new Error("probability, impact-bps, and confidence must be numeric");
+        }
+        const direction = String(opts.direction ?? "both").toLowerCase();
+        if (!["up", "down", "both"].includes(direction)) {
+          throw new Error("direction must be one of: up, down, both");
+        }
+        const id = addCatalyst({
+          ticker: opts.ticker as string,
+          name: opts.name as string,
+          probability,
+          impactBps,
+          confidence,
+          category: opts.category as string,
+          dateWindowStart: opts.start as string | undefined,
+          dateWindowEnd: opts.end as string | undefined,
+          direction: direction as "up" | "down" | "both",
+          source: opts.source as string,
+          notes: opts.notes as string,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(`catalyst_id=${id}`);
+      });
+    });
+
+  research
+    .command("catalyst-list")
+    .description("List catalysts for a ticker")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--status <kind>", "open|resolved|cancelled|all", "open")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const status = String(opts.status ?? "open").toLowerCase();
+        if (!["open", "resolved", "cancelled", "all"].includes(status)) {
+          throw new Error("status must be one of: open, resolved, cancelled, all");
+        }
+        const rows = listCatalysts({
+          ticker: opts.ticker as string,
+          status: status as "open" | "resolved" | "cancelled" | "all",
+          dbPath: opts.db as string,
+        });
+        if (!rows.length) {
+          defaultRuntime.log("No catalysts found.");
+          return;
+        }
+        rows.forEach((row) => {
+          defaultRuntime.log(
+            `id=${row.id} status=${row.status} category=${row.category} name=${row.name}`,
+          );
+          defaultRuntime.log(
+            `  probability=${row.probability.toFixed(2)} impact_bps=${row.impactBps.toFixed(0)} confidence=${row.confidence.toFixed(2)} direction=${row.direction}`,
+          );
+          defaultRuntime.log(
+            `  window_start=${row.dateWindowStart || "n/a"} window_end=${row.dateWindowEnd || "n/a"} source=${row.source}`,
+          );
+          if (row.notes) defaultRuntime.log(`  notes=${row.notes}`);
+        });
+      });
+    });
+
+  research
+    .command("catalyst-resolve")
+    .description("Resolve a catalyst as occurred/not-occurred")
+    .requiredOption("--catalyst-id <id>", "Catalyst id")
+    .option("--occurred <bool>", "true|false", "true")
+    .option("--impact-bps <n>", "Realized impact bps")
+    .option("--notes <text>", "Resolution notes", "")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const catalystId = Number.parseInt(opts["catalystId"] as string, 10);
+        const occurred = parseBooleanOption(opts.occurred as string);
+        const realizedImpactBps =
+          opts["impactBps"] === undefined
+            ? undefined
+            : Number.parseFloat(opts["impactBps"] as string);
+        if (!Number.isFinite(catalystId)) throw new Error("catalyst-id must be an integer");
+        if (opts["impactBps"] !== undefined && !Number.isFinite(realizedImpactBps)) {
+          throw new Error("impact-bps must be numeric");
+        }
+        resolveCatalyst({
+          catalystId,
+          occurred,
+          realizedImpactBps,
+          notes: opts.notes as string,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(`resolved_catalyst_id=${catalystId}`);
+      });
+    });
+
+  research
+    .command("catalyst-cancel")
+    .description("Cancel an open catalyst")
+    .requiredOption("--catalyst-id <id>", "Catalyst id")
+    .option("--reason <text>", "Cancellation reason", "")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const catalystId = Number.parseInt(opts["catalystId"] as string, 10);
+        if (!Number.isFinite(catalystId)) throw new Error("catalyst-id must be an integer");
+        cancelCatalyst({
+          catalystId,
+          reason: opts.reason as string,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(`cancelled_catalyst_id=${catalystId}`);
+      });
+    });
+
+  research
+    .command("catalyst-score")
+    .description("Show aggregate catalyst score for a ticker")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const summary = getCatalystSummary({
+          ticker: opts.ticker as string,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(`ticker=${summary.ticker}`);
+        defaultRuntime.log(`open_count=${summary.openCount}`);
+        defaultRuntime.log(`expected_impact_bps=${summary.expectedImpactBps.toFixed(1)}`);
+        defaultRuntime.log(`expected_impact_pct=${(summary.expectedImpactPct * 100).toFixed(2)}%`);
+        defaultRuntime.log(`weighted_confidence=${summary.weightedConfidence.toFixed(2)}`);
+        defaultRuntime.log(`high_impact_count=${summary.highImpactCount}`);
+        if (summary.nearestCatalystDate) {
+          defaultRuntime.log(`nearest_date=${summary.nearestCatalystDate}`);
+        }
+      });
+    });
+
+  research
+    .command("position")
+    .description("Compute portfolio sizing and risk plan for a ticker")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const plan = computePortfolioPlan({
+          ticker: opts.ticker as string,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(`ticker=${plan.ticker}`);
+        defaultRuntime.log(`stance=${plan.stance}`);
+        defaultRuntime.log(`confidence=${plan.confidence.toFixed(2)}`);
+        if (typeof plan.expectedUpsidePct === "number") {
+          defaultRuntime.log(`expected_upside_pct=${(plan.expectedUpsidePct * 100).toFixed(1)}%`);
+        }
+        defaultRuntime.log(`recommended_weight_pct=${plan.recommendedWeightPct.toFixed(2)}`);
+        defaultRuntime.log(`max_risk_budget_pct=${plan.maxRiskBudgetPct.toFixed(2)}`);
+        defaultRuntime.log(`stop_loss_pct=${(plan.stopLossPct * 100).toFixed(1)}%`);
+        defaultRuntime.log(`horizon_days=${plan.timeHorizonDays}`);
+        defaultRuntime.log(
+          `catalyst_expected_impact_pct=${(plan.catalystExpectedImpactPct * 100).toFixed(2)}%`,
+        );
+        plan.reviewTriggers.forEach((trigger) => defaultRuntime.log(`trigger=${trigger}`));
+      });
+    });
+
+  research
+    .command("monitor")
+    .description("Run thesis monitoring checks for one ticker and persist alerts")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const result = monitorTicker({
+          ticker: opts.ticker as string,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `ticker=${result.ticker} alerts=${result.alerts.length} persisted=${result.persisted}`,
+        );
+        result.alerts.forEach((alert) => {
+          defaultRuntime.log(
+            `${alert.severity.toUpperCase()} ${alert.alertType}: ${alert.message} (${alert.details})`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("monitor-all")
+    .description("Run thesis monitoring checks for multiple tickers")
+    .option("--tickers <csv>", "Ticker list (defaults to RESEARCH_TICKERS)")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const tickers =
+          typeof opts.tickers === "string" && opts.tickers.trim()
+            ? parseTickersOption(opts.tickers as string)
+            : parseTickersOption(process.env.RESEARCH_TICKERS ?? "");
+        if (!tickers.length) {
+          throw new Error("Provide --tickers or set RESEARCH_TICKERS");
+        }
+        const results = monitorTickers({
+          tickers,
+          dbPath: opts.db as string,
+        });
+        const totalAlerts = results.reduce((sumValue, row) => sumValue + row.alerts.length, 0);
+        defaultRuntime.log(`tickers=${results.length} alerts=${totalAlerts}`);
+        results.forEach((result) => {
+          defaultRuntime.log(
+            `ticker=${result.ticker} alerts=${result.alerts.length} persisted=${result.persisted}`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("forecast-sync")
+    .description("Resolve matured valuation forecasts against realized prices")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const outcome = resolveMatureForecasts({ dbPath: opts.db as string });
+        defaultRuntime.log(
+          `forecast_unresolved_scanned=${outcome.unresolvedCount} forecast_resolved_now=${outcome.resolvedNow}`,
+        );
       });
     });
 
@@ -372,7 +656,7 @@ export function registerResearchCli(program: Command) {
   research
     .command("eval")
     .description("Run finance/coding evals and store scores")
-    .requiredOption("--type <kind>", "finance|coding|retrieval|all")
+    .requiredOption("--type <kind>", "finance|coding|retrieval|decision|all")
     .option("--repo-root <path>", "Repo root for coding eval", process.cwd())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
@@ -393,6 +677,12 @@ export function registerResearchCli(program: Command) {
           const res = await runRetrievalEval();
           defaultRuntime.log(
             `retrieval eval score=${(res.score * 100).toFixed(1)}% (${res.passed}/${res.total})`,
+          );
+        }
+        if (kind === "decision" || kind === "all") {
+          const res = await runDecisionEval();
+          defaultRuntime.log(
+            `decision eval score=${(res.score * 100).toFixed(1)}% (${res.passed}/${res.total})`,
           );
         }
       });

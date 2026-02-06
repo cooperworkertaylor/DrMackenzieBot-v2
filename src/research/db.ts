@@ -182,6 +182,65 @@ const migrate = (db: ResearchDb) => {
       unique (doc_type, ref, url)
     );
 
+    create table if not exists catalysts (
+      id integer primary key,
+      instrument_id integer not null,
+      ticker text not null,
+      category text not null default 'company',
+      name text not null,
+      date_window_start text not null default '',
+      date_window_end text not null default '',
+      probability real not null,
+      impact_bps real not null,
+      confidence real not null,
+      direction text not null default 'both',
+      source text not null default 'manual',
+      status text not null default 'open',
+      notes text not null default '',
+      created_at integer not null,
+      updated_at integer not null
+    );
+
+    create table if not exists catalyst_outcomes (
+      id integer primary key,
+      catalyst_id integer not null unique,
+      occurred integer not null,
+      realized_impact_bps real,
+      resolved_at integer not null,
+      notes text not null default ''
+    );
+
+    create table if not exists thesis_forecasts (
+      id integer primary key,
+      instrument_id integer,
+      ticker text not null,
+      forecast_type text not null default 'valuation_upside',
+      horizon_days integer not null,
+      predicted_return real not null,
+      start_price real not null,
+      base_price_date text not null,
+      source text not null default 'memo',
+      created_at integer not null,
+      resolved integer not null default 0,
+      resolved_at integer,
+      end_price real,
+      realized_return real,
+      resolution_note text not null default ''
+    );
+
+    create table if not exists thesis_alerts (
+      id integer primary key,
+      instrument_id integer,
+      ticker text not null,
+      severity text not null,
+      alert_type text not null,
+      message text not null,
+      details text not null default '',
+      created_at integer not null,
+      resolved integer not null default 0,
+      resolved_at integer
+    );
+
     create table if not exists chunks (
       id integer primary key,
       source_table text not null,
@@ -259,6 +318,18 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_earnings_expectations_lookup
       on earnings_expectations (instrument_id, period_type, fiscal_date_ending desc, reported_date desc);
+
+    create index if not exists idx_catalysts_open_window
+      on catalysts (instrument_id, status, date_window_start, date_window_end);
+
+    create index if not exists idx_catalyst_outcomes_catalyst
+      on catalyst_outcomes (catalyst_id);
+
+    create index if not exists idx_thesis_forecasts_resolution
+      on thesis_forecasts (ticker, resolved, created_at);
+
+    create index if not exists idx_thesis_alerts_lookup
+      on thesis_alerts (ticker, resolved, created_at desc);
   `);
 
   ensureColumn(db, "filings", "accession_raw", "TEXT");

@@ -1,3 +1,4 @@
+import { getCatalystSummary, type CatalystSummary } from "./catalyst.js";
 import { openResearchDb } from "./db.js";
 
 type ScenarioName = "bear" | "base" | "bull";
@@ -44,13 +45,16 @@ export type ValuationResult = {
   ticker: string;
   computedAt: string;
   currentPrice?: number;
+  currentPriceDate?: string;
   sharesOutstanding?: number;
   revenueTtm?: number;
   operatingMarginTtm?: number;
   expectationObservationCount: number;
   scenarios: ScenarioValuation[];
+  catalystSummary?: CatalystSummary;
   expectedSharePrice?: number;
   expectedUpsidePct?: number;
+  expectedUpsideWithCatalystsPct?: number;
   impliedExpectations?: ImpliedExpectations;
   confidence: number;
   notes: string[];
@@ -284,19 +288,22 @@ export const deriveImpliedExpectations = (params: {
   };
 };
 
-const loadLatestPrice = (ticker: string, dbPath?: string): number | undefined => {
+const loadLatestPrice = (ticker: string, dbPath?: string): { close?: number; date?: string } => {
   const db = openResearchDb(dbPath);
   const row = db
     .prepare(
-      `SELECT p.close
+      `SELECT p.close, p.date
        FROM prices p
        JOIN instruments i ON i.id=p.instrument_id
        WHERE i.ticker=?
        ORDER BY p.date DESC
        LIMIT 1`,
     )
-    .get(ticker) as { close?: number } | undefined;
-  return toFiniteOrUndefined(row?.close);
+    .get(ticker) as { close?: number; date?: string } | undefined;
+  return {
+    close: toFiniteOrUndefined(row?.close),
+    date: row?.date?.trim() || undefined,
+  };
 };
 
 const loadFundamentals = (ticker: string, dbPath?: string): FundamentalPeriod[] => {
@@ -392,12 +399,15 @@ const loadExpectationTrend = (
 export const computeValuation = (params: { ticker: string; dbPath?: string }): ValuationResult => {
   const ticker = params.ticker.trim().toUpperCase();
   const notes: string[] = [];
-  const currentPrice = loadLatestPrice(ticker, params.dbPath);
+  const price = loadLatestPrice(ticker, params.dbPath);
+  const currentPrice = price.close;
+  const currentPriceDate = price.date;
   const sharesOutstanding = loadSharesOutstanding(ticker, params.dbPath);
   const fundamentals = loadFundamentals(ticker, params.dbPath);
   const ttm = ttmFromQuartersOrAnnual(fundamentals);
   const recentRevenueGrowth = annualizedRevenueGrowth(fundamentals);
   const expectationSignal = loadExpectationTrend(ticker, params.dbPath);
+  const catalystSummary = getCatalystSummary({ ticker, dbPath: params.dbPath });
 
   if (typeof currentPrice !== "number") notes.push("Missing latest price");
   if (typeof sharesOutstanding !== "number") notes.push("Missing shares outstanding");
@@ -410,11 +420,13 @@ export const computeValuation = (params: { ticker: string; dbPath?: string }): V
       ticker,
       computedAt: new Date().toISOString(),
       currentPrice,
+      currentPriceDate,
       sharesOutstanding,
       revenueTtm: ttm.revenueTtm,
       operatingMarginTtm: ttm.operatingMarginTtm,
       expectationObservationCount: expectationSignal.observationCount,
       scenarios: [],
+      catalystSummary,
       confidence: 0,
       notes,
     };
@@ -448,6 +460,10 @@ export const computeValuation = (params: { ticker: string; dbPath?: string }): V
     typeof expectedSharePrice === "number" && typeof currentPrice === "number" && currentPrice > 0
       ? expectedSharePrice / currentPrice - 1
       : undefined;
+  const expectedUpsideWithCatalystsPct =
+    typeof expectedUpsidePct === "number"
+      ? expectedUpsidePct + catalystSummary.expectedImpactPct
+      : undefined;
 
   const base = scenarios.find((scenario) => scenario.name === "base");
   const impliedExpectations =
@@ -480,15 +496,200 @@ export const computeValuation = (params: { ticker: string; dbPath?: string }): V
     ticker,
     computedAt: new Date().toISOString(),
     currentPrice,
+    currentPriceDate,
     sharesOutstanding,
     revenueTtm: ttm.revenueTtm,
     operatingMarginTtm: ttm.operatingMarginTtm,
     expectationObservationCount: expectationSignal.observationCount,
     scenarios,
+    catalystSummary,
     expectedSharePrice,
     expectedUpsidePct,
+    expectedUpsideWithCatalystsPct,
     impliedExpectations,
     confidence,
     notes,
+  };
+};
+
+export const recordValuationForecast = (params: {
+  ticker: string;
+  predictedReturn: number;
+  startPrice: number;
+  basePriceDate: string;
+  horizonDays?: number;
+  source?: string;
+  dbPath?: string;
+}) => {
+  const db = openResearchDb(params.dbPath);
+  const ticker = params.ticker.trim().toUpperCase();
+  const horizonDays = Math.max(7, params.horizonDays ?? 90);
+  const source = params.source?.trim() || "memo";
+  const existing = db
+    .prepare(
+      `SELECT id
+       FROM thesis_forecasts
+       WHERE ticker=?
+         AND forecast_type='valuation_upside'
+         AND horizon_days=?
+         AND base_price_date=?
+         AND source=?
+         AND resolved=0
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .get(ticker, horizonDays, params.basePriceDate, source) as { id?: number } | undefined;
+  if (typeof existing?.id === "number") {
+    return existing.id;
+  }
+  const instrument = db.prepare(`SELECT id FROM instruments WHERE ticker=?`).get(ticker) as
+    | { id?: number }
+    | undefined;
+  const row = db
+    .prepare(
+      `INSERT INTO thesis_forecasts (
+         instrument_id, ticker, forecast_type, horizon_days, predicted_return,
+         start_price, base_price_date, source, created_at, resolved
+       )
+       VALUES (?, ?, 'valuation_upside', ?, ?, ?, ?, ?, ?, 0)
+       RETURNING id`,
+    )
+    .get(
+      instrument?.id ?? null,
+      ticker,
+      horizonDays,
+      params.predictedReturn,
+      params.startPrice,
+      params.basePriceDate,
+      source,
+      Date.now(),
+    ) as { id: number };
+  return row.id;
+};
+
+const resolveTargetPrice = (params: {
+  ticker: string;
+  targetDate: string;
+  dbPath?: string;
+}): { price?: number; date?: string } => {
+  const db = openResearchDb(params.dbPath);
+  const future = db
+    .prepare(
+      `SELECT p.close, p.date
+       FROM prices p
+       JOIN instruments i ON i.id=p.instrument_id
+       WHERE i.ticker=? AND p.date >= ?
+       ORDER BY p.date ASC
+       LIMIT 1`,
+    )
+    .get(params.ticker, params.targetDate) as { close?: number; date?: string } | undefined;
+  if (typeof future?.close === "number") {
+    return { price: future.close, date: future.date };
+  }
+  const latest = db
+    .prepare(
+      `SELECT p.close, p.date
+       FROM prices p
+       JOIN instruments i ON i.id=p.instrument_id
+       WHERE i.ticker=? AND p.date <= ?
+       ORDER BY p.date DESC
+       LIMIT 1`,
+    )
+    .get(params.ticker, params.targetDate) as { close?: number; date?: string } | undefined;
+  return { price: toFiniteOrUndefined(latest?.close), date: latest?.date };
+};
+
+export const resolveMatureForecasts = (params: { dbPath?: string } = {}) => {
+  const db = openResearchDb(params.dbPath);
+  const unresolved = db
+    .prepare(
+      `SELECT id, ticker, horizon_days, start_price, created_at
+       FROM thesis_forecasts
+       WHERE resolved=0
+       ORDER BY created_at ASC
+       LIMIT 200`,
+    )
+    .all() as Array<{
+    id: number;
+    ticker: string;
+    horizon_days: number;
+    start_price: number;
+    created_at: number;
+  }>;
+  let resolvedNow = 0;
+  for (const row of unresolved) {
+    const targetMs = row.created_at + row.horizon_days * 86_400_000;
+    if (Date.now() < targetMs) continue;
+    const targetIso = new Date(targetMs).toISOString().slice(0, 10);
+    const end = resolveTargetPrice({
+      ticker: row.ticker,
+      targetDate: targetIso,
+      dbPath: params.dbPath,
+    });
+    const endPrice = toFiniteOrUndefined(end.price);
+    const realizedReturn =
+      typeof endPrice === "number" && Math.abs(row.start_price) > 1e-9
+        ? endPrice / row.start_price - 1
+        : null;
+    db.prepare(
+      `UPDATE thesis_forecasts
+       SET resolved=1,
+           resolved_at=?,
+           end_price=?,
+           realized_return=?,
+           resolution_note=?
+       WHERE id=?`,
+    ).run(
+      Date.now(),
+      endPrice ?? null,
+      realizedReturn,
+      end.date ? `resolved_with_price_date=${end.date}` : "no_price_available",
+      row.id,
+    );
+    resolvedNow += 1;
+  }
+  return { unresolvedCount: unresolved.length, resolvedNow };
+};
+
+export const forecastDecisionMetrics = (params: { dbPath?: string } = {}) => {
+  const db = openResearchDb(params.dbPath);
+  const rows = db
+    .prepare(
+      `SELECT predicted_return, realized_return
+       FROM thesis_forecasts
+       WHERE resolved=1
+         AND realized_return IS NOT NULL
+       ORDER BY resolved_at DESC
+       LIMIT 200`,
+    )
+    .all() as Array<{ predicted_return: number; realized_return: number }>;
+
+  const count = rows.length;
+  if (!count) {
+    return {
+      count: 0,
+      mae: undefined as number | undefined,
+      directionalAccuracy: undefined as number | undefined,
+      meanPredicted: undefined as number | undefined,
+      meanRealized: undefined as number | undefined,
+    };
+  }
+  const mae =
+    rows.reduce(
+      (sumValue, row) => sumValue + Math.abs(row.predicted_return - row.realized_return),
+      0,
+    ) / count;
+  const directionalCorrect = rows.filter(
+    (row) => Math.sign(row.predicted_return) === Math.sign(row.realized_return),
+  ).length;
+  const directionalAccuracy = directionalCorrect / count;
+  const meanPredicted = rows.reduce((sumValue, row) => sumValue + row.predicted_return, 0) / count;
+  const meanRealized = rows.reduce((sumValue, row) => sumValue + row.realized_return, 0) / count;
+  return {
+    count,
+    mae,
+    directionalAccuracy,
+    meanPredicted,
+    meanRealized,
   };
 };

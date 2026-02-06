@@ -1,5 +1,10 @@
 import path from "node:path";
-import { runCodingEval, runFinanceEval, runRetrievalEval } from "../src/research/eval.js";
+import {
+  runCodingEval,
+  runDecisionEval,
+  runFinanceEval,
+  runRetrievalEval,
+} from "../src/research/eval.js";
 
 const run = async () => {
   const finance = await runFinanceEval();
@@ -12,6 +17,10 @@ const run = async () => {
   const retrieval = await runRetrievalEval();
   console.log(
     `retrieval score=${(retrieval.score * 100).toFixed(1)}% (${retrieval.passed}/${retrieval.total})`,
+  );
+  const decision = await runDecisionEval();
+  console.log(
+    `decision score=${(decision.score * 100).toFixed(1)}% (${decision.passed}/${decision.total})`,
   );
 };
 

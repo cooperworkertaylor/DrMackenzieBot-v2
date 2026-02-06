@@ -5,6 +5,7 @@ import {
   ingestPrices,
 } from "../src/research/ingest.js";
 import { openResearchDb } from "../src/research/db.js";
+import { monitorTicker } from "../src/research/monitor.js";
 
 const run = async () => {
   const tickersRaw = process.env.RESEARCH_TICKERS || "";
@@ -50,6 +51,12 @@ const run = async () => {
       );
     } catch (err) {
       console.error(`expectations failed: ${String(err)}`);
+    }
+    try {
+      const monitor = monitorTicker({ ticker });
+      console.log(`monitor: alerts=${monitor.alerts.length}, persisted=${monitor.persisted}`);
+    } catch (err) {
+      console.error(`monitor failed: ${String(err)}`);
     }
   }
 };
