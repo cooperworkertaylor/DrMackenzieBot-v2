@@ -174,6 +174,81 @@ describe("portfolio optimizer", () => {
     expect(result.constraintBreaches).toHaveLength(0);
   });
 
+  it("applies liquidity participation and turnover controls with cost-adjusted returns", () => {
+    const decisions = [
+      decisionStub({
+        ticker: "AAPL",
+        stance: "long",
+        recommendation: "enter",
+        expectedReturnPct: 12,
+        decisionScore: 0.79,
+        confidence: 0.74,
+        baseWeightPct: 6,
+        baseRiskBudgetPct: 2.4,
+        bearReturnPct: -20,
+        baseReturnPct: 8,
+        bullReturnPct: 24,
+      }),
+      decisionStub({
+        ticker: "MSFT",
+        stance: "short",
+        recommendation: "enter",
+        expectedReturnPct: -9,
+        decisionScore: 0.75,
+        confidence: 0.72,
+        baseWeightPct: 5.5,
+        baseRiskBudgetPct: 2.1,
+        bearReturnPct: -14,
+        baseReturnPct: -4,
+        bullReturnPct: 9,
+      }),
+    ];
+    const result = composePortfolioOptimization({
+      tickers: ["AAPL", "MSFT"],
+      question: "Liquidity aware optimization",
+      decisions,
+      constraints: {
+        portfolioNavUsd: 1_000_000_000,
+        maxAdvParticipationPct: 0.06,
+        maxTurnoverPct: 6,
+        maxGrossExposurePct: 10,
+        maxNetExposurePct: 6,
+        spreadBps: 7,
+        impactBpsAtMaxParticipation: 45,
+      },
+      sectors: {
+        AAPL: "Technology",
+        MSFT: "Technology",
+      },
+      liquidityByTicker: {
+        AAPL: {
+          ticker: "AAPL",
+          avgDailyDollarVolumeUsd: 120_000_000,
+          avgDailyShareVolume: 1_000_000,
+          observationCount: 20,
+          lookbackDays: 20,
+        },
+        MSFT: {
+          ticker: "MSFT",
+          avgDailyDollarVolumeUsd: 110_000_000,
+          avgDailyShareVolume: 900_000,
+          observationCount: 20,
+          lookbackDays: 20,
+        },
+      },
+      currentWeightsSignedPct: {
+        AAPL: 1.5,
+        MSFT: -1,
+      },
+      pairwiseCorrelation: [{ left: "AAPL", right: "MSFT", correlation: 0.18, overlapDays: 100 }],
+    });
+    expect(result.metrics.turnoverPct).toBeLessThanOrEqual(6.0001);
+    expect(result.positions.every((row) => (row.advParticipationPct ?? 0) <= 0.0601)).toBe(true);
+    expect(result.metrics.transactionCostPct).toBeGreaterThan(0);
+    expect(result.metrics.expectedNetPnlPct).toBeLessThan(result.metrics.expectedPnlPct);
+    expect(result.positions.every((row) => row.expectedNetPnlPct <= row.expectedPnlPct)).toBe(true);
+  });
+
   it("drops non-actionable and negative directional-return names", () => {
     const decisions = [
       decisionStub({

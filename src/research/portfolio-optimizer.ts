@@ -16,6 +16,21 @@ export type PortfolioOptimizerConstraints = {
   minPositionWeightPct: number;
   minCorrelationHistoryDays: number;
   maxStressLossPct: number;
+  portfolioNavUsd: number;
+  minAvgDailyDollarVolumeUsd: number;
+  maxAdvParticipationPct: number;
+  maxTurnoverPct: number;
+  spreadBps: number;
+  impactBpsAtMaxParticipation: number;
+  liquidityLookbackDays: number;
+};
+
+export type PortfolioLiquiditySnapshot = {
+  ticker: string;
+  avgDailyDollarVolumeUsd?: number;
+  avgDailyShareVolume?: number;
+  observationCount: number;
+  lookbackDays: number;
 };
 
 export type PortfolioOptimizerPosition = {
@@ -33,6 +48,13 @@ export type PortfolioOptimizerPosition = {
   worstScenarioPnlPct: number;
   volatilityAnnualizedPct?: number;
   correlationPenalty: number;
+  currentSignedWeightPct: number;
+  turnoverTradePct: number;
+  avgDailyDollarVolumeUsd?: number;
+  advParticipationPct?: number;
+  estimatedTransactionCostBps: number;
+  estimatedTransactionCostPct: number;
+  expectedNetPnlPct: number;
   rationale: string[];
 };
 
@@ -62,15 +84,20 @@ export type PortfolioOptimizationResult = {
     portfolioRiskBudgetPct: number;
     expectedReturnPct: number;
     expectedPnlPct: number;
+    expectedNetPnlPct: number;
     worstScenarioPnlPct: number;
     diversificationScore: number;
     effectiveNames: number;
     weightedCorrelation: number;
+    turnoverPct: number;
+    transactionCostPct: number;
+    liquidityCoveragePct: number;
   };
   scenarioStress: PortfolioScenarioAggregate[];
   sectorExposurePct: Record<string, number>;
   pairwiseCorrelation: PortfolioCorrelationEdge[];
   constraintBreaches: string[];
+  liquidity: Record<string, PortfolioLiquiditySnapshot>;
 };
 
 type ReturnSeries = {
@@ -83,6 +110,7 @@ type RiskModel = {
   returnSeriesByTicker: Map<string, ReturnSeries>;
   pairwiseCorrelation: PortfolioCorrelationEdge[];
   sectors: Map<string, string>;
+  liquidityByTicker: Map<string, PortfolioLiquiditySnapshot>;
 };
 
 type OptimizerCandidate = {
@@ -103,6 +131,13 @@ type OptimizerCandidate = {
   weightPct: number;
   riskBudgetPct: number;
   volatilityAnnualizedPct?: number;
+  currentSignedWeightPct: number;
+  turnoverTradePct: number;
+  avgDailyDollarVolumeUsd?: number;
+  advParticipationPct?: number;
+  estimatedTransactionCostBps: number;
+  estimatedTransactionCostPct: number;
+  expectedNetPnlPct: number;
   rationale: string[];
 };
 
@@ -146,6 +181,13 @@ const defaultConstraints = (): PortfolioOptimizerConstraints => ({
   minPositionWeightPct: 0.35,
   minCorrelationHistoryDays: 40,
   maxStressLossPct: 3.5,
+  portfolioNavUsd: 25_000_000,
+  minAvgDailyDollarVolumeUsd: 5_000_000,
+  maxAdvParticipationPct: 0.12,
+  maxTurnoverPct: 18,
+  spreadBps: 6,
+  impactBpsAtMaxParticipation: 35,
+  liquidityLookbackDays: 20,
 });
 
 const normalizeConstraints = (
@@ -201,6 +243,39 @@ const normalizeConstraints = (
       0.25,
       20,
     ),
+    portfolioNavUsd: clamp(
+      parseNumeric(constraints?.portfolioNavUsd, defaults.portfolioNavUsd),
+      100_000,
+      10_000_000_000,
+    ),
+    minAvgDailyDollarVolumeUsd: clamp(
+      parseNumeric(constraints?.minAvgDailyDollarVolumeUsd, defaults.minAvgDailyDollarVolumeUsd),
+      0,
+      10_000_000_000,
+    ),
+    maxAdvParticipationPct: clamp(
+      parseNumeric(constraints?.maxAdvParticipationPct, defaults.maxAdvParticipationPct),
+      0.01,
+      1,
+    ),
+    maxTurnoverPct: clamp(
+      parseNumeric(constraints?.maxTurnoverPct, defaults.maxTurnoverPct),
+      0.5,
+      200,
+    ),
+    spreadBps: clamp(parseNumeric(constraints?.spreadBps, defaults.spreadBps), 0, 150),
+    impactBpsAtMaxParticipation: clamp(
+      parseNumeric(constraints?.impactBpsAtMaxParticipation, defaults.impactBpsAtMaxParticipation),
+      0,
+      500,
+    ),
+    liquidityLookbackDays: Math.round(
+      clamp(
+        parseNumeric(constraints?.liquidityLookbackDays, defaults.liquidityLookbackDays),
+        5,
+        252,
+      ),
+    ),
   };
 };
 
@@ -227,6 +302,8 @@ const buildCandidates = (params: {
   constraints: PortfolioOptimizerConstraints;
   sectors: Map<string, string>;
   volatilityByTicker: Map<string, number | undefined>;
+  liquidityByTicker: Map<string, PortfolioLiquiditySnapshot>;
+  currentWeightsSignedPct: Map<string, number>;
 }): {
   candidates: OptimizerCandidate[];
   dropped: Array<{ ticker: string; reason: string }>;
@@ -236,6 +313,18 @@ const buildCandidates = (params: {
   for (const decision of params.decisions) {
     const ticker = decision.ticker;
     const sector = params.sectors.get(ticker) ?? "Unknown";
+    const liquidity = params.liquidityByTicker.get(ticker);
+    const avgDailyDollarVolumeUsd = liquidity?.avgDailyDollarVolumeUsd;
+    if (
+      typeof avgDailyDollarVolumeUsd === "number" &&
+      avgDailyDollarVolumeUsd < params.constraints.minAvgDailyDollarVolumeUsd
+    ) {
+      dropped.push({
+        ticker,
+        reason: `Average daily dollar volume $${avgDailyDollarVolumeUsd.toFixed(0)} below minimum $${params.constraints.minAvgDailyDollarVolumeUsd.toFixed(0)}.`,
+      });
+      continue;
+    }
     if (decision.recommendation === "avoid") {
       dropped.push({ ticker, reason: "Decision layer returned avoid." });
       continue;
@@ -281,6 +370,7 @@ const buildCandidates = (params: {
       0,
       decision.constraints.maxRiskBudgetPct,
     );
+    const currentSignedWeightPct = params.currentWeightsSignedPct.get(ticker) ?? 0;
     candidates.push({
       ticker,
       sector,
@@ -299,7 +389,19 @@ const buildCandidates = (params: {
       weightPct: initialWeightPct,
       riskBudgetPct: 0,
       volatilityAnnualizedPct: params.volatilityByTicker.get(ticker),
-      rationale: [...decision.rationale],
+      currentSignedWeightPct,
+      turnoverTradePct: 0,
+      avgDailyDollarVolumeUsd,
+      advParticipationPct: undefined,
+      estimatedTransactionCostBps: 0,
+      estimatedTransactionCostPct: 0,
+      expectedNetPnlPct: 0,
+      rationale: [
+        ...decision.rationale,
+        ...(typeof avgDailyDollarVolumeUsd !== "number"
+          ? ["Liquidity history missing; applying conservative execution cost proxy."]
+          : []),
+      ],
     });
   }
   return { candidates, dropped };
@@ -381,6 +483,96 @@ const applyPairwiseCorrelationPenalty = (params: {
       0,
       params.constraints.maxSingleNameWeightPct,
     );
+  }
+};
+
+const signedWeight = (candidate: OptimizerCandidate): number =>
+  candidate.weightPct * candidate.direction;
+
+const applySignedWeight = (candidate: OptimizerCandidate, signed: number) => {
+  candidate.direction = signed >= 0 ? 1 : -1;
+  candidate.stance = candidate.direction > 0 ? "long" : "short";
+  candidate.weightPct = Math.abs(signed);
+};
+
+const updateTradeLiquidityAndCosts = (params: {
+  candidates: OptimizerCandidate[];
+  constraints: PortfolioOptimizerConstraints;
+}) => {
+  for (const candidate of params.candidates) {
+    const targetSignedWeight = signedWeight(candidate);
+    const turnoverTradePct = Math.abs(targetSignedWeight - candidate.currentSignedWeightPct);
+    candidate.turnoverTradePct = turnoverTradePct;
+    const adv = candidate.avgDailyDollarVolumeUsd;
+    const hasLiquidity = typeof adv === "number" && adv > 1;
+    const participationPct = hasLiquidity
+      ? (params.constraints.portfolioNavUsd * (turnoverTradePct / 100)) / adv
+      : undefined;
+    candidate.advParticipationPct = participationPct;
+    const normalizedParticipation =
+      typeof participationPct === "number" && participationPct > 0
+        ? clamp(participationPct / params.constraints.maxAdvParticipationPct, 0, 4)
+        : 1;
+    const transactionCostBps =
+      params.constraints.spreadBps +
+      params.constraints.impactBpsAtMaxParticipation * Math.sqrt(normalizedParticipation);
+    candidate.estimatedTransactionCostBps = transactionCostBps;
+    candidate.estimatedTransactionCostPct = (turnoverTradePct * transactionCostBps) / 10_000;
+    candidate.expectedNetPnlPct =
+      (candidate.weightPct / 100) * candidate.directionalExpectedReturnPct -
+      candidate.estimatedTransactionCostPct;
+  }
+};
+
+const enforceAdvParticipation = (params: {
+  candidates: OptimizerCandidate[];
+  constraints: PortfolioOptimizerConstraints;
+}) => {
+  for (const candidate of params.candidates) {
+    if (
+      typeof candidate.advParticipationPct !== "number" ||
+      candidate.advParticipationPct <= params.constraints.maxAdvParticipationPct
+    ) {
+      continue;
+    }
+    const targetSignedWeight = signedWeight(candidate);
+    const delta = targetSignedWeight - candidate.currentSignedWeightPct;
+    const scale = clamp(
+      params.constraints.maxAdvParticipationPct / candidate.advParticipationPct,
+      0,
+      1,
+    );
+    const adjustedSigned = candidate.currentSignedWeightPct + delta * scale;
+    applySignedWeight(candidate, adjustedSigned);
+  }
+  updateTradeLiquidityAndCosts(params);
+};
+
+const enforceTurnoverCap = (params: {
+  candidates: OptimizerCandidate[];
+  constraints: PortfolioOptimizerConstraints;
+}) => {
+  const totalTurnover = params.candidates.reduce(
+    (sum, candidate) => sum + candidate.turnoverTradePct,
+    0,
+  );
+  if (totalTurnover <= params.constraints.maxTurnoverPct || totalTurnover <= 1e-9) return;
+  const scaling = clamp(params.constraints.maxTurnoverPct / totalTurnover, 0, 1);
+  for (const candidate of params.candidates) {
+    const targetSigned = signedWeight(candidate);
+    const delta = targetSigned - candidate.currentSignedWeightPct;
+    const adjustedSigned = candidate.currentSignedWeightPct + delta * scaling;
+    applySignedWeight(candidate, adjustedSigned);
+  }
+  updateTradeLiquidityAndCosts(params);
+};
+
+const enforceSingleNameCap = (params: {
+  candidates: OptimizerCandidate[];
+  constraints: PortfolioOptimizerConstraints;
+}) => {
+  for (const candidate of params.candidates) {
+    candidate.weightPct = clamp(candidate.weightPct, 0, params.constraints.maxSingleNameWeightPct);
   }
 };
 
@@ -584,6 +776,10 @@ const buildConstraintBreaches = (params: {
   const gross = grossExposure(params.candidates);
   const net = netExposure(params.candidates);
   const riskBudget = params.candidates.reduce((sum, candidate) => sum + candidate.riskBudgetPct, 0);
+  const turnover = params.candidates.reduce(
+    (sum, candidate) => sum + candidate.turnoverTradePct,
+    0,
+  );
   if (gross > params.constraints.maxGrossExposurePct + 1e-6) {
     breaches.push(
       `Gross exposure ${gross.toFixed(2)}% exceeds ${params.constraints.maxGrossExposurePct.toFixed(2)}%.`,
@@ -597,6 +793,11 @@ const buildConstraintBreaches = (params: {
   if (riskBudget > params.constraints.maxPortfolioRiskBudgetPct + 1e-6) {
     breaches.push(
       `Portfolio risk budget ${riskBudget.toFixed(2)}% exceeds ${params.constraints.maxPortfolioRiskBudgetPct.toFixed(2)}%.`,
+    );
+  }
+  if (turnover > params.constraints.maxTurnoverPct + 1e-6) {
+    breaches.push(
+      `Turnover ${turnover.toFixed(2)}% exceeds ${params.constraints.maxTurnoverPct.toFixed(2)}%.`,
     );
   }
   for (const [sector, exposure] of Object.entries(params.sectorExposurePct)) {
@@ -618,6 +819,16 @@ const buildConstraintBreaches = (params: {
       `Worst stress loss ${worstStress.toFixed(2)}% exceeds ${params.constraints.maxStressLossPct.toFixed(2)}%.`,
     );
   }
+  for (const candidate of params.candidates) {
+    if (
+      typeof candidate.advParticipationPct === "number" &&
+      candidate.advParticipationPct > params.constraints.maxAdvParticipationPct + 1e-6
+    ) {
+      breaches.push(
+        `${candidate.ticker} ADV participation ${(candidate.advParticipationPct * 100).toFixed(2)}% exceeds ${(params.constraints.maxAdvParticipationPct * 100).toFixed(2)}%.`,
+      );
+    }
+  }
   return breaches;
 };
 
@@ -629,6 +840,8 @@ export const composePortfolioOptimization = (params: {
   sectors?: Record<string, string>;
   pairwiseCorrelation?: PortfolioCorrelationEdge[];
   volatilityAnnualizedPctByTicker?: Record<string, number | undefined>;
+  currentWeightsSignedPct?: Record<string, number>;
+  liquidityByTicker?: Record<string, PortfolioLiquiditySnapshot>;
 }): PortfolioOptimizationResult => {
   const constraints = normalizeConstraints(params.constraints);
   const sectors = new Map<string, string>(
@@ -643,6 +856,38 @@ export const composePortfolioOptimization = (params: {
       value,
     ]),
   );
+  const currentWeightsSignedPct = new Map<string, number>(
+    Object.entries(params.currentWeightsSignedPct ?? {}).map(([ticker, value]) => [
+      normalizeTicker(ticker),
+      Number.isFinite(value) ? value : 0,
+    ]),
+  );
+  const liquidityByTicker = new Map<string, PortfolioLiquiditySnapshot>(
+    Object.entries(params.liquidityByTicker ?? {}).map(([ticker, value]) => [
+      normalizeTicker(ticker),
+      {
+        ticker: normalizeTicker(value.ticker || ticker),
+        avgDailyDollarVolumeUsd:
+          typeof value.avgDailyDollarVolumeUsd === "number" &&
+          Number.isFinite(value.avgDailyDollarVolumeUsd)
+            ? value.avgDailyDollarVolumeUsd
+            : undefined,
+        avgDailyShareVolume:
+          typeof value.avgDailyShareVolume === "number" &&
+          Number.isFinite(value.avgDailyShareVolume)
+            ? value.avgDailyShareVolume
+            : undefined,
+        observationCount:
+          typeof value.observationCount === "number" && Number.isFinite(value.observationCount)
+            ? value.observationCount
+            : 0,
+        lookbackDays:
+          typeof value.lookbackDays === "number" && Number.isFinite(value.lookbackDays)
+            ? value.lookbackDays
+            : constraints.liquidityLookbackDays,
+      },
+    ]),
+  );
   const decisions = params.decisions.map((decision) => ({
     ...decision,
     ticker: normalizeTicker(decision.ticker),
@@ -653,6 +898,8 @@ export const composePortfolioOptimization = (params: {
     constraints,
     sectors,
     volatilityByTicker,
+    liquidityByTicker,
+    currentWeightsSignedPct,
   });
   if (!seededCandidates.length) {
     throw new Error("No actionable positions after applying single-name decision filters.");
@@ -663,9 +910,34 @@ export const composePortfolioOptimization = (params: {
     pairwiseCorrelation,
     constraints,
   });
+  enforceSingleNameCap({ candidates: seededCandidates, constraints });
+  updateTradeLiquidityAndCosts({
+    candidates: seededCandidates,
+    constraints,
+  });
+  enforceAdvParticipation({
+    candidates: seededCandidates,
+    constraints,
+  });
   enforceSectorCap({ candidates: seededCandidates, constraints });
   enforceGrossAndNet({ candidates: seededCandidates, constraints });
   applyRiskBudget({ candidates: seededCandidates, constraints });
+  updateTradeLiquidityAndCosts({
+    candidates: seededCandidates,
+    constraints,
+  });
+  enforceTurnoverCap({
+    candidates: seededCandidates,
+    constraints,
+  });
+  enforceSingleNameCap({ candidates: seededCandidates, constraints });
+  enforceSectorCap({ candidates: seededCandidates, constraints });
+  enforceGrossAndNet({ candidates: seededCandidates, constraints });
+  applyRiskBudget({ candidates: seededCandidates, constraints });
+  updateTradeLiquidityAndCosts({
+    candidates: seededCandidates,
+    constraints,
+  });
   const candidates = pruneTinyPositions({
     candidates: seededCandidates,
     constraints,
@@ -706,9 +978,29 @@ export const composePortfolioOptimization = (params: {
       worstScenarioPnlPct: (candidate.weightPct / 100) * candidate.worstScenarioReturnPct,
       volatilityAnnualizedPct: candidate.volatilityAnnualizedPct,
       correlationPenalty: candidate.correlationPenalty,
+      currentSignedWeightPct: candidate.currentSignedWeightPct,
+      turnoverTradePct: candidate.turnoverTradePct,
+      avgDailyDollarVolumeUsd: candidate.avgDailyDollarVolumeUsd,
+      advParticipationPct: candidate.advParticipationPct,
+      estimatedTransactionCostBps: candidate.estimatedTransactionCostBps,
+      estimatedTransactionCostPct: candidate.estimatedTransactionCostPct,
+      expectedNetPnlPct: candidate.expectedNetPnlPct,
       rationale: candidate.rationale,
     }))
     .sort((left, right) => Math.abs(right.signedWeightPct) - Math.abs(left.signedWeightPct));
+  const expectedNetPnlPct = candidates.reduce(
+    (sum, candidate) => sum + candidate.expectedNetPnlPct,
+    0,
+  );
+  const turnoverPct = candidates.reduce((sum, candidate) => sum + candidate.turnoverTradePct, 0);
+  const transactionCostPct = candidates.reduce(
+    (sum, candidate) => sum + candidate.estimatedTransactionCostPct,
+    0,
+  );
+  const liquidityCoveragePct = candidates.length
+    ? candidates.filter((candidate) => typeof candidate.avgDailyDollarVolumeUsd === "number")
+        .length / candidates.length
+    : 0;
   const metrics = {
     grossExposurePct: grossExposure(candidates),
     netExposurePct: netExposure(candidates),
@@ -716,10 +1008,14 @@ export const composePortfolioOptimization = (params: {
     expectedReturnPct:
       grossExposure(candidates) > 1e-9 ? (expectedPnlPct / grossExposure(candidates)) * 100 : 0,
     expectedPnlPct,
+    expectedNetPnlPct,
     worstScenarioPnlPct,
     diversificationScore: diversification.diversificationScore,
     effectiveNames: diversification.effectiveNames,
     weightedCorrelation,
+    turnoverPct,
+    transactionCostPct,
+    liquidityCoveragePct,
   };
   const constraintBreaches = buildConstraintBreaches({
     candidates,
@@ -742,6 +1038,9 @@ export const composePortfolioOptimization = (params: {
       .filter((edge) => edge.overlapDays >= constraints.minCorrelationHistoryDays)
       .toSorted((left, right) => Math.abs(right.correlation) - Math.abs(left.correlation)),
     constraintBreaches,
+    liquidity: Object.fromEntries(
+      Array.from(liquidityByTicker.entries()).map(([ticker, snapshot]) => [ticker, snapshot]),
+    ),
   };
 };
 
@@ -759,6 +1058,60 @@ const loadSectors = (tickers: string[], dbPath?: string): Map<string, string> =>
     .all(...tickers) as Array<{ ticker: string; sector: string }>;
   for (const row of rows) {
     out.set(normalizeTicker(row.ticker), row.sector);
+  }
+  return out;
+};
+
+const loadLiquiditySnapshots = (params: {
+  tickers: string[];
+  lookbackDays: number;
+  dbPath?: string;
+}): Map<string, PortfolioLiquiditySnapshot> => {
+  const out = new Map<string, PortfolioLiquiditySnapshot>();
+  if (!params.tickers.length) return out;
+  const db = openResearchDb(params.dbPath);
+  const cutoff = new Date(Date.now() - params.lookbackDays * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  const placeholders = params.tickers.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT UPPER(i.ticker) AS ticker, p.close, p.volume
+       FROM prices p
+       JOIN instruments i ON i.id = p.instrument_id
+       WHERE UPPER(i.ticker) IN (${placeholders})
+         AND p.date >= ?
+         AND p.close IS NOT NULL
+         AND p.volume IS NOT NULL
+       ORDER BY p.date ASC`,
+    )
+    .all(...params.tickers, cutoff) as Array<{
+    ticker: string;
+    close: number;
+    volume: number;
+  }>;
+  const dollarsByTicker = new Map<string, number[]>();
+  const sharesByTicker = new Map<string, number[]>();
+  for (const row of rows) {
+    if (!Number.isFinite(row.close) || !Number.isFinite(row.volume)) continue;
+    const ticker = normalizeTicker(row.ticker);
+    const dollars = dollarsByTicker.get(ticker) ?? [];
+    const shares = sharesByTicker.get(ticker) ?? [];
+    dollars.push(row.close * row.volume);
+    shares.push(row.volume);
+    dollarsByTicker.set(ticker, dollars);
+    sharesByTicker.set(ticker, shares);
+  }
+  for (const ticker of params.tickers) {
+    const dollarRows = dollarsByTicker.get(ticker) ?? [];
+    const shareRows = sharesByTicker.get(ticker) ?? [];
+    out.set(ticker, {
+      ticker,
+      avgDailyDollarVolumeUsd: dollarRows.length ? mean(dollarRows) : undefined,
+      avgDailyShareVolume: shareRows.length ? mean(shareRows) : undefined,
+      observationCount: dollarRows.length,
+      lookbackDays: params.lookbackDays,
+    });
   }
   return out;
 };
@@ -828,6 +1181,7 @@ const buildRiskModel = (params: {
   dbPath?: string;
   lookbackDays: number;
   minOverlapDays: number;
+  liquidityLookbackDays: number;
 }): RiskModel => {
   const returnSeriesByTicker = loadReturnSeries({
     tickers: params.tickers,
@@ -840,10 +1194,16 @@ const buildRiskModel = (params: {
     params.minOverlapDays,
   );
   const sectors = loadSectors(params.tickers, params.dbPath);
+  const liquidityByTicker = loadLiquiditySnapshots({
+    tickers: params.tickers,
+    lookbackDays: params.liquidityLookbackDays,
+    dbPath: params.dbPath,
+  });
   return {
     returnSeriesByTicker,
     pairwiseCorrelation,
     sectors,
+    liquidityByTicker,
   };
 };
 
@@ -852,6 +1212,7 @@ export const computePortfolioOptimization = (params: {
   question?: string;
   decisionConstraints?: Partial<PortfolioDecisionConstraints>;
   constraints?: Partial<PortfolioOptimizerConstraints>;
+  currentWeightsSignedPct?: Record<string, number>;
   dbPath?: string;
   lookbackDays?: number;
 }): PortfolioOptimizationResult => {
@@ -871,6 +1232,7 @@ export const computePortfolioOptimization = (params: {
     dbPath: params.dbPath,
     lookbackDays: Math.max(60, params.lookbackDays ?? 252),
     minOverlapDays: constraints.minCorrelationHistoryDays,
+    liquidityLookbackDays: constraints.liquidityLookbackDays,
   });
   const volatilityAnnualizedPctByTicker: Record<string, number | undefined> = {};
   for (const [ticker, series] of riskModel.returnSeriesByTicker) {
@@ -891,5 +1253,12 @@ export const computePortfolioOptimization = (params: {
     sectors: sectorMap,
     pairwiseCorrelation: riskModel.pairwiseCorrelation,
     volatilityAnnualizedPctByTicker,
+    currentWeightsSignedPct: params.currentWeightsSignedPct,
+    liquidityByTicker: Object.fromEntries(
+      Array.from(riskModel.liquidityByTicker.entries()).map(([ticker, snapshot]) => [
+        ticker,
+        snapshot,
+      ]),
+    ),
   });
 };

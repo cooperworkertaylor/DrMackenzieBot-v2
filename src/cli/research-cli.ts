@@ -69,6 +69,7 @@ import {
   computePortfolioOptimization,
   type PortfolioOptimizerConstraints,
 } from "../research/portfolio-optimizer.js";
+import { computePortfolioReplay } from "../research/portfolio-replay.js";
 import { computePortfolioPlan } from "../research/portfolio.js";
 import { provenanceReport } from "../research/provenance.js";
 import { indexRepo } from "../research/repo-index.js";
@@ -130,6 +131,19 @@ const parseOptionalJsonObject = (value: unknown): Record<string, unknown> | unde
   } catch {
     throw new Error("Invalid JSON object");
   }
+};
+
+const parseOptionalNumericMap = (value: unknown): Record<string, number> | undefined => {
+  const objectValue = parseOptionalJsonObject(value);
+  if (!objectValue) return undefined;
+  const out: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(objectValue)) {
+    if (!key.trim()) continue;
+    const numeric = parseOptionalNumber(raw);
+    if (typeof numeric !== "number") continue;
+    out[key.trim().toUpperCase()] = numeric;
+  }
+  return out;
 };
 
 const parseOptionalJsonArray = (value: unknown): unknown[] | undefined => {
@@ -719,6 +733,17 @@ export function registerResearchCli(program: Command) {
     .option("--min-position <n>", "Minimum tradable position size %")
     .option("--min-corr-history <n>", "Minimum overlapping history days for correlation")
     .option("--max-stress-loss <n>", "Max allowed portfolio stress loss %")
+    .option("--portfolio-nav <n>", "Portfolio NAV in USD for participation/cost model")
+    .option("--min-adv-usd <n>", "Minimum average daily dollar volume in USD")
+    .option("--max-adv-participation <n>", "Max ADV participation fraction [0-1]")
+    .option("--max-turnover <n>", "Max turnover per rebalance % of NAV")
+    .option("--spread-bps <n>", "Base spread cost in bps")
+    .option("--impact-bps <n>", "Impact cost in bps at max participation")
+    .option("--liquidity-lookback <n>", "Liquidity lookback window in trading days")
+    .option(
+      "--current-weights <json>",
+      'Current signed weights map JSON (e.g. {"AAPL":2.5,"MSFT":-1})',
+    )
     .option("--max-weight <n>", "Pass-through single-name cap % for decision layer")
     .option("--max-risk-budget <n>", "Pass-through single-name risk budget %")
     .option("--max-stop-loss <n>", "Pass-through stop-loss cap % (absolute)")
@@ -762,6 +787,13 @@ export function registerResearchCli(program: Command) {
         const minPosition = parseOptionalNumber(opts["minPosition"]);
         const minCorrHistory = parseOptionalNumber(opts["minCorrHistory"]);
         const maxStressLoss = parseOptionalNumber(opts["maxStressLoss"]);
+        const portfolioNav = parseOptionalNumber(opts["portfolioNav"]);
+        const minAdvUsd = parseOptionalNumber(opts["minAdvUsd"]);
+        const maxAdvParticipation = parseOptionalNumber(opts["maxAdvParticipation"]);
+        const maxTurnover = parseOptionalNumber(opts["maxTurnover"]);
+        const spreadBps = parseOptionalNumber(opts["spreadBps"]);
+        const impactBps = parseOptionalNumber(opts["impactBps"]);
+        const liquidityLookback = parseOptionalNumber(opts["liquidityLookback"]);
         if (typeof maxGross === "number") constraints.maxGrossExposurePct = maxGross;
         if (typeof maxNet === "number") constraints.maxNetExposurePct = maxNet;
         if (typeof maxPortfolioRisk === "number")
@@ -775,12 +807,23 @@ export function registerResearchCli(program: Command) {
         if (typeof minCorrHistory === "number")
           constraints.minCorrelationHistoryDays = minCorrHistory;
         if (typeof maxStressLoss === "number") constraints.maxStressLossPct = maxStressLoss;
+        if (typeof portfolioNav === "number") constraints.portfolioNavUsd = portfolioNav;
+        if (typeof minAdvUsd === "number") constraints.minAvgDailyDollarVolumeUsd = minAdvUsd;
+        if (typeof maxAdvParticipation === "number")
+          constraints.maxAdvParticipationPct = maxAdvParticipation;
+        if (typeof maxTurnover === "number") constraints.maxTurnoverPct = maxTurnover;
+        if (typeof spreadBps === "number") constraints.spreadBps = spreadBps;
+        if (typeof impactBps === "number") constraints.impactBpsAtMaxParticipation = impactBps;
+        if (typeof liquidityLookback === "number")
+          constraints.liquidityLookbackDays = liquidityLookback;
+        const currentWeightsSignedPct = parseOptionalNumericMap(opts["currentWeights"]);
 
         const result = computePortfolioOptimization({
           tickers,
           question: opts.question as string | undefined,
           decisionConstraints,
           constraints,
+          currentWeightsSignedPct,
           dbPath: opts.db as string,
           lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 252,
         });
@@ -789,11 +832,11 @@ export function registerResearchCli(program: Command) {
           `portfolio_positions=${result.positions.length} dropped=${result.dropped.length} constraints_breaches=${result.constraintBreaches.length}`,
         );
         defaultRuntime.log(
-          `gross_exposure_pct=${result.metrics.grossExposurePct.toFixed(2)} net_exposure_pct=${result.metrics.netExposurePct.toFixed(2)} risk_budget_pct=${result.metrics.portfolioRiskBudgetPct.toFixed(2)} expected_pnl_pct=${result.metrics.expectedPnlPct.toFixed(2)} worst_scenario_pnl_pct=${result.metrics.worstScenarioPnlPct.toFixed(2)} weighted_correlation=${result.metrics.weightedCorrelation.toFixed(2)} diversification_score=${result.metrics.diversificationScore.toFixed(2)} effective_names=${result.metrics.effectiveNames.toFixed(2)}`,
+          `gross_exposure_pct=${result.metrics.grossExposurePct.toFixed(2)} net_exposure_pct=${result.metrics.netExposurePct.toFixed(2)} risk_budget_pct=${result.metrics.portfolioRiskBudgetPct.toFixed(2)} expected_pnl_pct=${result.metrics.expectedPnlPct.toFixed(2)} expected_net_pnl_pct=${result.metrics.expectedNetPnlPct.toFixed(2)} transaction_cost_pct=${result.metrics.transactionCostPct.toFixed(2)} turnover_pct=${result.metrics.turnoverPct.toFixed(2)} worst_scenario_pnl_pct=${result.metrics.worstScenarioPnlPct.toFixed(2)} weighted_correlation=${result.metrics.weightedCorrelation.toFixed(2)} diversification_score=${result.metrics.diversificationScore.toFixed(2)} effective_names=${result.metrics.effectiveNames.toFixed(2)} liquidity_coverage_pct=${(result.metrics.liquidityCoveragePct * 100).toFixed(1)}%`,
         );
         result.positions.forEach((position) => {
           defaultRuntime.log(
-            `position ticker=${position.ticker} stance=${position.stance} recommendation=${position.recommendation} signed_weight_pct=${position.signedWeightPct.toFixed(2)} abs_weight_pct=${position.absWeightPct.toFixed(2)} risk_budget_pct=${position.riskBudgetPct.toFixed(2)} expected_return_pct=${position.directionalExpectedReturnPct.toFixed(2)} expected_pnl_pct=${position.expectedPnlPct.toFixed(2)} worst_scenario_pnl_pct=${position.worstScenarioPnlPct.toFixed(2)} score=${position.decisionScore.toFixed(2)} confidence=${position.confidence.toFixed(2)} sector=${position.sector} corr_penalty=${position.correlationPenalty.toFixed(2)} vol_annualized_pct=${typeof position.volatilityAnnualizedPct === "number" ? position.volatilityAnnualizedPct.toFixed(2) : "n/a"}`,
+            `position ticker=${position.ticker} stance=${position.stance} recommendation=${position.recommendation} signed_weight_pct=${position.signedWeightPct.toFixed(2)} abs_weight_pct=${position.absWeightPct.toFixed(2)} current_signed_weight_pct=${position.currentSignedWeightPct.toFixed(2)} turnover_trade_pct=${position.turnoverTradePct.toFixed(2)} risk_budget_pct=${position.riskBudgetPct.toFixed(2)} expected_return_pct=${position.directionalExpectedReturnPct.toFixed(2)} expected_pnl_pct=${position.expectedPnlPct.toFixed(2)} expected_net_pnl_pct=${position.expectedNetPnlPct.toFixed(2)} txn_cost_bps=${position.estimatedTransactionCostBps.toFixed(2)} txn_cost_pct=${position.estimatedTransactionCostPct.toFixed(3)} adv_participation_pct=${typeof position.advParticipationPct === "number" ? (position.advParticipationPct * 100).toFixed(2) : "n/a"} adv_usd=${typeof position.avgDailyDollarVolumeUsd === "number" ? position.avgDailyDollarVolumeUsd.toFixed(0) : "n/a"} worst_scenario_pnl_pct=${position.worstScenarioPnlPct.toFixed(2)} score=${position.decisionScore.toFixed(2)} confidence=${position.confidence.toFixed(2)} sector=${position.sector} corr_penalty=${position.correlationPenalty.toFixed(2)} vol_annualized_pct=${typeof position.volatilityAnnualizedPct === "number" ? position.volatilityAnnualizedPct.toFixed(2) : "n/a"}`,
           );
         });
         result.scenarioStress.forEach((scenario) => {
@@ -819,6 +862,132 @@ export function registerResearchCli(program: Command) {
         });
         result.constraintBreaches.forEach((breach) => {
           defaultRuntime.error(`CONSTRAINT_BREACH: ${breach}`);
+        });
+      });
+    });
+
+  research
+    .command("portfolio-replay")
+    .description("Replay portfolio allocation policy on realized forward returns")
+    .requiredOption("--tickers <csv>", "Comma-separated tickers")
+    .option("--question <text>", "Replay framing question")
+    .option("--start-date <date>", "Replay start date (YYYY-MM-DD)")
+    .option("--end-date <date>", "Replay end date (YYYY-MM-DD)")
+    .option("--rebalance-days <n>", "Rebalance frequency in trading days", "21")
+    .option("--horizon-days <n>", "Forward return horizon in trading days", "21")
+    .option("--lookback-signal <n>", "Signal lookback in trading days", "84")
+    .option("--lookback-corr <n>", "Correlation lookback in trading days", "126")
+    .option("--max-gross <n>", "Max gross exposure %")
+    .option("--max-net <n>", "Max net exposure %")
+    .option("--max-portfolio-risk <n>", "Max aggregate risk budget %")
+    .option("--max-sector <n>", "Max sector exposure %")
+    .option("--max-single <n>", "Max single-name weight %")
+    .option("--max-pair-corr <n>", "Max pairwise correlation threshold [0-1]")
+    .option("--max-weighted-corr <n>", "Max weighted portfolio correlation [0-1]")
+    .option("--min-position <n>", "Minimum tradable position size %")
+    .option("--max-stress-loss <n>", "Max allowed stress loss %")
+    .option("--portfolio-nav <n>", "Portfolio NAV in USD for participation/cost model")
+    .option("--min-adv-usd <n>", "Minimum average daily dollar volume in USD")
+    .option("--max-adv-participation <n>", "Max ADV participation fraction [0-1]")
+    .option("--max-turnover <n>", "Max turnover per rebalance % of NAV")
+    .option("--spread-bps <n>", "Base spread cost in bps")
+    .option("--impact-bps <n>", "Impact cost in bps at max participation")
+    .option("--liquidity-lookback <n>", "Liquidity lookback window in trading days")
+    .option("--max-weight <n>", "Pass-through single-name cap % for decision layer")
+    .option("--max-risk-budget <n>", "Pass-through single-name risk budget %")
+    .option("--max-stop-loss <n>", "Pass-through stop-loss cap % (absolute)")
+    .option("--min-confidence <n>", "Pass-through single-name confidence floor [0-1]")
+    .option("--min-coverage <n>", "Pass-through debate coverage floor [0-1]")
+    .option("--max-downside-loss <n>", "Pass-through single-name downside loss cap %")
+    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const tickers = parseTickersOption(opts.tickers as string);
+        if (!tickers.length) throw new Error("Provide at least one ticker.");
+
+        const decisionConstraints: Partial<PortfolioDecisionConstraints> = {};
+        const passMaxWeight = parseOptionalNumber(opts["maxWeight"]);
+        const passMaxRiskBudget = parseOptionalNumber(opts["maxRiskBudget"]);
+        const passMaxStopLoss = parseOptionalNumber(opts["maxStopLoss"]);
+        const passMinConfidence = parseOptionalNumber(opts["minConfidence"]);
+        const passMinCoverage = parseOptionalNumber(opts["minCoverage"]);
+        const passMaxDownsideLoss = parseOptionalNumber(opts["maxDownsideLoss"]);
+        if (typeof passMaxWeight === "number")
+          decisionConstraints.maxSingleNameWeightPct = passMaxWeight;
+        if (typeof passMaxRiskBudget === "number")
+          decisionConstraints.maxRiskBudgetPct = passMaxRiskBudget;
+        if (typeof passMaxStopLoss === "number")
+          decisionConstraints.maxStopLossPct = passMaxStopLoss;
+        if (typeof passMinConfidence === "number")
+          decisionConstraints.minConfidence = passMinConfidence;
+        if (typeof passMinCoverage === "number")
+          decisionConstraints.requiredDebateCoverage = passMinCoverage;
+        if (typeof passMaxDownsideLoss === "number")
+          decisionConstraints.maxDownsideLossPct = passMaxDownsideLoss;
+
+        const constraints: Partial<PortfolioOptimizerConstraints> = {};
+        const maxGross = parseOptionalNumber(opts["maxGross"]);
+        const maxNet = parseOptionalNumber(opts["maxNet"]);
+        const maxPortfolioRisk = parseOptionalNumber(opts["maxPortfolioRisk"]);
+        const maxSector = parseOptionalNumber(opts["maxSector"]);
+        const maxSingle = parseOptionalNumber(opts["maxSingle"]);
+        const maxPairCorr = parseOptionalNumber(opts["maxPairCorr"]);
+        const maxWeightedCorr = parseOptionalNumber(opts["maxWeightedCorr"]);
+        const minPosition = parseOptionalNumber(opts["minPosition"]);
+        const maxStressLoss = parseOptionalNumber(opts["maxStressLoss"]);
+        const portfolioNav = parseOptionalNumber(opts["portfolioNav"]);
+        const minAdvUsd = parseOptionalNumber(opts["minAdvUsd"]);
+        const maxAdvParticipation = parseOptionalNumber(opts["maxAdvParticipation"]);
+        const maxTurnover = parseOptionalNumber(opts["maxTurnover"]);
+        const spreadBps = parseOptionalNumber(opts["spreadBps"]);
+        const impactBps = parseOptionalNumber(opts["impactBps"]);
+        const liquidityLookback = parseOptionalNumber(opts["liquidityLookback"]);
+        if (typeof maxGross === "number") constraints.maxGrossExposurePct = maxGross;
+        if (typeof maxNet === "number") constraints.maxNetExposurePct = maxNet;
+        if (typeof maxPortfolioRisk === "number")
+          constraints.maxPortfolioRiskBudgetPct = maxPortfolioRisk;
+        if (typeof maxSector === "number") constraints.maxSectorExposurePct = maxSector;
+        if (typeof maxSingle === "number") constraints.maxSingleNameWeightPct = maxSingle;
+        if (typeof maxPairCorr === "number") constraints.maxPairwiseCorrelation = maxPairCorr;
+        if (typeof maxWeightedCorr === "number")
+          constraints.maxWeightedCorrelation = maxWeightedCorr;
+        if (typeof minPosition === "number") constraints.minPositionWeightPct = minPosition;
+        if (typeof maxStressLoss === "number") constraints.maxStressLossPct = maxStressLoss;
+        if (typeof portfolioNav === "number") constraints.portfolioNavUsd = portfolioNav;
+        if (typeof minAdvUsd === "number") constraints.minAvgDailyDollarVolumeUsd = minAdvUsd;
+        if (typeof maxAdvParticipation === "number")
+          constraints.maxAdvParticipationPct = maxAdvParticipation;
+        if (typeof maxTurnover === "number") constraints.maxTurnoverPct = maxTurnover;
+        if (typeof spreadBps === "number") constraints.spreadBps = spreadBps;
+        if (typeof impactBps === "number") constraints.impactBpsAtMaxParticipation = impactBps;
+        if (typeof liquidityLookback === "number")
+          constraints.liquidityLookbackDays = liquidityLookback;
+
+        const replay = computePortfolioReplay({
+          tickers,
+          question: opts.question as string | undefined,
+          dbPath: opts.db as string,
+          startDate: opts["startDate"] as string | undefined,
+          endDate: opts["endDate"] as string | undefined,
+          rebalanceEveryDays: parseOptionalNumber(opts["rebalanceDays"]) ?? 21,
+          horizonDays: parseOptionalNumber(opts["horizonDays"]) ?? 21,
+          lookbackSignalDays: parseOptionalNumber(opts["lookbackSignal"]) ?? 84,
+          lookbackCorrelationDays: parseOptionalNumber(opts["lookbackCorr"]) ?? 126,
+          decisionConstraints,
+          constraints,
+        });
+
+        defaultRuntime.log(
+          `replay_windows=${replay.summary.sampleCount} score=${replay.summary.score.toFixed(3)} passed=${replay.summary.passed ? 1 : 0} mean_expected_net_pnl_pct=${replay.summary.meanExpectedNetPnlPct.toFixed(3)} mean_realized_net_pnl_pct=${replay.summary.meanRealizedNetPnlPct.toFixed(3)} mae_pct=${replay.summary.maePct.toFixed(3)} rmse_pct=${replay.summary.rmsePct.toFixed(3)} directional_accuracy=${replay.summary.directionalAccuracy.toFixed(3)} win_rate=${replay.summary.winRate.toFixed(3)} expected_realized_corr=${replay.summary.expectedRealizedCorrelation.toFixed(3)}`,
+        );
+        replay.windows.slice(-20).forEach((window) => {
+          defaultRuntime.log(
+            `window rebalance_date=${window.rebalanceDate} exit_date=${window.exitDate} positions=${window.positions} expected_net_pnl_pct=${window.expectedNetPnlPct.toFixed(3)} realized_net_pnl_pct=${window.realizedNetPnlPct.toFixed(3)} turnover_pct=${window.turnoverPct.toFixed(2)} txn_cost_pct=${window.transactionCostPct.toFixed(3)} gross_exposure_pct=${window.grossExposurePct.toFixed(2)} net_exposure_pct=${window.netExposurePct.toFixed(2)} weighted_correlation=${window.weightedCorrelation.toFixed(3)} direction_match=${window.directionMatched ? 1 : 0}`,
+          );
+        });
+        replay.evaluationChecks.forEach((check) => {
+          const label = check.passed ? "PASS" : "FAIL";
+          defaultRuntime.log(`${label} ${check.name}: ${check.detail}`);
         });
       });
     });
