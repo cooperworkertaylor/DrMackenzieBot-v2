@@ -216,6 +216,14 @@ const entries: SubCliEntry[] = [
     },
   },
   {
+    name: "research",
+    description: "Research data tools",
+    register: async (program) => {
+      const mod = await import("../research-cli.js");
+      mod.registerResearchCli(program);
+    },
+  },
+  {
     name: "skills",
     description: "Skills management",
     register: async (program) => {

@@ -4,7 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-const args = process.argv.slice(2);
+const rawArgs = process.argv.slice(2);
+const args = rawArgs[0] === "--" ? rawArgs.slice(1) : rawArgs;
 const env = { ...process.env };
 const cwd = process.cwd();
 const compilerOverride = env.OPENCLAW_TS_COMPILER ?? env.CLAWDBOT_TS_COMPILER;
