@@ -5,7 +5,7 @@ import { chunkText } from "./chunker.js";
 import { openResearchDb } from "./db.js";
 
 export type ExternalResearchSourceType = "email_research" | "newsletter" | "manual";
-export type NewsletterProvider = "substack" | "stratechery" | "diff" | "other";
+export type NewsletterProvider = "substack" | "stratechery" | "diff" | "semianalysis" | "other";
 
 export type IngestExternalResearchParams = {
   sourceType: ExternalResearchSourceType;
@@ -130,7 +130,12 @@ const normalizeTicker = (value?: string): string => {
 const normalizeProvider = (value?: string): string => {
   if (!value) return "other";
   const normalized = value.trim().toLowerCase();
-  if (normalized === "substack" || normalized === "stratechery" || normalized === "diff") {
+  if (
+    normalized === "substack" ||
+    normalized === "stratechery" ||
+    normalized === "diff" ||
+    normalized === "semianalysis"
+  ) {
     return normalized;
   }
   return normalized || "other";
@@ -243,6 +248,10 @@ const isAllowedCandidateHost = (provider: string, sourceHost: string, candidateH
     if (candidate === "substack.com" || candidate.endsWith(".substack.com")) return true;
     if (source === "substack.com" || source.endsWith(".substack.com")) return true;
   }
+  if (normalizedProvider === "semianalysis") {
+    if (candidate === "semianalysis.com" || candidate.endsWith(".semianalysis.com")) return true;
+    if (source === "semianalysis.com" || source.endsWith(".semianalysis.com")) return true;
+  }
   return false;
 };
 
@@ -268,6 +277,7 @@ const defaultSenderForProvider = (provider: string): string => {
   if (provider === "substack") return "updates@substack.com";
   if (provider === "stratechery") return "updates@stratechery.com";
   if (provider === "diff") return "team@thediff.co";
+  if (provider === "semianalysis") return "updates@semianalysis.com";
   return "research-feed@openclaw.local";
 };
 
@@ -275,6 +285,7 @@ const providerCookieEnv = (provider: string, env: NodeJS.ProcessEnv): string => 
   if (provider === "substack") return (env.OPENCLAW_RESEARCH_SUBSTACK_COOKIE ?? "").trim();
   if (provider === "stratechery") return (env.OPENCLAW_RESEARCH_STRATECHERY_COOKIE ?? "").trim();
   if (provider === "diff") return (env.OPENCLAW_RESEARCH_DIFF_COOKIE ?? "").trim();
+  if (provider === "semianalysis") return (env.OPENCLAW_RESEARCH_SEMIANALYSIS_COOKIE ?? "").trim();
   return "";
 };
 
@@ -322,6 +333,9 @@ export const resolveNewsletterSourcesFromEnv = (env: NodeJS.ProcessEnv = process
   );
   parseArchiveList(env.OPENCLAW_RESEARCH_DIFF_ARCHIVES).forEach((url) =>
     configured.push({ provider: "diff", url }),
+  );
+  parseArchiveList(env.OPENCLAW_RESEARCH_SEMIANALYSIS_ARCHIVES).forEach((url) =>
+    configured.push({ provider: "semianalysis", url }),
   );
   const dedup = new Map<string, NewsletterSyncSource>();
   configured.forEach((source) => {
@@ -489,6 +503,7 @@ export const detectNewsletterProvider = (params: {
 
   if (haystack.includes("stratechery")) return "stratechery";
   if (haystack.includes("thediff.co") || haystack.includes(" the diff")) return "diff";
+  if (haystack.includes("semianalysis")) return "semianalysis";
   if (haystack.includes("substack")) return "substack";
   return "other";
 };
@@ -754,6 +769,7 @@ export const ingestExternalResearchDocument = (
 const providerPriorityScore = (provider: string): number => {
   const normalized = provider.toLowerCase();
   if (normalized === "stratechery") return 1;
+  if (normalized === "semianalysis") return 0.96;
   if (normalized === "diff") return 0.92;
   if (normalized === "substack") return 0.82;
   return 0.65;

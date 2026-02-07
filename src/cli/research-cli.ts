@@ -602,7 +602,11 @@ export function registerResearchCli(program: Command) {
     .option("--content-file <path>", "Path to content file")
     .option("--subject <text>", "Original subject line")
     .option("--source-type <kind>", "email_research|newsletter|manual", "manual")
-    .option("--provider <name>", "Provider tag (substack|stratechery|diff|other)", "other")
+    .option(
+      "--provider <name>",
+      "Provider tag (substack|stratechery|diff|semianalysis|other)",
+      "other",
+    )
     .option("--sender <value>", "Sender/author email")
     .option("--external-id <id>", "External message/document id")
     .option("--url <url>", "Source URL")
@@ -651,7 +655,7 @@ export function registerResearchCli(program: Command) {
     )
     .option("--source <spec>", "Source spec: provider|url|ticker (repeatable)", collectOption, [])
     .option("--sources-file <path>", "Text file of source specs (one per line)")
-    .option("--providers <csv>", "Provider filter (substack,stratechery,diff,other)")
+    .option("--providers <csv>", "Provider filter (substack,stratechery,diff,semianalysis,other)")
     .option("--max-links-per-source <n>", "Max article links fetched from each source", "10")
     .option("--max-docs <n>", "Max article pages fetched in this run", "50")
     .option("--user-agent <ua>", "HTTP user-agent override")
@@ -702,11 +706,11 @@ export function registerResearchCli(program: Command) {
   research
     .command("newsletter-summary")
     .description(
-      "Generate weekly Substack/Stratechery/The Diff digest with read-in-full recommendations",
+      "Generate weekly Substack/Stratechery/The Diff/Semianalysis digest with read-in-full recommendations",
     )
     .option("--lookback-days <n>", "Lookback window in days", "7")
     .option("--limit <n>", "Max documents to evaluate", "80")
-    .option("--providers <csv>", "Provider filter (substack,stratechery,diff,other)")
+    .option("--providers <csv>", "Provider filter (substack,stratechery,diff,semianalysis,other)")
     .option("--out <path>", "Write digest markdown to file")
     .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {

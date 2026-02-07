@@ -57,6 +57,18 @@ describe("external research ingestion", () => {
     });
     expect(newsletterCandidate?.sourceType).toBe("newsletter");
     expect(newsletterCandidate?.provider).toBe("substack");
+
+    const semianalysisCandidate = buildResearchCandidateFromGmailHook({
+      sessionKey: "hook:gmail:msg-789",
+      message: [
+        "New email from digest@semianalysis.com",
+        "Subject: AI capex stack update",
+        "Latest piece from SemiAnalysis with demand and supply-side checks.",
+      ].join("\n"),
+      allowedSenders: ["cooptaylor1@gmail.com"],
+    });
+    expect(semianalysisCandidate?.sourceType).toBe("newsletter");
+    expect(semianalysisCandidate?.provider).toBe("semianalysis");
   });
 
   it("ingests external docs and generates weekly digest", () => {
@@ -120,20 +132,24 @@ describe("external research ingestion", () => {
       [
         "substack|https://example.substack.com/archive|NVDA",
         "stratechery|https://stratechery.com/archive",
+        "semianalysis|https://www.semianalysis.com",
         "# comment",
       ].join("\n"),
     );
-    expect(specs).toHaveLength(2);
+    expect(specs).toHaveLength(3);
     expect(specs[0]?.provider).toBe("substack");
     expect(specs[0]?.ticker).toBe("NVDA");
+    expect(specs[2]?.provider).toBe("semianalysis");
 
     const envSpecs = resolveNewsletterSourcesFromEnv({
       OPENCLAW_RESEARCH_SUBSTACK_ARCHIVES: "https://x.substack.com/archive",
       OPENCLAW_RESEARCH_STRATECHERY_ARCHIVES: "https://stratechery.com/archive",
       OPENCLAW_RESEARCH_DIFF_ARCHIVES: "https://www.thediff.co/archive",
+      OPENCLAW_RESEARCH_SEMIANALYSIS_ARCHIVES: "https://www.semianalysis.com",
       OPENCLAW_RESEARCH_NEWSLETTER_SOURCES: "substack|https://x.substack.com/archive",
     });
-    expect(envSpecs.length).toBeGreaterThanOrEqual(3);
+    expect(envSpecs.length).toBeGreaterThanOrEqual(4);
+    expect(envSpecs.some((spec) => spec.provider === "semianalysis")).toBe(true);
   });
 
   it("syncs newsletter sources via authenticated crawl and ingests articles", async () => {
