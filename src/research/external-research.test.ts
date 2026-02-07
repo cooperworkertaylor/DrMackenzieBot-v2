@@ -271,4 +271,86 @@ describe("external research ingestion", () => {
     expect(result.docs.some((doc) => doc.url.includes("/about/"))).toBe(false);
     expect(result.docs.some((doc) => doc.url.includes("passport.online/member/login"))).toBe(false);
   });
+
+  it("expands candidates from sitemap and applies since-date filter", async () => {
+    const dbPath = testDbPath("sitemap-since");
+    const sourceUrl = "https://www.semianalysis.com";
+    const oldArticle = "https://www.semianalysis.com/p/old-cycle-note";
+    const newArticle = "https://www.semianalysis.com/p/new-cycle-note";
+    const archiveHtml = `<html><body><h1>SemiAnalysis</h1></body></html>`;
+    const robotsTxt = `User-agent: *\nSitemap: https://www.semianalysis.com/sitemap.xml\n`;
+    const sitemapXml = `
+      <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+        <url>
+          <loc>${oldArticle}</loc>
+          <lastmod>2021-01-01T00:00:00Z</lastmod>
+        </url>
+        <url>
+          <loc>${newArticle}</loc>
+          <lastmod>2025-10-01T00:00:00Z</lastmod>
+        </url>
+      </urlset>
+    `;
+    const longText =
+      "Detailed supply chain checks, unit economics, and capex regime transition with implications for investor positioning. ".repeat(
+        20,
+      );
+    const articleHtml = `<html><head><title>New Cycle Note</title><meta property="article:published_time" content="2025-10-02T00:00:00Z" /></head><body><article><h1>New Cycle Note</h1><p>${longText}</p></article></body></html>`;
+
+    const fetchFn: typeof fetch = vi.fn(async (input) => {
+      const raw = typeof input === "string" ? input : input.url;
+      if (
+        raw === sourceUrl ||
+        raw === `${sourceUrl}/` ||
+        raw === "https://www.semianalysis.com/" ||
+        raw === "https://www.semianalysis.com"
+      ) {
+        return new Response(archiveHtml, {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+      if (raw === "https://www.semianalysis.com/robots.txt") {
+        return new Response(robotsTxt, {
+          status: 200,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+      }
+      if (raw === "https://www.semianalysis.com/sitemap.xml") {
+        return new Response(sitemapXml, {
+          status: 200,
+          headers: { "content-type": "application/xml; charset=utf-8" },
+        });
+      }
+      if (raw === newArticle) {
+        return new Response(articleHtml, {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+      if (raw === oldArticle) {
+        return new Response("<html><title>Old</title></html>", {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const result = await syncNewsletterSources({
+      dbPath,
+      sources: [{ provider: "semianalysis", url: sourceUrl }],
+      sinceDate: "2023-01-01",
+      useSitemaps: true,
+      sitemapMaxUrls: 100,
+      maxLinksPerSource: 1,
+      maxDocs: 10,
+      fetchFn,
+    });
+
+    expect(result.ingested).toBe(1);
+    expect(result.attempted).toBe(1);
+    expect(result.docs.some((doc) => doc.url === newArticle && doc.ingested)).toBe(true);
+    expect(result.docs.some((doc) => doc.url === oldArticle)).toBe(false);
+  });
 });

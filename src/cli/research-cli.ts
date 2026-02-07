@@ -656,6 +656,9 @@ export function registerResearchCli(program: Command) {
     .option("--source <spec>", "Source spec: provider|url|ticker (repeatable)", collectOption, [])
     .option("--sources-file <path>", "Text file of source specs (one per line)")
     .option("--providers <csv>", "Provider filter (substack,stratechery,diff,semianalysis,other)")
+    .option("--since-date <yyyy-mm-dd>", "Only ingest docs published on/after this date")
+    .option("--sitemap-max-urls <n>", "Max sitemap article URLs considered per source", "5000")
+    .option("--no-sitemaps", "Disable sitemap crawl expansion")
     .option("--max-links-per-source <n>", "Max article links fetched from each source", "10")
     .option("--max-docs <n>", "Max article pages fetched in this run", "50")
     .option("--user-agent <ua>", "HTTP user-agent override")
@@ -680,6 +683,9 @@ export function registerResearchCli(program: Command) {
             typeof opts.providers === "string" && opts.providers.trim()
               ? parseCsvListOption(opts.providers as string)
               : undefined,
+          sinceDate: opts["sinceDate"] as string | undefined,
+          useSitemaps: opts.sitemaps as boolean,
+          sitemapMaxUrls: parseOptionalNumber(opts["sitemapMaxUrls"]) ?? 5000,
           maxLinksPerSource: parseOptionalNumber(opts["maxLinksPerSource"]) ?? 10,
           maxDocs: parseOptionalNumber(opts["maxDocs"]) ?? 50,
           userAgent: opts["userAgent"] as string | undefined,

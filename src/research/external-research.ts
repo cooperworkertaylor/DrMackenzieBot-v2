@@ -112,6 +112,8 @@ const NEWSLETTER_SYNC_DEFAULT_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36";
 const NEWSLETTER_SOURCE_DEFAULT_MAX_LINKS = 10;
 const NEWSLETTER_SOURCE_DEFAULT_MAX_DOCS = 50;
+const NEWSLETTER_SITEMAP_MAX_URLS = 5000;
+const NEWSLETTER_SITEMAP_MAX_FILES = 64;
 
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 
@@ -148,6 +150,16 @@ const normalizeDate = (value?: string): string => {
   const ms = Date.parse(trimmed);
   if (!Number.isFinite(ms)) return "";
   return new Date(ms).toISOString();
+};
+
+const normalizeLowerBoundDate = (value?: string): string => {
+  if (!value) return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return `${trimmed}T00:00:00.000Z`;
+  }
+  return normalizeDate(trimmed);
 };
 
 const parseSubjectPrefix = (value?: string): string => {
@@ -187,6 +199,62 @@ const parseUrlSafe = (value: string): string | null => {
   } catch {
     return null;
   }
+};
+
+type SitemapUrlEntry = {
+  url: string;
+  lastmod?: string;
+};
+
+const extractXmlTagValue = (block: string, tag: string): string => {
+  const pattern = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i");
+  const match = block.match(pattern);
+  return (match?.[1] ?? "").trim();
+};
+
+const parseSitemapUrlEntries = (xml: string): SitemapUrlEntry[] => {
+  const entries: SitemapUrlEntry[] = [];
+  for (const match of xml.matchAll(/<url\b[^>]*>([\s\S]*?)<\/url>/gi)) {
+    const block = match[1] ?? "";
+    const loc = parseUrlSafe(extractXmlTagValue(block, "loc"));
+    if (!loc) continue;
+    const lastmod = normalizeDate(extractXmlTagValue(block, "lastmod"));
+    entries.push({ url: loc, lastmod: lastmod || undefined });
+  }
+  return entries;
+};
+
+const parseSitemapChildUrls = (xml: string): string[] => {
+  const urls: string[] = [];
+  for (const match of xml.matchAll(/<sitemap\b[^>]*>([\s\S]*?)<\/sitemap>/gi)) {
+    const block = match[1] ?? "";
+    const loc = parseUrlSafe(extractXmlTagValue(block, "loc"));
+    if (loc) urls.push(loc);
+  }
+  return urls;
+};
+
+const parseRobotsSitemapUrls = (robotsTxt: string, baseUrl: string): string[] => {
+  const urls: string[] = [];
+  const lines = robotsTxt.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const match = trimmed.match(/^sitemap:\s*(.+)$/i);
+    if (!match) continue;
+    const absolute = (() => {
+      try {
+        const parsed = new URL(match[1] ?? "", baseUrl);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+        parsed.hash = "";
+        return parsed.toString();
+      } catch {
+        return null;
+      }
+    })();
+    if (absolute) urls.push(absolute);
+  }
+  return urls;
 };
 
 const toAbsoluteUrl = (href: string, baseUrl: string): string | null => {
@@ -474,6 +542,101 @@ const fetchHtmlWithAuth = async (params: {
     html,
     finalUrl: response.url || params.url,
   };
+};
+
+const collectSitemapCandidates = async (params: {
+  provider: string;
+  sourceUrl: string;
+  userAgent?: string;
+  cookie?: string;
+  fetchFn?: typeof fetch;
+  env?: NodeJS.ProcessEnv;
+  maxUrls: number;
+  sinceEpochMs?: number;
+}): Promise<Map<string, number>> => {
+  const source = new URL(params.sourceUrl);
+  const root = `${source.protocol}//${source.host}/`;
+  const toVisit: string[] = [];
+  const visited = new Set<string>();
+  const discovered = new Map<string, number>();
+
+  try {
+    const robots = await fetchHtmlWithAuth({
+      url: new URL("/robots.txt", root).toString(),
+      provider: params.provider,
+      userAgent: params.userAgent,
+      cookie: params.cookie,
+      fetchFn: params.fetchFn,
+      env: params.env,
+    });
+    parseRobotsSitemapUrls(robots.html, root).forEach((url) => toVisit.push(url));
+  } catch {
+    // Robots can fail on some hosts; fallback sitemap below still works.
+  }
+
+  const fallbackSitemap = new URL("/sitemap.xml", root).toString();
+  toVisit.push(fallbackSitemap);
+
+  while (toVisit.length > 0 && visited.size < NEWSLETTER_SITEMAP_MAX_FILES) {
+    if (discovered.size >= params.maxUrls) break;
+    const sitemapUrl = toVisit.shift() ?? "";
+    if (!sitemapUrl) continue;
+    if (visited.has(sitemapUrl)) continue;
+    visited.add(sitemapUrl);
+
+    let xml = "";
+    let finalUrl = sitemapUrl;
+    try {
+      const response = await fetchHtmlWithAuth({
+        url: sitemapUrl,
+        provider: params.provider,
+        userAgent: params.userAgent,
+        cookie: params.cookie,
+        fetchFn: params.fetchFn,
+        env: params.env,
+      });
+      xml = response.html;
+      finalUrl = response.finalUrl;
+    } catch {
+      continue;
+    }
+
+    const childSitemaps = parseSitemapChildUrls(xml);
+    childSitemaps.forEach((child) => {
+      const normalized = toAbsoluteUrl(child, finalUrl);
+      if (normalized && !visited.has(normalized)) toVisit.push(normalized);
+    });
+
+    const entries = parseSitemapUrlEntries(xml);
+    for (const entry of entries) {
+      if (discovered.size >= params.maxUrls) break;
+      const candidate = new URL(entry.url);
+      if (
+        !isAllowedCandidateHost(params.provider, source.hostname, candidate.hostname) ||
+        isLikelyLoginUrl(candidate.toString())
+      ) {
+        continue;
+      }
+      const score = scoreArticlePath(params.provider, candidate.pathname);
+      if (score <= 0) continue;
+      const lastmodMs = entry.lastmod ? Date.parse(entry.lastmod) : Number.NaN;
+      if (
+        Number.isFinite(params.sinceEpochMs) &&
+        Number.isFinite(lastmodMs) &&
+        lastmodMs < (params.sinceEpochMs as number)
+      ) {
+        continue;
+      }
+      const existing = discovered.get(candidate.toString()) ?? 0;
+      if (Number.isFinite(lastmodMs)) {
+        discovered.set(candidate.toString(), Math.max(existing, Math.floor(lastmodMs)));
+      } else if (!discovered.has(candidate.toString())) {
+        discovered.set(candidate.toString(), 0);
+      }
+    }
+  }
+
+  return discovered;
 };
 
 export const extractTickerFromSubject = (subject: string, prefix = RESEARCH_SUBJECT_DEFAULT) => {
@@ -960,6 +1123,9 @@ export const syncNewsletterSources = async (params: {
   dbPath?: string;
   sources?: NewsletterSyncSource[];
   providers?: string[];
+  sinceDate?: string;
+  useSitemaps?: boolean;
+  sitemapMaxUrls?: number;
   maxLinksPerSource?: number;
   maxDocs?: number;
   userAgent?: string;
@@ -988,6 +1154,16 @@ export const syncNewsletterSources = async (params: {
     Math.round(params.maxLinksPerSource ?? NEWSLETTER_SOURCE_DEFAULT_MAX_LINKS),
   );
   const maxDocs = Math.max(1, Math.round(params.maxDocs ?? NEWSLETTER_SOURCE_DEFAULT_MAX_DOCS));
+  const useSitemaps = params.useSitemaps !== false;
+  const sitemapMaxUrls = Math.max(
+    1,
+    Math.min(
+      NEWSLETTER_SITEMAP_MAX_URLS,
+      Math.round(params.sitemapMaxUrls ?? NEWSLETTER_SITEMAP_MAX_URLS),
+    ),
+  );
+  const sinceDate = normalizeLowerBoundDate(params.sinceDate);
+  const sinceEpochMs = sinceDate ? Date.parse(sinceDate) : Number.NaN;
   const docs: NewsletterSyncResultDoc[] = [];
   let attempted = 0;
   let ingested = 0;
@@ -1026,9 +1202,44 @@ export const syncNewsletterSources = async (params: {
       continue;
     }
 
-    const candidates = extractCandidateLinks(provider, archiveHtml, archiveUrl, maxLinksPerSource);
+    const candidateLastmodMs = new Map<string, number>();
+    extractCandidateLinks(provider, archiveHtml, archiveUrl, maxLinksPerSource).forEach((url) => {
+      if (!candidateLastmodMs.has(url)) candidateLastmodMs.set(url, 0);
+    });
+
+    if (useSitemaps) {
+      const sitemapCandidates = await collectSitemapCandidates({
+        provider,
+        sourceUrl,
+        userAgent: params.userAgent,
+        cookie,
+        fetchFn: params.fetchFn,
+        env,
+        maxUrls: sitemapMaxUrls,
+        sinceEpochMs: Number.isFinite(sinceEpochMs) ? sinceEpochMs : undefined,
+      });
+      sitemapCandidates.forEach((lastmodMs, url) => {
+        const existing = candidateLastmodMs.get(url) ?? 0;
+        if (!candidateLastmodMs.has(url) || lastmodMs > existing) {
+          candidateLastmodMs.set(url, lastmodMs);
+        }
+      });
+    }
+
+    const candidates = Array.from(candidateLastmodMs.entries())
+      .sort((left, right) => right[1] - left[1])
+      .map(([url]) => url);
+
     for (const candidateUrl of candidates) {
       if (attempted >= maxDocs) break;
+      const candidateLastmod = candidateLastmodMs.get(candidateUrl) ?? 0;
+      if (
+        Number.isFinite(sinceEpochMs) &&
+        candidateLastmod > 0 &&
+        candidateLastmod < sinceEpochMs
+      ) {
+        continue;
+      }
       attempted += 1;
       try {
         const page = await fetchHtmlWithAuth({
@@ -1048,6 +1259,27 @@ export const syncNewsletterSources = async (params: {
             title: candidateUrl,
             ingested: false,
             reason: "article extraction returned insufficient content",
+          });
+          skipped += 1;
+          continue;
+        }
+        const publishedEpochMs = extracted.publishedAt
+          ? Date.parse(extracted.publishedAt)
+          : Number.NaN;
+        if (
+          Number.isFinite(sinceEpochMs) &&
+          ((Number.isFinite(publishedEpochMs) && publishedEpochMs < sinceEpochMs) ||
+            (!Number.isFinite(publishedEpochMs) &&
+              candidateLastmod > 0 &&
+              candidateLastmod < sinceEpochMs))
+        ) {
+          docs.push({
+            provider,
+            sourceUrl,
+            url: page.finalUrl,
+            title: extracted.title,
+            ingested: false,
+            reason: `published before since-date ${sinceDate.slice(0, 10)}`,
           });
           skipped += 1;
           continue;
