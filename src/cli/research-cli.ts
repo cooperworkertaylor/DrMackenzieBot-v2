@@ -2593,6 +2593,7 @@ export function registerResearchCli(program: Command) {
     .option("--artifact-id <id>", "Optional artifact id")
     .option("--days <n>", "Lookback window in days", "30")
     .option("--limit <n>", "Result limit", "100")
+    .option("--details", "Print failed-check details", false)
     .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
@@ -2616,6 +2617,15 @@ export function registerResearchCli(program: Command) {
           defaultRuntime.log(
             `quality_gate_run id=${run.id} gate=${run.gateName} artifact_type=${run.artifactType} artifact_id=${run.artifactId} score=${run.score.toFixed(3)} min_score=${run.minScore.toFixed(3)} passed=${run.passed ? 1 : 0} required_failures=${run.requiredFailures.length ? run.requiredFailures.join(",") : "none"} created_at=${new Date(run.createdAt).toISOString()}`,
           );
+          if (Boolean(opts.details)) {
+            run.checks
+              .filter((check) => !check.passed)
+              .forEach((check) => {
+                defaultRuntime.log(
+                  `quality_gate_failure run_id=${run.id} check=${check.name} detail=${check.detail}`,
+                );
+              });
+          }
         });
       });
     });
