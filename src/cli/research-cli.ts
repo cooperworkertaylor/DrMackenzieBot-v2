@@ -193,6 +193,16 @@ const parseBooleanOption = (value: string): boolean => {
   throw new Error(`Invalid boolean value: ${value}`);
 };
 
+const resolveResearchOutboundFetchEnabled = (): boolean => {
+  const raw = process.env.OPENCLAW_RESEARCH_FORCE_OUTBOUND_FETCH?.trim();
+  if (!raw) return true;
+  try {
+    return parseBooleanOption(raw);
+  } catch {
+    return true;
+  }
+};
+
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
 
 const mean = (values: number[]): number =>
@@ -1430,6 +1440,33 @@ export function registerResearchCli(program: Command) {
         const qualityAttempts = Math.max(1, parseOptionalNumber(opts["qualityAttempts"]) ?? 4);
         const strictMode = !Boolean(opts.allowDraft);
         const minScore = parseOptionalNumber(opts["minScore"]) ?? 0.82;
+        const forceOutboundFetch = resolveResearchOutboundFetchEnabled();
+        if (forceOutboundFetch) {
+          try {
+            const hydrationUniverse = computeSectorResearch({
+              sector: opts.sector as string,
+              tickers: overrideTickers,
+              benchmarkTicker: opts.benchmark as string | undefined,
+              lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 365,
+              topN: parseOptionalNumber(opts.top) ?? 5,
+              dbPath: opts.db as string,
+            });
+            const hydration = await hydrateThemeEvidence({
+              theme: `sector:${String(opts.sector)}`,
+              tickers: hydrationUniverse.tickers,
+              benchmarkTicker: (opts.benchmark as string | undefined) ?? undefined,
+              dbPath: opts.db as string,
+            });
+            if (hydration) {
+              defaultRuntime.log(`research_outbound_hydration sector=${opts.sector} ${hydration}`);
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            defaultRuntime.error(
+              `research_outbound_hydration sector=${opts.sector} skip(${message})`,
+            );
+          }
+        }
         let final:
           | {
               result: ReturnType<typeof computeSectorResearch>;
@@ -1595,6 +1632,38 @@ export function registerResearchCli(program: Command) {
         const qualityAttempts = Math.max(1, parseOptionalNumber(opts["qualityAttempts"]) ?? 4);
         const strictMode = !Boolean(opts.allowDraft);
         const minScore = parseOptionalNumber(opts["minScore"]) ?? 0.82;
+        const forceOutboundFetch = resolveResearchOutboundFetchEnabled();
+        if (forceOutboundFetch) {
+          try {
+            const hydrationUniverse = computeThemeResearch({
+              theme: opts.theme as string,
+              tickers,
+              themeVersion: parseOptionalNumber(opts["themeVersion"]),
+              minMembershipScore: parseOptionalNumber(opts["minMembershipScore"]),
+              maxConstituents: parseOptionalNumber(opts["maxConstituents"]),
+              lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 365,
+              topN: parseOptionalNumber(opts.top) ?? 5,
+              dbPath: opts.db as string,
+            });
+            const hydration = await hydrateThemeEvidence({
+              theme: opts.theme as string,
+              tickers: hydrationUniverse.tickers,
+              benchmarkTicker:
+                hydrationUniverse.benchmarkTicker ||
+                hydrationUniverse.benchmarkRelative?.benchmarkTicker ||
+                hydrationUniverse.factorAttribution?.benchmarkTicker,
+              dbPath: opts.db as string,
+            });
+            if (hydration) {
+              defaultRuntime.log(`research_outbound_hydration theme=${opts.theme} ${hydration}`);
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            defaultRuntime.error(
+              `research_outbound_hydration theme=${opts.theme} skip(${message})`,
+            );
+          }
+        }
         let final:
           | {
               result: ReturnType<typeof computeThemeResearch>;
@@ -2864,12 +2933,25 @@ export function registerResearchCli(program: Command) {
         const qualityAttempts = Math.max(1, parseOptionalNumber(opts["qualityAttempts"]) ?? 4);
         const strictMode = !Boolean(opts.allowDraft);
         const baseQuestion = (opts.question as string).trim();
+        const forceOutboundFetch = resolveResearchOutboundFetchEnabled();
         const refinementHints = [
           "",
           "Prioritize multi-source evidence (filings, transcript, expectations) and resolve contradictions explicitly.",
           "Strengthen actionability with entry trigger, sizing bands, and falsification thresholds.",
           "Stress-test bear/base/bull scenarios and justify final stance against disconfirming evidence.",
         ];
+
+        if (forceOutboundFetch) {
+          const hydration = await hydrateTickerEvidence({
+            ticker: opts.ticker as string,
+            dbPath: opts.db as string,
+          });
+          if (hydration) {
+            defaultRuntime.log(
+              `research_outbound_hydration ticker=${String(opts.ticker).toUpperCase()} ${hydration}`,
+            );
+          }
+        }
 
         let result: Awaited<ReturnType<typeof generateMemoAsync>> | undefined;
         let lastError: Error | undefined;
@@ -3069,3 +3151,7 @@ export function registerResearchCli(program: Command) {
       });
     });
 }
+
+export const __testOnly = {
+  resolveResearchOutboundFetchEnabled,
+};
