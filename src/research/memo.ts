@@ -1039,8 +1039,9 @@ export const generateMemoAsync = async (params: {
       qualityGate.requiredFailures.length > 0
         ? ` required_failures=${qualityGate.requiredFailures.join(",")};`
         : "";
+    const comparator = qualityGate.score < minQualityScore ? "<" : ">=";
     throw new Error(
-      `Institutional-grade quality gate failed (score=${qualityGate.score.toFixed(2)} < ${minQualityScore.toFixed(2)};${requiredFailures} run_id=${qualityGateRun.id}): ${details}`,
+      `Institutional-grade quality gate failed (score=${qualityGate.score.toFixed(2)} ${comparator} ${minQualityScore.toFixed(2)};${requiredFailures} run_id=${qualityGateRun.id}): ${details}`,
     );
   }
 
