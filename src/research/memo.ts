@@ -679,9 +679,6 @@ export const generateMemoAsync = async (params: {
     dbPath: params.dbPath,
     source: "research",
   });
-  if (primaryHits.length < 3) {
-    throw new Error("Insufficient evidence: fewer than 3 retrieved citations");
-  }
   const db = openResearchDb(params.dbPath);
   const excludeIds = new Set(primaryHits.map((hit) => hit.id));
   const fallbackHits = loadTickerFallbackHits({
@@ -691,6 +688,11 @@ export const generateMemoAsync = async (params: {
     excludeIds,
   });
   const hits = [...primaryHits, ...fallbackHits];
+  if (hits.length < 3) {
+    throw new Error(
+      `Insufficient evidence: fewer than 3 retrieved citations (search_hits=${primaryHits.length}, fallback_hits=${fallbackHits.length}).`,
+    );
+  }
   const lines = buildMemoLines({
     hits,
     requestedEvidence,
