@@ -340,4 +340,34 @@ describe("quality gate", () => {
     expect(regression.passed).toBe(false);
     expect(regression.reasons.length).toBeGreaterThan(0);
   });
+
+  it("fails cross-section gate when narrative quality and exhibit minimums miss", () => {
+    const gate = evaluateCrossSectionQualityGate({
+      artifactType: "theme_report",
+      artifactId: "theme:narrative",
+      evidenceCoverageScore: 0.9,
+      institutionalReadinessScore: 0.88,
+      avgVariantConfidence: 0.83,
+      avgValuationConfidence: 0.8,
+      avgPortfolioConfidence: 0.79,
+      benchmarkContextScore: 0.9,
+      scenarioCoverageRatio: 0.95,
+      riskFlagCount: 0,
+      uniqueGroupCount: 5,
+      factorStabilityScore: 0.86,
+      macroCoveragePct: 92,
+      narrativeClarityScore: 0.45,
+      exhibitCount: 4,
+      minExhibitCount: 8,
+      actionabilityScore: 0.62,
+      freshness180dRatio: 0.51,
+      generatedAt: new Date().toISOString(),
+      minScore: 0.82,
+    });
+    expect(gate.passed).toBe(false);
+    expect(gate.requiredFailures).toContain("narrative_clarity");
+    expect(gate.requiredFailures).toContain("exhibit_minimums");
+    expect(gate.requiredFailures).toContain("capital_actionability");
+    expect(gate.requiredFailures).toContain("evidence_freshness_180d");
+  });
 });

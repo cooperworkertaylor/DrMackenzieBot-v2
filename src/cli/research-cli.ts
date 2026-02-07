@@ -93,6 +93,10 @@ import {
   refreshThemeMembership,
   upsertThemeDefinition,
 } from "../research/theme-ontology.js";
+import {
+  buildSectorInstitutionalReport,
+  buildThemeInstitutionalReport,
+} from "../research/theme-sector-report.js";
 import { computeSectorResearch, computeThemeResearch } from "../research/theme-sector.js";
 import { computeValuation, resolveMatureForecasts } from "../research/valuation.js";
 import { computeVariantPerception } from "../research/variant.js";
@@ -1269,8 +1273,10 @@ export function registerResearchCli(program: Command) {
     .option("--benchmark <ticker>", "Optional benchmark ticker for factor attribution")
     .option("--lookback-days <n>", "Price lookback window", "365")
     .option("--top <n>", "Leaders/laggards count", "5")
+    .option("--quality-attempts <n>", "Quality refinement attempts before hard fail", "4")
     .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
     .option("--min-score <n>", "Institutional quality threshold [0-1]", "0.82")
+    .option("--out <path>", "Write institutional report markdown to file")
     .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
@@ -1278,142 +1284,136 @@ export function registerResearchCli(program: Command) {
           typeof opts.tickers === "string" && opts.tickers.trim()
             ? parseTickersOption(opts.tickers as string)
             : undefined;
-        const result = computeSectorResearch({
-          sector: opts.sector as string,
-          tickers: overrideTickers,
-          benchmarkTicker: opts.benchmark as string | undefined,
-          lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 365,
-          topN: parseOptionalNumber(opts.top) ?? 5,
-          dbPath: opts.db as string,
-        });
-        const sectorArtifactId = `${result.sector}:${result.generatedAt.slice(0, 10)}:${result.tickers.length}`;
-        const scenarioCoverageRatio =
-          result.constituents.length > 0
-            ? result.constituents.filter(
-                (row) =>
-                  typeof row.expectedUpsideWithCatalystsPct === "number" ||
-                  typeof row.expectedUpsidePct === "number",
-              ).length / result.constituents.length
+        const qualityAttempts = Math.max(1, parseOptionalNumber(opts["qualityAttempts"]) ?? 4);
+        const strictMode = !Boolean(opts.allowDraft);
+        const minScore = parseOptionalNumber(opts["minScore"]) ?? 0.82;
+        let final:
+          | {
+              result: ReturnType<typeof computeSectorResearch>;
+              report: ReturnType<typeof buildSectorInstitutionalReport>;
+              gate: ReturnType<typeof evaluateCrossSectionQualityGate>;
+              runId: number;
+            }
+          | undefined;
+        let lastError: Error | undefined;
+        for (let attempt = 1; attempt <= qualityAttempts; attempt += 1) {
+          const result = computeSectorResearch({
+            sector: opts.sector as string,
+            tickers: overrideTickers,
+            benchmarkTicker: opts.benchmark as string | undefined,
+            lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 365,
+            topN: parseOptionalNumber(opts.top) ?? 5,
+            dbPath: opts.db as string,
+          });
+          const report = buildSectorInstitutionalReport({
+            result,
+            dbPath: opts.db as string,
+            attempt,
+          });
+          const sectorArtifactId = `${result.sector}:${result.generatedAt.slice(0, 10)}:${result.tickers.length}`;
+          const scenarioCoverageRatio =
+            result.constituents.length > 0
+              ? result.constituents.filter(
+                  (row) =>
+                    typeof row.expectedUpsideWithCatalystsPct === "number" ||
+                    typeof row.expectedUpsidePct === "number",
+                ).length / result.constituents.length
+              : 0;
+          const uniqueIndustryCount = new Set(
+            result.constituents.map((row) => row.industry).filter(Boolean),
+          ).size;
+          const benchmarkContextScore = result.factorAttribution
+            ? clamp01(
+                0.65 * clamp01(result.factorAttribution.sampleSize / 63) +
+                  0.35 * clamp01(result.factorAttribution.rSquared / 0.5),
+              )
             : 0;
-        const uniqueIndustryCount = new Set(
-          result.constituents.map((row) => row.industry).filter(Boolean),
-        ).size;
-        const benchmarkContextScore = result.factorAttribution
-          ? clamp01(
-              0.65 * clamp01(result.factorAttribution.sampleSize / 63) +
-                0.35 * clamp01(result.factorAttribution.rSquared / 0.5),
-            )
-          : 0;
-        const factorStabilityScore = result.factorAttribution?.rollingWindows.length
-          ? clamp01(
-              0.6 *
-                mean(
-                  result.factorAttribution.rollingWindows.map((window) => clamp01(window.rSquared)),
-                ) +
-                0.4 * clamp01(result.factorAttribution.rollingWindows.length / 4),
-            )
-          : 0;
-        const macroCoveragePct = result.factorAttribution?.macroFactors.length
-          ? mean(result.factorAttribution.macroFactors.map((factor) => factor.coveragePct))
-          : undefined;
-        const sectorGate = evaluateCrossSectionQualityGate({
-          artifactType: "sector_report",
-          artifactId: sectorArtifactId,
-          evidenceCoverageScore: result.metrics.evidenceCoverageScore,
-          institutionalReadinessScore: result.metrics.institutionalReadinessScore,
-          avgVariantConfidence: result.metrics.avgVariantConfidence,
-          avgValuationConfidence: result.metrics.avgValuationConfidence,
-          avgPortfolioConfidence: result.metrics.avgPortfolioConfidence,
-          benchmarkContextScore,
-          scenarioCoverageRatio,
-          riskFlagCount: result.riskFlags.length,
-          uniqueGroupCount: uniqueIndustryCount,
-          factorStabilityScore,
-          macroCoveragePct,
-          generatedAt: result.generatedAt,
-          minScore: parseOptionalNumber(opts["minScore"]) ?? 0.82,
-        });
-        const sectorGateRun = recordQualityGateRun({
-          evaluation: sectorGate,
-          metadata: {
-            sector: result.sector,
-            ticker_count: result.tickers.length,
-            benchmark: opts.benchmark ?? null,
-          },
-          dbPath: opts.db as string,
-        });
-        if (!Boolean(opts.allowDraft) && !sectorGate.passed) {
+          const factorStabilityScore = result.factorAttribution?.rollingWindows.length
+            ? clamp01(
+                0.6 *
+                  mean(
+                    result.factorAttribution.rollingWindows.map((window) =>
+                      clamp01(window.rSquared),
+                    ),
+                  ) +
+                  0.4 * clamp01(result.factorAttribution.rollingWindows.length / 4),
+              )
+            : 0;
+          const macroCoveragePct = result.factorAttribution?.macroFactors.length
+            ? mean(result.factorAttribution.macroFactors.map((factor) => factor.coveragePct))
+            : undefined;
+          const sectorGate = evaluateCrossSectionQualityGate({
+            artifactType: "sector_report",
+            artifactId: sectorArtifactId,
+            evidenceCoverageScore: result.metrics.evidenceCoverageScore,
+            institutionalReadinessScore: result.metrics.institutionalReadinessScore,
+            avgVariantConfidence: result.metrics.avgVariantConfidence,
+            avgValuationConfidence: result.metrics.avgValuationConfidence,
+            avgPortfolioConfidence: result.metrics.avgPortfolioConfidence,
+            benchmarkContextScore,
+            scenarioCoverageRatio,
+            riskFlagCount: result.riskFlags.length,
+            uniqueGroupCount: uniqueIndustryCount,
+            factorStabilityScore,
+            macroCoveragePct,
+            narrativeClarityScore: report.quality.narrativeClarityScore,
+            exhibitCount: report.quality.exhibitCount,
+            minExhibitCount: 8,
+            actionabilityScore: report.quality.actionabilityScore,
+            freshness180dRatio: report.quality.freshness180dRatio,
+            generatedAt: result.generatedAt,
+            minScore,
+          });
+          const sectorGateRun = recordQualityGateRun({
+            evaluation: sectorGate,
+            metadata: {
+              sector: result.sector,
+              ticker_count: result.tickers.length,
+              benchmark: opts.benchmark ?? null,
+              quality_attempt: attempt,
+            },
+            dbPath: opts.db as string,
+          });
+          if (!strictMode || sectorGate.passed) {
+            final = {
+              result,
+              report,
+              gate: sectorGate,
+              runId: sectorGateRun.id,
+            };
+            break;
+          }
           const failed = sectorGate.checks.filter((check) => !check.passed);
           const details = failed.map((check) => `${check.name}: ${check.detail}`).join("; ");
-          throw new Error(
+          const err = new Error(
             `Institutional sector gate failed (run_id=${sectorGateRun.id} score=${sectorGate.score.toFixed(2)} min=${sectorGate.minScore.toFixed(2)} required_failures=${sectorGate.requiredFailures.join(",") || "none"}): ${details}`,
           );
+          lastError = err;
+          if (attempt < qualityAttempts) {
+            defaultRuntime.error(
+              `quality_refinement_retry attempt=${attempt}/${qualityAttempts} reason=${err.message}`,
+            );
+            continue;
+          }
+          throw err;
+        }
+        if (!final) throw lastError ?? new Error("Sector report generation failed");
+        if (opts.out) {
+          const outPath = path.resolve(opts.out as string);
+          await fs.writeFile(outPath, `${final.report.markdown}\n`, "utf8");
+          defaultRuntime.log(`Report written to ${outPath}`);
+        } else {
+          defaultRuntime.log(final.report.markdown);
         }
         defaultRuntime.log(
-          `sector=${result.sector} constituents=${result.metrics.constituentCount} regime=${result.metrics.regime} readiness_score=${result.metrics.institutionalReadinessScore.toFixed(2)} evidence_coverage=${result.metrics.evidenceCoverageScore.toFixed(2)}`,
+          `institutional_gate run_id=${final.runId} gate=${final.gate.gateName} score=${final.gate.score.toFixed(2)} min_score=${final.gate.minScore.toFixed(2)} passed=${final.gate.passed ? 1 : 0} artifact_id=${final.gate.artifactId}`,
         );
         defaultRuntime.log(
-          `institutional_gate run_id=${sectorGateRun.id} gate=${sectorGate.gateName} score=${sectorGate.score.toFixed(2)} min_score=${sectorGate.minScore.toFixed(2)} passed=${sectorGate.passed ? 1 : 0} artifact_id=${sectorGate.artifactId}`,
+          `report_quality narrative_clarity=${final.report.quality.narrativeClarityScore.toFixed(2)} exhibits=${final.report.quality.exhibitCount} actionability=${final.report.quality.actionabilityScore.toFixed(2)} freshness_180d=${(final.report.quality.freshness180dRatio * 100).toFixed(1)}%`,
         );
-        defaultRuntime.log(
-          `breadth_20d_pct=${(result.metrics.breadthPositive20dPct * 100).toFixed(1)} breadth_63d_pct=${(result.metrics.breadthPositive63dPct * 100).toFixed(1)} median_return_63d_pct=${typeof result.metrics.medianReturn63dPct === "number" ? result.metrics.medianReturn63dPct.toFixed(2) : "n/a"} median_upside_pct=${typeof result.metrics.medianExpectedUpsidePct === "number" ? result.metrics.medianExpectedUpsidePct.toFixed(2) : "n/a"} dispersion_63d_pct=${typeof result.metrics.dispersion63dPct === "number" ? result.metrics.dispersion63dPct.toFixed(2) : "n/a"} avg_pairwise_corr_63d=${typeof result.metrics.averagePairwiseCorrelation63d === "number" ? result.metrics.averagePairwiseCorrelation63d.toFixed(3) : "n/a"}`,
-        );
-        defaultRuntime.log(
-          `style dominant=${result.factorDecomposition.dominantFactor} concentration=${result.factorDecomposition.concentration.toFixed(2)} model=${result.factorDecomposition.model}`,
-        );
-        result.factorDecomposition.exposures.forEach((row) => {
-          defaultRuntime.log(
-            `style_factor factor=${row.factor} exposure_z=${row.exposureZ.toFixed(2)} weighted_raw=${row.weightedRaw.toFixed(2)} dispersion_z=${row.dispersionZ.toFixed(2)} top_pos=${row.topPositiveTicker || "n/a"} top_neg=${row.topNegativeTicker || "n/a"}`,
-          );
-        });
-        defaultRuntime.log(
-          `catalyst_calendar horizon_days=${result.catalystCalendar.horizonDays} open_events=${result.catalystCalendar.totalOpenEvents} scheduled=${result.catalystCalendar.scheduledEvents} in_horizon=${result.catalystCalendar.eventsInHorizon} near_term=${result.catalystCalendar.nearTermEvents} high_impact=${result.catalystCalendar.highImpactEvents} net_expected_impact_bps=${result.catalystCalendar.weightedExpectedImpactBps.toFixed(1)} downside_share_pct=${result.catalystCalendar.weightedDownsideSharePct.toFixed(1)} crowding=${result.catalystCalendar.crowdingScore.toFixed(2)}`,
-        );
-        result.catalystCalendar.topEventWindows.forEach((window) => {
-          defaultRuntime.log(
-            `catalyst_window date=${window.date} event_count=${window.eventCount} weighted_expected_impact_bps=${window.weightedExpectedImpactBps.toFixed(1)}`,
-          );
-        });
-        if (result.factorAttribution) {
-          defaultRuntime.log(
-            `factor_attribution benchmark=${result.factorAttribution.benchmarkTicker} sample_size=${result.factorAttribution.sampleSize} active_return_ann_pct=${result.factorAttribution.annualizedActiveReturnPct.toFixed(2)} alpha_ann_pct=${result.factorAttribution.annualizedAlphaPct.toFixed(2)} residual_ann_pct=${result.factorAttribution.annualizedResidualPct.toFixed(2)} r2=${result.factorAttribution.rSquared.toFixed(2)} dominant_driver=${result.factorAttribution.dominantContributionFactor}`,
-          );
-          defaultRuntime.log(
-            `factor_betas benchmark=${result.factorAttribution.factorBetas.benchmark.toFixed(3)} momentum=${result.factorAttribution.factorBetas.momentum.toFixed(3)} value=${result.factorAttribution.factorBetas.value.toFixed(3)} quality=${result.factorAttribution.factorBetas.quality.toFixed(3)} size=${result.factorAttribution.factorBetas.size.toFixed(3)}`,
-          );
-          defaultRuntime.log(
-            `factor_contrib_ann_pct benchmark=${result.factorAttribution.annualizedContributionPct.benchmark.toFixed(2)} momentum=${result.factorAttribution.annualizedContributionPct.momentum.toFixed(2)} value=${result.factorAttribution.annualizedContributionPct.value.toFixed(2)} quality=${result.factorAttribution.annualizedContributionPct.quality.toFixed(2)} size=${result.factorAttribution.annualizedContributionPct.size.toFixed(2)}`,
-          );
-          result.factorAttribution.macroFactors.forEach((factor) => {
-            defaultRuntime.log(
-              `macro_factor factor=${factor.factorKey} beta=${factor.beta.toFixed(3)} contrib_ann_pct=${factor.annualizedContributionPct.toFixed(2)} coverage_pct=${factor.coveragePct.toFixed(1)} source=${factor.source}`,
-            );
-          });
-          result.factorAttribution.rollingWindows.forEach((window, index) => {
-            defaultRuntime.log(
-              `rolling_factor_window idx=${index + 1} start=${window.startDate} end=${window.endDate} sample_size=${window.sampleSize} active_return_ann_pct=${window.annualizedActiveReturnPct.toFixed(2)} alpha_ann_pct=${window.annualizedAlphaPct.toFixed(2)} r2=${window.rSquared.toFixed(2)} dominant_driver=${window.dominantContributionFactor}`,
-            );
-          });
-        }
-        result.insightSummary.forEach((line, index) => {
-          defaultRuntime.log(`insight_${index + 1}=${line}`);
-        });
-        result.leaders.forEach((row, index) => {
-          defaultRuntime.log(
-            `leader_${index + 1} ticker=${row.ticker} score=${row.compositeScore.toFixed(2)} conviction=${row.conviction} return_63d_pct=${typeof row.return63dPct === "number" ? row.return63dPct.toFixed(2) : "n/a"} upside_pct=${typeof row.expectedUpsideWithCatalystsPct === "number" ? row.expectedUpsideWithCatalystsPct.toFixed(2) : typeof row.expectedUpsidePct === "number" ? row.expectedUpsidePct.toFixed(2) : "n/a"} variant_gap=${row.variantGapScore.toFixed(2)} catalysts_open=${row.catalystOpenCount}`,
-          );
-        });
-        result.laggards.forEach((row, index) => {
-          defaultRuntime.log(
-            `laggard_${index + 1} ticker=${row.ticker} score=${row.compositeScore.toFixed(2)} conviction=${row.conviction} return_63d_pct=${typeof row.return63dPct === "number" ? row.return63dPct.toFixed(2) : "n/a"} upside_pct=${typeof row.expectedUpsideWithCatalystsPct === "number" ? row.expectedUpsideWithCatalystsPct.toFixed(2) : typeof row.expectedUpsidePct === "number" ? row.expectedUpsidePct.toFixed(2) : "n/a"} variant_gap=${row.variantGapScore.toFixed(2)} catalysts_open=${row.catalystOpenCount}`,
-          );
-        });
-        result.riskFlags.forEach((flag) => {
-          defaultRuntime.error(`RISK_FLAG: ${flag}`);
-        });
-        if (sectorGate.requiredFailures.length) {
+        if (final.gate.requiredFailures.length) {
           defaultRuntime.error(
-            `institutional_gate_required_failures=${sectorGate.requiredFailures.join(",")}`,
+            `institutional_gate_required_failures=${final.gate.requiredFailures.join(",")}`,
           );
         }
       });
@@ -1429,8 +1429,10 @@ export function registerResearchCli(program: Command) {
     .option("--max-constituents <n>", "Max constituents to load from theme registry")
     .option("--lookback-days <n>", "Price lookback window", "365")
     .option("--top <n>", "Leaders/laggards count", "5")
+    .option("--quality-attempts <n>", "Quality refinement attempts before hard fail", "4")
     .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
     .option("--min-score <n>", "Institutional quality threshold [0-1]", "0.82")
+    .option("--out <path>", "Write institutional report markdown to file")
     .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
@@ -1438,164 +1440,148 @@ export function registerResearchCli(program: Command) {
           typeof opts.tickers === "string" && opts.tickers.trim()
             ? parseTickersOption(opts.tickers as string)
             : undefined;
-        const result = computeThemeResearch({
-          theme: opts.theme as string,
-          tickers,
-          themeVersion: parseOptionalNumber(opts["themeVersion"]),
-          minMembershipScore: parseOptionalNumber(opts["minMembershipScore"]),
-          maxConstituents: parseOptionalNumber(opts["maxConstituents"]),
-          lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 365,
-          topN: parseOptionalNumber(opts.top) ?? 5,
-          dbPath: opts.db as string,
-        });
-        const themeArtifactId = `${result.theme}:${result.generatedAt.slice(0, 10)}:${result.tickers.length}`;
-        const scenarioCoverageRatio =
-          result.constituents.length > 0
-            ? result.constituents.filter(
-                (row) =>
-                  typeof row.expectedUpsideWithCatalystsPct === "number" ||
-                  typeof row.expectedUpsidePct === "number",
-              ).length / result.constituents.length
+        const qualityAttempts = Math.max(1, parseOptionalNumber(opts["qualityAttempts"]) ?? 4);
+        const strictMode = !Boolean(opts.allowDraft);
+        const minScore = parseOptionalNumber(opts["minScore"]) ?? 0.82;
+        let final:
+          | {
+              result: ReturnType<typeof computeThemeResearch>;
+              report: ReturnType<typeof buildThemeInstitutionalReport>;
+              gate: ReturnType<typeof evaluateCrossSectionQualityGate>;
+              runId: number;
+            }
+          | undefined;
+        let lastError: Error | undefined;
+        for (let attempt = 1; attempt <= qualityAttempts; attempt += 1) {
+          const result = computeThemeResearch({
+            theme: opts.theme as string,
+            tickers,
+            themeVersion: parseOptionalNumber(opts["themeVersion"]),
+            minMembershipScore: parseOptionalNumber(opts["minMembershipScore"]),
+            maxConstituents: parseOptionalNumber(opts["maxConstituents"]),
+            lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 365,
+            topN: parseOptionalNumber(opts.top) ?? 5,
+            dbPath: opts.db as string,
+          });
+          const report = buildThemeInstitutionalReport({
+            result,
+            dbPath: opts.db as string,
+            attempt,
+          });
+          const themeArtifactId = `${result.theme}:${result.generatedAt.slice(0, 10)}:${result.tickers.length}`;
+          const scenarioCoverageRatio =
+            result.constituents.length > 0
+              ? result.constituents.filter(
+                  (row) =>
+                    typeof row.expectedUpsideWithCatalystsPct === "number" ||
+                    typeof row.expectedUpsidePct === "number",
+                ).length / result.constituents.length
+              : 0;
+          const uniqueSectorCount = new Set(
+            result.constituents.map((row) => row.sector).filter(Boolean),
+          ).size;
+          const benchmarkRelativeScore = result.benchmarkRelative
+            ? clamp01(
+                0.65 * clamp01(result.benchmarkRelative.sampleSize / 63) +
+                  0.35 * clamp01((result.benchmarkRelative.correlation ?? 0.35) / 0.8),
+              )
             : 0;
-        const uniqueSectorCount = new Set(
-          result.constituents.map((row) => row.sector).filter(Boolean),
-        ).size;
-        const benchmarkRelativeScore = result.benchmarkRelative
-          ? clamp01(
-              0.65 * clamp01(result.benchmarkRelative.sampleSize / 63) +
-                0.35 * clamp01((result.benchmarkRelative.correlation ?? 0.35) / 0.8),
-            )
-          : 0;
-        const factorAttributionScore = result.factorAttribution
-          ? clamp01(
-              0.7 * clamp01(result.factorAttribution.sampleSize / 63) +
-                0.3 * clamp01(result.factorAttribution.rSquared / 0.5),
-            )
-          : 0;
-        const benchmarkContextScore =
-          result.benchmarkRelative || result.factorAttribution
-            ? clamp01(0.55 * benchmarkRelativeScore + 0.45 * factorAttributionScore)
+          const factorAttributionScore = result.factorAttribution
+            ? clamp01(
+                0.7 * clamp01(result.factorAttribution.sampleSize / 63) +
+                  0.3 * clamp01(result.factorAttribution.rSquared / 0.5),
+              )
             : 0;
-        const factorStabilityScore = result.factorAttribution?.rollingWindows.length
-          ? clamp01(
-              0.6 *
-                mean(
-                  result.factorAttribution.rollingWindows.map((window) => clamp01(window.rSquared)),
-                ) +
-                0.4 * clamp01(result.factorAttribution.rollingWindows.length / 4),
-            )
-          : 0;
-        const macroCoveragePct = result.factorAttribution?.macroFactors.length
-          ? mean(result.factorAttribution.macroFactors.map((factor) => factor.coveragePct))
-          : undefined;
-        const themeGate = evaluateCrossSectionQualityGate({
-          artifactType: "theme_report",
-          artifactId: themeArtifactId,
-          evidenceCoverageScore: result.metrics.evidenceCoverageScore,
-          institutionalReadinessScore: result.metrics.institutionalReadinessScore,
-          avgVariantConfidence: result.metrics.avgVariantConfidence,
-          avgValuationConfidence: result.metrics.avgValuationConfidence,
-          avgPortfolioConfidence: result.metrics.avgPortfolioConfidence,
-          benchmarkContextScore,
-          scenarioCoverageRatio,
-          riskFlagCount: result.riskFlags.length,
-          uniqueGroupCount: uniqueSectorCount,
-          factorStabilityScore,
-          macroCoveragePct,
-          generatedAt: result.generatedAt,
-          minScore: parseOptionalNumber(opts["minScore"]) ?? 0.82,
-        });
-        const themeGateRun = recordQualityGateRun({
-          evaluation: themeGate,
-          metadata: {
-            theme: result.theme,
-            ticker_count: result.tickers.length,
-            used_theme_registry: result.usedThemeRegistry,
-          },
-          dbPath: opts.db as string,
-        });
-        if (!Boolean(opts.allowDraft) && !themeGate.passed) {
+          const benchmarkContextScore =
+            result.benchmarkRelative || result.factorAttribution
+              ? clamp01(0.55 * benchmarkRelativeScore + 0.45 * factorAttributionScore)
+              : 0;
+          const factorStabilityScore = result.factorAttribution?.rollingWindows.length
+            ? clamp01(
+                0.6 *
+                  mean(
+                    result.factorAttribution.rollingWindows.map((window) =>
+                      clamp01(window.rSquared),
+                    ),
+                  ) +
+                  0.4 * clamp01(result.factorAttribution.rollingWindows.length / 4),
+              )
+            : 0;
+          const macroCoveragePct = result.factorAttribution?.macroFactors.length
+            ? mean(result.factorAttribution.macroFactors.map((factor) => factor.coveragePct))
+            : undefined;
+          const themeGate = evaluateCrossSectionQualityGate({
+            artifactType: "theme_report",
+            artifactId: themeArtifactId,
+            evidenceCoverageScore: result.metrics.evidenceCoverageScore,
+            institutionalReadinessScore: result.metrics.institutionalReadinessScore,
+            avgVariantConfidence: result.metrics.avgVariantConfidence,
+            avgValuationConfidence: result.metrics.avgValuationConfidence,
+            avgPortfolioConfidence: result.metrics.avgPortfolioConfidence,
+            benchmarkContextScore,
+            scenarioCoverageRatio,
+            riskFlagCount: result.riskFlags.length,
+            uniqueGroupCount: uniqueSectorCount,
+            factorStabilityScore,
+            macroCoveragePct,
+            narrativeClarityScore: report.quality.narrativeClarityScore,
+            exhibitCount: report.quality.exhibitCount,
+            minExhibitCount: 8,
+            actionabilityScore: report.quality.actionabilityScore,
+            freshness180dRatio: report.quality.freshness180dRatio,
+            generatedAt: result.generatedAt,
+            minScore,
+          });
+          const themeGateRun = recordQualityGateRun({
+            evaluation: themeGate,
+            metadata: {
+              theme: result.theme,
+              ticker_count: result.tickers.length,
+              used_theme_registry: result.usedThemeRegistry,
+              quality_attempt: attempt,
+            },
+            dbPath: opts.db as string,
+          });
+          if (!strictMode || themeGate.passed) {
+            final = {
+              result,
+              report,
+              gate: themeGate,
+              runId: themeGateRun.id,
+            };
+            break;
+          }
           const failed = themeGate.checks.filter((check) => !check.passed);
           const details = failed.map((check) => `${check.name}: ${check.detail}`).join("; ");
-          throw new Error(
+          const err = new Error(
             `Institutional theme gate failed (run_id=${themeGateRun.id} score=${themeGate.score.toFixed(2)} min=${themeGate.minScore.toFixed(2)} required_failures=${themeGate.requiredFailures.join(",") || "none"}): ${details}`,
           );
-        }
-        defaultRuntime.log(
-          `theme=${result.theme} constituents=${result.metrics.constituentCount} regime=${result.metrics.regime} readiness_score=${result.metrics.institutionalReadinessScore.toFixed(2)} evidence_coverage=${result.metrics.evidenceCoverageScore.toFixed(2)} registry_source=${result.usedThemeRegistry ? 1 : 0} theme_version=${typeof result.themeVersion === "number" ? result.themeVersion : "n/a"} min_membership_score=${typeof result.membershipMinScore === "number" ? result.membershipMinScore.toFixed(2) : "n/a"}`,
-        );
-        defaultRuntime.log(
-          `institutional_gate run_id=${themeGateRun.id} gate=${themeGate.gateName} score=${themeGate.score.toFixed(2)} min_score=${themeGate.minScore.toFixed(2)} passed=${themeGate.passed ? 1 : 0} artifact_id=${themeGate.artifactId}`,
-        );
-        defaultRuntime.log(
-          `breadth_20d_pct=${(result.metrics.breadthPositive20dPct * 100).toFixed(1)} breadth_63d_pct=${(result.metrics.breadthPositive63dPct * 100).toFixed(1)} median_return_63d_pct=${typeof result.metrics.medianReturn63dPct === "number" ? result.metrics.medianReturn63dPct.toFixed(2) : "n/a"} median_upside_pct=${typeof result.metrics.medianExpectedUpsidePct === "number" ? result.metrics.medianExpectedUpsidePct.toFixed(2) : "n/a"} dispersion_63d_pct=${typeof result.metrics.dispersion63dPct === "number" ? result.metrics.dispersion63dPct.toFixed(2) : "n/a"} avg_pairwise_corr_63d=${typeof result.metrics.averagePairwiseCorrelation63d === "number" ? result.metrics.averagePairwiseCorrelation63d.toFixed(3) : "n/a"}`,
-        );
-        defaultRuntime.log(
-          `style dominant=${result.factorDecomposition.dominantFactor} concentration=${result.factorDecomposition.concentration.toFixed(2)} model=${result.factorDecomposition.model}`,
-        );
-        result.factorDecomposition.exposures.forEach((row) => {
-          defaultRuntime.log(
-            `style_factor factor=${row.factor} exposure_z=${row.exposureZ.toFixed(2)} weighted_raw=${row.weightedRaw.toFixed(2)} dispersion_z=${row.dispersionZ.toFixed(2)} top_pos=${row.topPositiveTicker || "n/a"} top_neg=${row.topNegativeTicker || "n/a"}`,
-          );
-        });
-        defaultRuntime.log(
-          `catalyst_calendar horizon_days=${result.catalystCalendar.horizonDays} open_events=${result.catalystCalendar.totalOpenEvents} scheduled=${result.catalystCalendar.scheduledEvents} in_horizon=${result.catalystCalendar.eventsInHorizon} near_term=${result.catalystCalendar.nearTermEvents} high_impact=${result.catalystCalendar.highImpactEvents} net_expected_impact_bps=${result.catalystCalendar.weightedExpectedImpactBps.toFixed(1)} downside_share_pct=${result.catalystCalendar.weightedDownsideSharePct.toFixed(1)} crowding=${result.catalystCalendar.crowdingScore.toFixed(2)}`,
-        );
-        result.catalystCalendar.topEventWindows.forEach((window) => {
-          defaultRuntime.log(
-            `catalyst_window date=${window.date} event_count=${window.eventCount} weighted_expected_impact_bps=${window.weightedExpectedImpactBps.toFixed(1)}`,
-          );
-        });
-        if (result.benchmarkRelative) {
-          defaultRuntime.log(
-            `benchmark ticker=${result.benchmarkRelative.benchmarkTicker} sample_size=${result.benchmarkRelative.sampleSize} relative_return_pct=${result.benchmarkRelative.relativeReturnPct.toFixed(2)} theme_return_pct=${result.benchmarkRelative.themeReturnPct.toFixed(2)} benchmark_return_pct=${result.benchmarkRelative.benchmarkReturnPct.toFixed(2)} beta=${typeof result.benchmarkRelative.beta === "number" ? result.benchmarkRelative.beta.toFixed(2) : "n/a"} tracking_error_pct=${typeof result.benchmarkRelative.trackingErrorPct === "number" ? result.benchmarkRelative.trackingErrorPct.toFixed(2) : "n/a"} info_ratio=${typeof result.benchmarkRelative.informationRatio === "number" ? result.benchmarkRelative.informationRatio.toFixed(2) : "n/a"} upside_capture_pct=${typeof result.benchmarkRelative.upsideCapturePct === "number" ? result.benchmarkRelative.upsideCapturePct.toFixed(1) : "n/a"} downside_capture_pct=${typeof result.benchmarkRelative.downsideCapturePct === "number" ? result.benchmarkRelative.downsideCapturePct.toFixed(1) : "n/a"}`,
-          );
-        }
-        if (result.factorAttribution) {
-          defaultRuntime.log(
-            `factor_attribution benchmark=${result.factorAttribution.benchmarkTicker} sample_size=${result.factorAttribution.sampleSize} active_return_ann_pct=${result.factorAttribution.annualizedActiveReturnPct.toFixed(2)} alpha_ann_pct=${result.factorAttribution.annualizedAlphaPct.toFixed(2)} residual_ann_pct=${result.factorAttribution.annualizedResidualPct.toFixed(2)} r2=${result.factorAttribution.rSquared.toFixed(2)} dominant_driver=${result.factorAttribution.dominantContributionFactor}`,
-          );
-          defaultRuntime.log(
-            `factor_betas benchmark=${result.factorAttribution.factorBetas.benchmark.toFixed(3)} momentum=${result.factorAttribution.factorBetas.momentum.toFixed(3)} value=${result.factorAttribution.factorBetas.value.toFixed(3)} quality=${result.factorAttribution.factorBetas.quality.toFixed(3)} size=${result.factorAttribution.factorBetas.size.toFixed(3)}`,
-          );
-          defaultRuntime.log(
-            `factor_contrib_ann_pct benchmark=${result.factorAttribution.annualizedContributionPct.benchmark.toFixed(2)} momentum=${result.factorAttribution.annualizedContributionPct.momentum.toFixed(2)} value=${result.factorAttribution.annualizedContributionPct.value.toFixed(2)} quality=${result.factorAttribution.annualizedContributionPct.quality.toFixed(2)} size=${result.factorAttribution.annualizedContributionPct.size.toFixed(2)}`,
-          );
-          result.factorAttribution.macroFactors.forEach((factor) => {
-            defaultRuntime.log(
-              `macro_factor factor=${factor.factorKey} beta=${factor.beta.toFixed(3)} contrib_ann_pct=${factor.annualizedContributionPct.toFixed(2)} coverage_pct=${factor.coveragePct.toFixed(1)} source=${factor.source}`,
+          lastError = err;
+          if (attempt < qualityAttempts) {
+            defaultRuntime.error(
+              `quality_refinement_retry attempt=${attempt}/${qualityAttempts} reason=${err.message}`,
             );
-          });
-          result.factorAttribution.rollingWindows.forEach((window, index) => {
-            defaultRuntime.log(
-              `rolling_factor_window idx=${index + 1} start=${window.startDate} end=${window.endDate} sample_size=${window.sampleSize} active_return_ann_pct=${window.annualizedActiveReturnPct.toFixed(2)} alpha_ann_pct=${window.annualizedAlphaPct.toFixed(2)} r2=${window.rSquared.toFixed(2)} dominant_driver=${window.dominantContributionFactor}`,
-            );
-          });
+            continue;
+          }
+          throw err;
         }
-        result.sectorExposure.forEach((row) => {
-          defaultRuntime.log(
-            `sector_exposure sector=${row.sector} count=${row.count} share_pct=${(row.sharePct * 100).toFixed(1)} avg_score=${row.avgCompositeScore.toFixed(2)}`,
-          );
-        });
-        result.insightSummary.forEach((line, index) => {
-          defaultRuntime.log(`insight_${index + 1}=${line}`);
-        });
-        result.leaders.forEach((row, index) => {
-          defaultRuntime.log(
-            `leader_${index + 1} ticker=${row.ticker} sector=${row.sector} score=${row.compositeScore.toFixed(2)} conviction=${row.conviction} return_63d_pct=${typeof row.return63dPct === "number" ? row.return63dPct.toFixed(2) : "n/a"} upside_pct=${typeof row.expectedUpsideWithCatalystsPct === "number" ? row.expectedUpsideWithCatalystsPct.toFixed(2) : typeof row.expectedUpsidePct === "number" ? row.expectedUpsidePct.toFixed(2) : "n/a"}`,
-          );
-        });
-        result.laggards.forEach((row, index) => {
-          defaultRuntime.log(
-            `laggard_${index + 1} ticker=${row.ticker} sector=${row.sector} score=${row.compositeScore.toFixed(2)} conviction=${row.conviction} return_63d_pct=${typeof row.return63dPct === "number" ? row.return63dPct.toFixed(2) : "n/a"} upside_pct=${typeof row.expectedUpsideWithCatalystsPct === "number" ? row.expectedUpsideWithCatalystsPct.toFixed(2) : typeof row.expectedUpsidePct === "number" ? row.expectedUpsidePct.toFixed(2) : "n/a"}`,
-          );
-        });
-        result.riskFlags.forEach((flag) => {
-          defaultRuntime.error(`RISK_FLAG: ${flag}`);
-        });
-        if (themeGate.requiredFailures.length) {
+        if (!final) throw lastError ?? new Error("Theme report generation failed");
+        if (opts.out) {
+          const outPath = path.resolve(opts.out as string);
+          await fs.writeFile(outPath, `${final.report.markdown}\n`, "utf8");
+          defaultRuntime.log(`Report written to ${outPath}`);
+        } else {
+          defaultRuntime.log(final.report.markdown);
+        }
+        defaultRuntime.log(
+          `institutional_gate run_id=${final.runId} gate=${final.gate.gateName} score=${final.gate.score.toFixed(2)} min_score=${final.gate.minScore.toFixed(2)} passed=${final.gate.passed ? 1 : 0} artifact_id=${final.gate.artifactId}`,
+        );
+        defaultRuntime.log(
+          `report_quality narrative_clarity=${final.report.quality.narrativeClarityScore.toFixed(2)} exhibits=${final.report.quality.exhibitCount} actionability=${final.report.quality.actionabilityScore.toFixed(2)} freshness_180d=${(final.report.quality.freshness180dRatio * 100).toFixed(1)}%`,
+        );
+        if (final.gate.requiredFailures.length) {
           defaultRuntime.error(
-            `institutional_gate_required_failures=${themeGate.requiredFailures.join(",")}`,
+            `institutional_gate_required_failures=${final.gate.requiredFailures.join(",")}`,
           );
         }
       });

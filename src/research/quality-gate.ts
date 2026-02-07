@@ -344,6 +344,11 @@ export const evaluateCrossSectionQualityGate = (params: {
   uniqueGroupCount: number;
   factorStabilityScore: number;
   macroCoveragePct?: number;
+  narrativeClarityScore?: number;
+  exhibitCount?: number;
+  minExhibitCount?: number;
+  actionabilityScore?: number;
+  freshness180dRatio?: number;
   generatedAt: string;
   minScore?: number;
 }): QualityGateEvaluation => {
@@ -438,6 +443,55 @@ export const evaluateCrossSectionQualityGate = (params: {
       passThreshold: 0.8,
     }),
   ];
+  if (typeof params.narrativeClarityScore === "number") {
+    checks.push(
+      makeCheck({
+        name: "narrative_clarity",
+        detail: `narrative_clarity=${params.narrativeClarityScore.toFixed(2)}`,
+        weight: 0.12,
+        score: params.narrativeClarityScore,
+        passThreshold: 0.7,
+        required: true,
+      }),
+    );
+  }
+  if (typeof params.exhibitCount === "number") {
+    const minExhibitCount = Math.max(1, Math.round(params.minExhibitCount ?? 8));
+    checks.push(
+      makeCheck({
+        name: "exhibit_minimums",
+        detail: `exhibit_count=${Math.round(params.exhibitCount)} min_required=${minExhibitCount}`,
+        weight: 0.1,
+        score: clamp01(params.exhibitCount / minExhibitCount),
+        passThreshold: 1,
+        required: true,
+      }),
+    );
+  }
+  if (typeof params.actionabilityScore === "number") {
+    checks.push(
+      makeCheck({
+        name: "capital_actionability",
+        detail: `actionability_score=${params.actionabilityScore.toFixed(2)}`,
+        weight: 0.12,
+        score: params.actionabilityScore,
+        passThreshold: 0.7,
+        required: true,
+      }),
+    );
+  }
+  if (typeof params.freshness180dRatio === "number") {
+    checks.push(
+      makeCheck({
+        name: "evidence_freshness_180d",
+        detail: `fresh_ratio_180d=${(params.freshness180dRatio * 100).toFixed(1)}%`,
+        weight: 0.1,
+        score: params.freshness180dRatio,
+        passThreshold: 0.6,
+        required: true,
+      }),
+    );
+  }
   if (typeof params.macroCoveragePct === "number") {
     checks.push(
       makeCheck({
@@ -450,7 +504,7 @@ export const evaluateCrossSectionQualityGate = (params: {
     );
   }
   return finalizeChecks({
-    gateName: "institutional_cross_section_v1",
+    gateName: "institutional_cross_section_v2",
     artifactType: params.artifactType,
     artifactId: params.artifactId,
     minScore,
@@ -467,6 +521,17 @@ export const evaluateCrossSectionQualityGate = (params: {
       unique_group_count: params.uniqueGroupCount,
       factor_stability_score: params.factorStabilityScore,
       macro_coverage_pct: params.macroCoveragePct ?? null,
+      narrative_clarity_score:
+        typeof params.narrativeClarityScore === "number" ? params.narrativeClarityScore : null,
+      exhibit_count: typeof params.exhibitCount === "number" ? params.exhibitCount : null,
+      min_exhibit_count:
+        typeof params.exhibitCount === "number"
+          ? Math.max(1, Math.round(params.minExhibitCount ?? 8))
+          : null,
+      actionability_score:
+        typeof params.actionabilityScore === "number" ? params.actionabilityScore : null,
+      freshness_180d_ratio:
+        typeof params.freshness180dRatio === "number" ? params.freshness180dRatio : null,
     },
   });
 };
