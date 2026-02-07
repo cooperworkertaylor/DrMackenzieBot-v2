@@ -254,6 +254,11 @@ const hydrateThemeEvidence = async (params: {
       await ingestPrices(benchmarkTicker, { dbPath: params.dbPath });
     });
   }
+  await run("macro:default", async () => {
+    await ingestDefaultMacroFactors({
+      dbPath: params.dbPath,
+    });
+  });
   await run("embed", async () => {
     await syncEmbeddings(params.dbPath);
   });
@@ -1553,6 +1558,19 @@ export function registerResearchCli(program: Command) {
           const uniqueSectorCount = new Set(
             result.constituents.map((row) => row.sector).filter(Boolean),
           ).size;
+          const uniqueIndustryCount = new Set(
+            result.constituents.map((row) => row.industry).filter(Boolean),
+          ).size;
+          const uniqueSectorIndustryCount = new Set(
+            result.constituents
+              .map((row) => `${row.sector || "Unknown"}::${row.industry || "Unknown"}`)
+              .filter(Boolean),
+          ).size;
+          const uniqueGroupCount = Math.max(
+            uniqueSectorCount,
+            uniqueIndustryCount,
+            uniqueSectorIndustryCount,
+          );
           const benchmarkRelativeScore = result.benchmarkRelative
             ? clamp01(
                 0.65 * clamp01(result.benchmarkRelative.sampleSize / 63) +
@@ -1594,7 +1612,7 @@ export function registerResearchCli(program: Command) {
             benchmarkContextScore,
             scenarioCoverageRatio,
             riskFlagCount: result.riskFlags.length,
-            uniqueGroupCount: uniqueSectorCount,
+            uniqueGroupCount,
             factorStabilityScore,
             macroCoveragePct,
             narrativeClarityScore: report.quality.narrativeClarityScore,
