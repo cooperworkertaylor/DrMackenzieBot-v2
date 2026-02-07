@@ -5,6 +5,13 @@ Updated: 2026-02-07
 This corpus targets the writing quality and investor process patterns from:
 Altimeter, a16z, Benedict Evans, Durable Capital, Goldman Sachs, Founders Fund, and Duquesne Family Office (Stanley Druckenmiller).
 
+## Scope Guardrails (Important)
+
+- These references are for style, rigor, structure, and information density only.
+- Do not copy or inherit their specific conclusions, recommendations, or portfolio positions.
+- Every output must be re-underwritten from current evidence in our own pipeline.
+- Citations must always point to the evidence used in the current run.
+
 ## Public Primary Sources
 
 ### Altimeter / Brad Gerstner
@@ -57,6 +64,16 @@ Use this blend for company/theme/sector reports:
 5. Goldman: cross-sectional context, scenario math, benchmark-relative framing, macro linkage.
 6. Founders Fund: non-consensus thinking, explicit second-order effects, decision-forcing clarity.
 
+## Style Quality Rubric (Use In Every Deliverable)
+
+- `thesis_clarity`: Thesis stated in one sentence, with explicit variant vs consensus.
+- `decision_usefulness`: Clear entry criteria, sizing framework, risk budget, and stop conditions.
+- `scenario_specificity`: Base/bull/bear scenarios have named drivers and priced outcomes.
+- `evidence_density`: High signal-to-noise with multi-source, dated, auditable citations.
+- `counterargument_strength`: Strong disconfirming evidence and direct contradiction handling.
+- `benchmark_context`: Relative framing vs peers/index and market-implied expectations.
+- `brevity_with_depth`: Dense, structured writing without filler.
+
 ## Enforced Output Structure (Investor Lens)
 
 Every institutional report should contain:
@@ -67,4 +84,3 @@ Every institutional report should contain:
 - disconfirming evidence and contradiction resolution
 - position sizing, risk budget, and falsification triggers
 - dated, multi-host citations
-
