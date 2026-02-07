@@ -10,6 +10,14 @@ type FundamentalPeriod = {
   operatingIncome?: number;
 };
 
+const REVENUE_CONCEPTS = [
+  "Revenues",
+  "RevenueFromContractWithCustomerExcludingAssessedTax",
+  "SalesRevenueNet",
+  "Revenue",
+];
+const OPERATING_INCOME_CONCEPTS = ["OperatingIncomeLoss", "ProfitLossFromOperatingActivities"];
+
 type ScenarioDriver = {
   name: ScenarioName;
   probability: number;
@@ -315,8 +323,10 @@ const loadFundamentals = (ticker: string, dbPath?: string): FundamentalPeriod[] 
        JOIN instruments i ON i.id=ff.instrument_id
        WHERE i.ticker=?
          AND ff.is_latest=1
-         AND ff.taxonomy='us-gaap'
-         AND ff.concept IN ('Revenues', 'OperatingIncomeLoss')
+         AND (
+           (ff.taxonomy='us-gaap' AND ff.concept IN ('Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'SalesRevenueNet', 'OperatingIncomeLoss'))
+           OR (ff.taxonomy='ifrs-full' AND ff.concept IN ('Revenue', 'ProfitLossFromOperatingActivities'))
+         )
        ORDER BY ff.period_end DESC
        LIMIT 80`,
     )
@@ -333,8 +343,8 @@ const loadFundamentals = (ticker: string, dbPath?: string): FundamentalPeriod[] 
       periodEnd: row.period_end,
       fiscalPeriod: row.fiscal_period,
     };
-    if (row.concept === "Revenues") current.revenue = toFiniteOrUndefined(row.value);
-    if (row.concept === "OperatingIncomeLoss")
+    if (REVENUE_CONCEPTS.includes(row.concept)) current.revenue = toFiniteOrUndefined(row.value);
+    if (OPERATING_INCOME_CONCEPTS.includes(row.concept))
       current.operatingIncome = toFiniteOrUndefined(row.value);
     byPeriod.set(key, current);
   }
@@ -353,6 +363,7 @@ const loadSharesOutstanding = (ticker: string, dbPath?: string): number | undefi
          AND (
            (ff.taxonomy='dei' AND ff.concept='EntityCommonStockSharesOutstanding')
            OR (ff.taxonomy='us-gaap' AND ff.concept='CommonStockSharesOutstanding')
+           OR (ff.taxonomy='ifrs-full' AND ff.concept='NumberOfSharesOutstanding')
          )
        ORDER BY ff.period_end DESC, ff.filing_date DESC
        LIMIT 1`,

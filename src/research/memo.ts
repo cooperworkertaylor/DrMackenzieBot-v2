@@ -17,10 +17,86 @@ import { evaluateMemoQualityGate, recordQualityGateRun } from "./quality-gate.js
 import { runAdversarialResearchCell } from "./research-cell.js";
 import { computeValuation, recordValuationForecast, type ValuationResult } from "./valuation.js";
 import { computeVariantPerception, type VariantPerceptionResult } from "./variant.js";
-import { searchResearch } from "./vector-search.js";
+import { searchResearch, type SearchHit } from "./vector-search.js";
 
 type MemoLine = MemoEvidenceClaim;
 type CitationRow = MemoCitation;
+
+const extractHost = (url?: string): string | undefined => {
+  if (!url?.trim()) return undefined;
+  try {
+    return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return undefined;
+  }
+};
+
+const selectDiverseEvidenceHits = (hits: SearchHit[], limit: number): SearchHit[] => {
+  const target = Math.max(3, limit);
+  const selected: SearchHit[] = [];
+  const used = new Set<number>();
+
+  const tryPick = (predicate: (hit: SearchHit) => boolean): boolean => {
+    for (const hit of hits) {
+      if (used.has(hit.id)) continue;
+      if (!predicate(hit)) continue;
+      used.add(hit.id);
+      selected.push(hit);
+      return true;
+    }
+    return false;
+  };
+
+  for (const table of ["filings", "transcripts", "fundamental_facts", "earnings_expectations"]) {
+    if (selected.length >= target) break;
+    tryPick((hit) => hit.sourceTable === table);
+  }
+
+  const seenHosts = new Set(
+    selected.map((hit) => extractHost(hit.citationUrl)).filter((value): value is string => !!value),
+  );
+  while (selected.length < target) {
+    const added = tryPick((hit) => {
+      const host = extractHost(hit.citationUrl);
+      if (!host) return false;
+      if (seenHosts.has(host)) return false;
+      seenHosts.add(host);
+      return true;
+    });
+    if (!added) break;
+  }
+
+  for (const hit of hits) {
+    if (selected.length >= target) break;
+    if (used.has(hit.id)) continue;
+    used.add(hit.id);
+    selected.push(hit);
+  }
+  return selected;
+};
+
+const buildCitationPairs = (hits: SearchHit[]): Array<[SearchHit, SearchHit]> => {
+  const pairs: Array<[SearchHit, SearchHit]> = [];
+  const remaining = [...hits];
+
+  while (remaining.length >= 2) {
+    const first = remaining.shift();
+    if (!first) break;
+    let pairIndex = remaining.findIndex((candidate) => {
+      const tableDiff = candidate.sourceTable !== first.sourceTable;
+      const hostDiff =
+        extractHost(candidate.citationUrl) && extractHost(first.citationUrl)
+          ? extractHost(candidate.citationUrl) !== extractHost(first.citationUrl)
+          : false;
+      return tableDiff || hostDiff;
+    });
+    if (pairIndex < 0) pairIndex = 0;
+    const second = remaining.splice(pairIndex, 1)[0];
+    if (!second) break;
+    pairs.push([first, second]);
+  }
+  return pairs;
+};
 
 const buildDiagnostics = (params: {
   variant: VariantPerceptionResult;
@@ -120,10 +196,11 @@ export const generateMemoAsync = async (params: {
 }) => {
   const enforceInstitutionalGrade = params.enforceInstitutionalGrade ?? true;
   const minQualityScore = params.minQualityScore ?? 0.8;
+  const requestedEvidence = params.maxEvidence ?? 12;
   const hits = await searchResearch({
     query: `${params.ticker} ${params.question}`,
     ticker: params.ticker,
-    limit: params.maxEvidence ?? 12,
+    limit: Math.max(16, requestedEvidence * 3),
     dbPath: params.dbPath,
     source: "research",
   });
@@ -132,10 +209,9 @@ export const generateMemoAsync = async (params: {
   }
 
   const lines: MemoLine[] = [];
-  const top = hits.slice(0, Math.min(hits.length, 8));
-  for (let i = 0; i < top.length; i += 2) {
-    const a = top[i];
-    const b = top[i + 1];
+  const selectedHits = selectDiverseEvidenceHits(hits, Math.min(requestedEvidence, 12));
+  const pairs = buildCitationPairs(selectedHits);
+  for (const [a, b] of pairs) {
     const text = [a?.text ?? "", b?.text ?? ""].join(" ").trim();
     if (!text) continue;
     const sentence = summarizeText(text, 220);

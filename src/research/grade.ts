@@ -108,6 +108,8 @@ const citationRecencyMs = (citation: MemoCitation): number | undefined => {
     "eventDate",
     "acceptedAt",
     "reportedDate",
+    "fetchedAt",
+    "fetched_at",
   ]) {
     const ts = toDateMs(metadata[key]);
     if (typeof ts === "number") return ts;

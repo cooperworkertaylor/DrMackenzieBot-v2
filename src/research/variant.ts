@@ -14,6 +14,14 @@ type FundamentalPoint = {
   operatingIncome?: number;
 };
 
+const REVENUE_CONCEPTS = [
+  "Revenues",
+  "RevenueFromContractWithCustomerExcludingAssessedTax",
+  "SalesRevenueNet",
+  "Revenue",
+];
+const OPERATING_INCOME_CONCEPTS = ["OperatingIncomeLoss", "ProfitLossFromOperatingActivities"];
+
 export type VariantPerceptionResult = {
   ticker: string;
   computedAt: string;
@@ -142,8 +150,10 @@ const loadFundamentalSeries = (ticker: string, dbPath?: string): FundamentalPoin
        JOIN instruments i ON i.id=ff.instrument_id
        WHERE i.ticker=?
          AND ff.is_latest=1
-         AND ff.taxonomy='us-gaap'
-         AND ff.concept IN ('Revenues', 'OperatingIncomeLoss')
+         AND (
+           (ff.taxonomy='us-gaap' AND ff.concept IN ('Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'SalesRevenueNet', 'OperatingIncomeLoss'))
+           OR (ff.taxonomy='ifrs-full' AND ff.concept IN ('Revenue', 'ProfitLossFromOperatingActivities'))
+         )
        ORDER BY ff.period_end DESC
        LIMIT 48`,
     )
@@ -156,8 +166,8 @@ const loadFundamentalSeries = (ticker: string, dbPath?: string): FundamentalPoin
   const byPeriod = new Map<string, FundamentalPoint>();
   for (const row of rows) {
     const current = byPeriod.get(row.period_end) ?? { periodEnd: row.period_end };
-    if (row.concept === "Revenues") current.revenue = toFiniteOrUndefined(row.value);
-    if (row.concept === "OperatingIncomeLoss")
+    if (REVENUE_CONCEPTS.includes(row.concept)) current.revenue = toFiniteOrUndefined(row.value);
+    if (OPERATING_INCOME_CONCEPTS.includes(row.concept))
       current.operatingIncome = toFiniteOrUndefined(row.value);
     byPeriod.set(row.period_end, current);
   }
