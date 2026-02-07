@@ -102,3 +102,5 @@ report_*.pdf
 research_notes.md
 sources.md
 sec-edgar-filings/
+data/
+*.db

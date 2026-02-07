@@ -325,6 +325,7 @@ const fallbackScoreForSourceTable = (sourceTable?: string): number => {
   if (sourceTable === "fundamental_facts") return 0.95;
   if (sourceTable === "filings") return 0.92;
   if (sourceTable === "earnings_expectations") return 0.86;
+  if (sourceTable === "external_documents") return 0.84;
   if (sourceTable === "transcripts") return 0.8;
   return 0.6;
 };
@@ -497,7 +498,13 @@ const loadTickerFallbackHits = (params: {
   const db = openResearchDb(params.dbPath);
   const ticker = params.ticker.trim().toUpperCase();
   const limitPerTable = Math.max(1, params.limitPerTable ?? 2);
-  const tables = ["filings", "transcripts", "earnings_expectations", "fundamental_facts"] as const;
+  const tables = [
+    "filings",
+    "transcripts",
+    "earnings_expectations",
+    "fundamental_facts",
+    "external_documents",
+  ] as const;
   const out: SearchHit[] = [];
 
   const loaders: Record<
@@ -592,6 +599,27 @@ const loadTickerFallbackHits = (params: {
         metadata?: string;
         citation_url?: string;
       }>,
+    external_documents: () =>
+      db
+        .prepare(
+          `SELECT c.id, c.text, c.metadata,
+                  (SELECT ed.url FROM external_documents ed WHERE ed.id=c.ref_id) AS citation_url
+           FROM chunks c
+           WHERE c.source_table='external_documents'
+             AND c.ref_id IN (
+               SELECT ed.id
+               FROM external_documents ed
+               WHERE ed.ticker=?
+             )
+           ORDER BY c.id DESC
+           LIMIT ?`,
+        )
+        .all(ticker, limitPerTable) as Array<{
+        id: number;
+        text: string;
+        metadata?: string;
+        citation_url?: string;
+      }>,
   };
 
   for (const table of tables) {
@@ -633,7 +661,13 @@ const selectDiverseEvidenceHits = (hits: SearchHit[], limit: number): SearchHit[
     return false;
   };
 
-  for (const table of ["filings", "transcripts", "fundamental_facts", "earnings_expectations"]) {
+  for (const table of [
+    "filings",
+    "transcripts",
+    "fundamental_facts",
+    "earnings_expectations",
+    "external_documents",
+  ]) {
     if (selected.length >= target) break;
     tryPick((hit) => hit.sourceTable === table);
   }

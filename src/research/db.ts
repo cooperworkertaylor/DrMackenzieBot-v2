@@ -675,6 +675,24 @@ const migrate = (db: ResearchDb) => {
       unique (entity_id, fact_hash)
     );
 
+    create table if not exists external_documents (
+      id integer primary key,
+      source_type text not null default 'manual',
+      provider text not null default 'other',
+      external_id text not null default '',
+      sender text not null default '',
+      title text not null default '',
+      subject text not null default '',
+      url text not null default '',
+      ticker text not null default '',
+      published_at text not null default '',
+      received_at text not null default '',
+      content text not null default '',
+      content_hash text not null unique,
+      metadata text not null default '{}',
+      fetched_at integer not null
+    );
+
     create table if not exists chunks (
       id integer primary key,
       source_table text not null,
@@ -758,6 +776,15 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_catalyst_outcomes_catalyst
       on catalyst_outcomes (catalyst_id);
+
+    create index if not exists idx_external_documents_source_fetched
+      on external_documents (source_type, fetched_at desc);
+
+    create index if not exists idx_external_documents_provider_fetched
+      on external_documents (provider, fetched_at desc);
+
+    create index if not exists idx_external_documents_ticker_fetched
+      on external_documents (ticker, fetched_at desc);
 
     create index if not exists idx_thesis_forecasts_resolution
       on thesis_forecasts (ticker, resolved, created_at);

@@ -40,6 +40,11 @@ import {
   type ExecutionTraceStepInput,
 } from "../research/execution-trace.js";
 import {
+  computeWeeklyNewsletterDigest,
+  ingestExternalResearchDocument,
+  renderWeeklyNewsletterDigestMarkdown,
+} from "../research/external-research.js";
+import {
   ingestFilings,
   ingestExpectations,
   ingestFundamentals,
@@ -127,6 +132,14 @@ const parseCsvListOption = (value: string): string[] =>
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+
+const parseSourceTypeOption = (value?: string) => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "email_research" || normalized === "newsletter" || normalized === "manual") {
+    return normalized;
+  }
+  throw new Error(`Invalid source type: ${value}`);
+};
 
 const parseSourceMixOption = (value: string): Record<string, number> => {
   const out: Record<string, number> = {};
@@ -575,6 +588,91 @@ export function registerResearchCli(program: Command) {
           dbPath: opts.db as string,
         });
         defaultRuntime.log(`Transcript ingested (${res.chunks} chunks)`);
+      });
+    });
+
+  research
+    .command("ingest-external")
+    .description("Ingest external research text into research DB for retrieval/memos")
+    .requiredOption("--title <text>", "Document title")
+    .option("--content <text>", "Document content")
+    .option("--content-file <path>", "Path to content file")
+    .option("--subject <text>", "Original subject line")
+    .option("--source-type <kind>", "email_research|newsletter|manual", "manual")
+    .option("--provider <name>", "Provider tag (substack|stratechery|diff|other)", "other")
+    .option("--sender <value>", "Sender/author email")
+    .option("--external-id <id>", "External message/document id")
+    .option("--url <url>", "Source URL")
+    .option("--ticker <symbol>", "Ticker tag (optional)")
+    .option("--published-at <iso>", "Published timestamp (ISO)")
+    .option("--received-at <iso>", "Received timestamp (ISO)")
+    .option("--tags <csv>", "Comma-separated tags")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const contentInline = (opts.content as string | undefined)?.trim();
+        const contentFile = (opts["contentFile"] as string | undefined)?.trim();
+        let content = contentInline ?? "";
+        if (!content && contentFile) {
+          content = await fs.readFile(path.resolve(contentFile), "utf8");
+          content = content.trim();
+        }
+        if (!content) {
+          throw new Error("Provide --content or --content-file");
+        }
+        const result = ingestExternalResearchDocument({
+          sourceType: parseSourceTypeOption(opts["sourceType"] as string),
+          provider: opts.provider as string,
+          sender: opts.sender as string | undefined,
+          externalId: opts["externalId"] as string | undefined,
+          title: opts.title as string,
+          subject: opts.subject as string | undefined,
+          content,
+          url: opts.url as string | undefined,
+          ticker: opts.ticker as string | undefined,
+          publishedAt: opts["publishedAt"] as string | undefined,
+          receivedAt: opts["receivedAt"] as string | undefined,
+          tags: parseCsvListOption((opts.tags as string | undefined) ?? ""),
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `external_ingest id=${result.id} source_type=${result.sourceType} provider=${result.provider} chunks=${result.chunks} title="${result.title}"`,
+        );
+      });
+    });
+
+  research
+    .command("newsletter-summary")
+    .description(
+      "Generate weekly Substack/Stratechery/The Diff digest with read-in-full recommendations",
+    )
+    .option("--lookback-days <n>", "Lookback window in days", "7")
+    .option("--limit <n>", "Max documents to evaluate", "80")
+    .option("--providers <csv>", "Provider filter (substack,stratechery,diff,other)")
+    .option("--out <path>", "Write digest markdown to file")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const digest = computeWeeklyNewsletterDigest({
+          dbPath: opts.db as string,
+          lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 7,
+          limit: parseOptionalNumber(opts.limit) ?? 80,
+          providers:
+            typeof opts.providers === "string" && opts.providers.trim()
+              ? parseCsvListOption(opts.providers as string)
+              : undefined,
+        });
+        const markdown = renderWeeklyNewsletterDigestMarkdown(digest);
+        if (opts.out) {
+          const outPath = path.resolve(opts.out as string);
+          await fs.writeFile(outPath, `${markdown}\n`, "utf8");
+          defaultRuntime.log(`Digest written to ${outPath}`);
+        } else {
+          defaultRuntime.log(markdown);
+        }
+        defaultRuntime.log(
+          `newsletter_digest total=${digest.totalDocs} read_in_full=${digest.readInFull.length} quick_scan=${digest.quickScan.length} lookback_days=${digest.lookbackDays}`,
+        );
       });
     });
 

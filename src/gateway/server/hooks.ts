@@ -8,6 +8,11 @@ import { resolveMainSessionKeyFromConfig } from "../../config/sessions.js";
 import { runCronIsolatedAgentTurn } from "../../cron/isolated-agent.js";
 import { requestHeartbeatNow } from "../../infra/heartbeat-wake.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
+import {
+  buildResearchCandidateFromGmailHook,
+  ingestExternalResearchDocument,
+  parseCsvLower,
+} from "../../research/external-research.js";
 import { createHooksRequestHandler } from "../server-http.js";
 
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
@@ -44,6 +49,59 @@ export function createGatewayHooksRequestHandler(params: {
   }) => {
     const sessionKey = value.sessionKey.trim() ? value.sessionKey.trim() : `hook:${randomUUID()}`;
     const mainSessionKey = resolveMainSessionKeyFromConfig();
+    const runId = randomUUID();
+    const skipAgentForResearchIngest = (() => {
+      const raw = process.env.OPENCLAW_RESEARCH_EMAIL_INGEST_SKIP_AGENT?.trim().toLowerCase();
+      if (!raw) return true;
+      if (["1", "true", "yes", "y"].includes(raw)) return true;
+      if (["0", "false", "no", "n"].includes(raw)) return false;
+      return true;
+    })();
+    const researchCandidate = buildResearchCandidateFromGmailHook({
+      sessionKey,
+      message: value.message,
+      subjectPrefix: process.env.OPENCLAW_RESEARCH_EMAIL_SUBJECT_PREFIX,
+      allowedSenders: parseCsvLower(process.env.OPENCLAW_RESEARCH_EMAIL_ALLOW_SENDERS),
+    });
+    if (researchCandidate) {
+      void (async () => {
+        try {
+          const ingestResult = ingestExternalResearchDocument({
+            sourceType: researchCandidate.sourceType,
+            provider: researchCandidate.provider,
+            externalId: researchCandidate.externalId,
+            sender: researchCandidate.sender,
+            title: researchCandidate.title,
+            subject: researchCandidate.subject,
+            content: researchCandidate.content,
+            url: researchCandidate.url,
+            ticker: researchCandidate.ticker,
+            tags: researchCandidate.tags,
+          });
+          enqueueSystemEvent(
+            `Research ingestion: ${ingestResult.sourceType} provider=${ingestResult.provider} title="${ingestResult.title}" chunks=${ingestResult.chunks}`,
+            {
+              sessionKey: mainSessionKey,
+            },
+          );
+          if (value.wakeMode === "now") {
+            requestHeartbeatNow({ reason: "hook:research-ingest" });
+          }
+        } catch (err) {
+          logHooks.warn(`research hook ingest failed: ${String(err)}`);
+          enqueueSystemEvent(`Research ingestion failed: ${String(err)}`, {
+            sessionKey: mainSessionKey,
+          });
+          if (value.wakeMode === "now") {
+            requestHeartbeatNow({ reason: "hook:research-ingest:error" });
+          }
+        }
+      })();
+      if (skipAgentForResearchIngest) {
+        return runId;
+      }
+    }
+
     const jobId = randomUUID();
     const now = Date.now();
     const job: CronJob = {
@@ -69,7 +127,6 @@ export function createGatewayHooksRequestHandler(params: {
       state: { nextRunAtMs: now },
     };
 
-    const runId = randomUUID();
     void (async () => {
       try {
         const cfg = loadConfig();

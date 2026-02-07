@@ -163,11 +163,13 @@ const sourceQualityScore = (row: SearchRow, source: "research" | "code"): number
       ? 1
       : table === "filings"
         ? 0.95
-        : table === "transcripts"
-          ? 0.78
-          : table === "earnings_expectations"
-            ? 0.85
-            : 0.6;
+        : table === "external_documents"
+          ? 0.86
+          : table === "transcripts"
+            ? 0.78
+            : table === "earnings_expectations"
+              ? 0.85
+              : 0.6;
   const citationBonus = row.citation_url ? 0.03 : 0;
   return clamp01(base + citationBonus);
 };
@@ -413,6 +415,7 @@ const fetchCandidates = (params: {
         WHEN c.source_table='transcripts' THEN (SELECT url FROM transcripts WHERE id=c.ref_id)
         WHEN c.source_table='fundamental_facts' THEN (SELECT source_url FROM fundamental_facts WHERE id=c.ref_id)
         WHEN c.source_table='earnings_expectations' THEN (SELECT source_url FROM earnings_expectations WHERE id=c.ref_id)
+        WHEN c.source_table='external_documents' THEN (SELECT url FROM external_documents WHERE id=c.ref_id)
         ELSE NULL
       END AS citation_url
      FROM research_vectors v
@@ -436,6 +439,10 @@ const fetchCandidates = (params: {
           (c.source_table='earnings_expectations' AND c.ref_id IN (
             SELECT ee.id FROM earnings_expectations ee JOIN instruments i ON i.id=ee.instrument_id WHERE i.ticker=?
           ))
+          OR
+          (c.source_table='external_documents' AND c.ref_id IN (
+            SELECT ed.id FROM external_documents ed WHERE ed.ticker=?
+          ))
         )`
           : ""
       }
@@ -443,7 +450,7 @@ const fetchCandidates = (params: {
   return db
     .prepare(sql)
     .all(
-      ...(ticker ? [ticker, ticker, ticker, ticker, candidateLimit] : [candidateLimit]),
+      ...(ticker ? [ticker, ticker, ticker, ticker, ticker, candidateLimit] : [candidateLimit]),
     ) as SearchRow[];
 };
 
