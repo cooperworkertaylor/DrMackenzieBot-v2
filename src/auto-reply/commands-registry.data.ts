@@ -525,6 +525,90 @@ function buildChatCommands(): ChatCommandDefinition[] {
       category: "options",
     }),
     defineChatCommand({
+      key: "icmemo",
+      nativeName: "icmemo",
+      description: "Build an institutional company memo template.",
+      textAlias: "/icmemo",
+      acceptsArgs: true,
+      category: "tools",
+      args: [
+        {
+          name: "ticker",
+          description: "Ticker symbol",
+          type: "string",
+        },
+        {
+          name: "hypothesis",
+          description: "Optional hypothesis",
+          type: "string",
+          captureRemaining: true,
+        },
+      ],
+    }),
+    defineChatCommand({
+      key: "ictheme",
+      nativeName: "ictheme",
+      description: "Build an institutional theme memo template.",
+      textAlias: "/ictheme",
+      acceptsArgs: true,
+      category: "tools",
+      args: [
+        {
+          name: "theme",
+          description: "Theme name",
+          type: "string",
+        },
+        {
+          name: "hypothesis",
+          description: "Optional hypothesis",
+          type: "string",
+          captureRemaining: true,
+        },
+      ],
+    }),
+    defineChatCommand({
+      key: "icsector",
+      nativeName: "icsector",
+      description: "Build an institutional sector memo template.",
+      textAlias: "/icsector",
+      acceptsArgs: true,
+      category: "tools",
+      args: [
+        {
+          name: "sector",
+          description: "Sector name",
+          type: "string",
+        },
+        {
+          name: "hypothesis",
+          description: "Optional hypothesis",
+          type: "string",
+          captureRemaining: true,
+        },
+      ],
+    }),
+    defineChatCommand({
+      key: "icexhibit",
+      nativeName: "icexhibit",
+      description: "Build a SEC/XBRL exhibits request template.",
+      textAlias: "/icexhibit",
+      acceptsArgs: true,
+      category: "tools",
+      args: [
+        {
+          name: "ticker",
+          description: "Ticker symbol",
+          type: "string",
+        },
+        {
+          name: "focus",
+          description: "Optional focus areas",
+          type: "string",
+          captureRemaining: true,
+        },
+      ],
+    }),
+    defineChatCommand({
       key: "queue",
       nativeName: "queue",
       description: "Adjust queue settings.",

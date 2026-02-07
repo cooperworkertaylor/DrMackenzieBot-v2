@@ -21,6 +21,7 @@ import {
 } from "./commands-info.js";
 import { handleModelsCommand } from "./commands-models.js";
 import { handlePluginCommand } from "./commands-plugin.js";
+import { handleResearchShortcutCommands } from "./commands-research-shortcuts.js";
 import {
   handleAbortTrigger,
   handleActivationCommand,
@@ -53,6 +54,7 @@ export async function handleCommands(params: HandleCommandsParams): Promise<Comm
       handleApproveCommand,
       handleContextCommand,
       handleWhoamiCommand,
+      handleResearchShortcutCommands,
       handleSubagentsCommand,
       handleConfigCommand,
       handleDebugCommand,
