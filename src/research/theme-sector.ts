@@ -1879,6 +1879,75 @@ const bootstrapThemeMembership = (params: {
   return { membershipRows, bootstrapTickers, resolvedVersion };
 };
 
+const ensureThemeRegistryFromTickers = (params: {
+  theme: string;
+  tickers: string[];
+  preferredVersion?: number;
+  fallbackVersion?: number;
+  minMembershipScore?: number;
+  dbPath?: string;
+}): number | undefined => {
+  const normalizedTickers = Array.from(
+    new Set(params.tickers.map(normalizeTicker).filter(Boolean)),
+  );
+  if (!normalizedTickers.length) return params.fallbackVersion;
+  const existing = resolveThemeDefinitionForReport({
+    theme: params.theme,
+    preferredVersion: params.preferredVersion,
+    fallbackVersion: params.fallbackVersion,
+    dbPath: params.dbPath,
+  });
+  const fallbackIncludeKeywords = deriveThemeBootstrapTerms(params.theme)
+    .filter((term) => term.length >= 3)
+    .slice(0, 12);
+  const mergedAllowlist = Array.from(
+    new Set([...(existing?.rules.tickerAllowlist ?? []), ...normalizedTickers]),
+  ).slice(0, 400);
+  const resolvedMinScore = clamp(
+    typeof params.minMembershipScore === "number"
+      ? params.minMembershipScore
+      : (existing?.rules.minMembershipScore ?? 0.52),
+    0.2,
+    0.95,
+  );
+  const definition = upsertThemeDefinition({
+    theme: params.theme,
+    version: existing?.version,
+    displayName: existing?.displayName || humanizeThemeLabel(params.theme),
+    description:
+      existing?.description ||
+      `Auto-generated from first report ticker universe (${new Date().toISOString()}).`,
+    parentTheme: existing?.parentThemeKey || undefined,
+    benchmark: existing?.benchmark || undefined,
+    rules: {
+      includeKeywords:
+        existing?.rules.includeKeywords.length && existing.rules.includeKeywords.length > 0
+          ? existing.rules.includeKeywords
+          : fallbackIncludeKeywords,
+      excludeKeywords: existing?.rules.excludeKeywords ?? [],
+      requiredSectors: existing?.rules.requiredSectors ?? [],
+      excludedSectors: existing?.rules.excludedSectors ?? [],
+      requiredIndustries: existing?.rules.requiredIndustries ?? [],
+      excludedIndustries: existing?.rules.excludedIndustries ?? [],
+      tickerAllowlist: mergedAllowlist,
+      tickerBlocklist: existing?.rules.tickerBlocklist ?? [],
+      minMembershipScore: resolvedMinScore,
+    },
+    activate: true,
+    status: "active",
+    dbPath: params.dbPath,
+  });
+  refreshThemeMembership({
+    theme: params.theme,
+    version: definition.version,
+    tickers: normalizedTickers,
+    minMembershipScore: resolvedMinScore,
+    source: "auto_first_report_tickers",
+    dbPath: params.dbPath,
+  });
+  return definition.version;
+};
+
 const computeThemeBenchmarkRelative = (params: {
   rows: CrossSectionConstituentInternal[];
   benchmarkTicker: string;
@@ -2168,6 +2237,20 @@ export const computeThemeResearch = (params: {
         typeof resolvedThemeVersion === "number"
           ? resolvedThemeVersion
           : membershipRows[0]?.themeVersion;
+    }
+  }
+  if (!usedThemeRegistry && normalizedTickers.length) {
+    const autoRegisteredVersion = ensureThemeRegistryFromTickers({
+      theme,
+      tickers: normalizedTickers,
+      preferredVersion: params.themeVersion,
+      fallbackVersion: resolvedThemeVersion,
+      minMembershipScore: params.minMembershipScore,
+      dbPath: params.dbPath,
+    });
+    if (typeof autoRegisteredVersion === "number") {
+      resolvedThemeVersion = autoRegisteredVersion;
+      usedThemeRegistry = true;
     }
   }
   const resolvedThemeDefinition = resolveThemeDefinitionForReport({

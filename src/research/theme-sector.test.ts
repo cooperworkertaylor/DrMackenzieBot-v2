@@ -343,4 +343,51 @@ describe("theme and sector research", () => {
     expect(result.themeVersion).toBeGreaterThanOrEqual(1);
     expect(result.usedThemeRegistry).toBe(true);
   });
+
+  it("auto-registers theme membership from explicit tickers on first report", () => {
+    const dbPath = testDbPath("theme-explicit-tickers");
+    const dates = generateDates(260, "2024-01-01");
+    seedTicker({
+      dbPath,
+      ticker: "NVDA",
+      name: "NVIDIA Corp",
+      sector: "Technology",
+      industry: "Semiconductors",
+      dates,
+      basePrice: 100,
+      drift: 0.0014,
+      phase: 7,
+    });
+    seedTicker({
+      dbPath,
+      ticker: "MSFT",
+      name: "Microsoft Corp",
+      sector: "Technology",
+      industry: "Software",
+      dates,
+      basePrice: 90,
+      drift: 0.001,
+      phase: 5,
+    });
+    seedMacroFactors({ dbPath, dates });
+
+    const first = computeThemeResearch({
+      theme: "ai-infrastructure",
+      tickers: ["NVDA", "MSFT"],
+      lookbackDays: 1200,
+      topN: 2,
+      dbPath,
+    });
+    expect(first.metrics.constituentCount).toBe(2);
+    expect(first.themeVersion).toBeGreaterThanOrEqual(1);
+
+    const second = computeThemeResearch({
+      theme: "ai-infrastructure",
+      lookbackDays: 1200,
+      topN: 2,
+      dbPath,
+    });
+    expect(second.usedThemeRegistry).toBe(true);
+    expect(second.metrics.constituentCount).toBeGreaterThanOrEqual(2);
+  });
 });
