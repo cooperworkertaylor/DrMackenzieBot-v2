@@ -21,6 +21,264 @@ import { searchResearch, type SearchHit } from "./vector-search.js";
 
 type MemoLine = MemoEvidenceClaim;
 type CitationRow = MemoCitation;
+type PriceActionHorizon = {
+  label: string;
+  horizonDays: number;
+  baseDate?: string;
+  baseClose?: number;
+  returnPct?: number;
+};
+type PriceActionSnapshot = {
+  latestDate?: string;
+  latestClose?: number;
+  annualizedVolatility30d?: number;
+  horizons: PriceActionHorizon[];
+};
+type FundamentalExhibitRow = {
+  periodEnd: string;
+  fiscalPeriod: string;
+  revenue?: number;
+  operatingIncome?: number;
+  operatingMargin?: number;
+};
+type ExpectationExhibitRow = {
+  fiscalDateEnding: string;
+  reportedDate?: string;
+  estimatedEps?: number;
+  reportedEps?: number;
+  surprisePct?: number;
+};
+
+const REVENUE_CONCEPTS = [
+  "Revenues",
+  "RevenueFromContractWithCustomerExcludingAssessedTax",
+  "SalesRevenueNet",
+  "Revenue",
+] as const;
+const OPERATING_INCOME_CONCEPTS = [
+  "OperatingIncomeLoss",
+  "ProfitLossFromOperatingActivities",
+] as const;
+
+const toFinite = (value: unknown): number | undefined => {
+  if (typeof value !== "number") return undefined;
+  return Number.isFinite(value) ? value : undefined;
+};
+
+const mean = (values: number[]): number =>
+  values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+
+const stdev = (values: number[]): number => {
+  if (values.length < 2) return 0;
+  const avg = mean(values);
+  const variance =
+    values.reduce((sum, value) => sum + Math.pow(value - avg, 2), 0) / (values.length - 1);
+  return Math.sqrt(Math.max(0, variance));
+};
+
+const toYmd = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+const formatPct = (value?: number, scale = 100, digits = 1): string =>
+  typeof value === "number" ? `${(value * scale).toFixed(digits)}%` : "n/a";
+
+const formatNum = (value?: number, digits = 2): string =>
+  typeof value === "number" ? value.toFixed(digits) : "n/a";
+
+const loadPriceActionSnapshot = (params: {
+  ticker: string;
+  dbPath?: string;
+}): PriceActionSnapshot => {
+  const db = openResearchDb(params.dbPath);
+  const ticker = params.ticker.trim().toUpperCase();
+  const rows = db
+    .prepare(
+      `SELECT p.date, p.close
+       FROM prices p
+       JOIN instruments i ON i.id=p.instrument_id
+       WHERE i.ticker=?
+       ORDER BY p.date DESC
+       LIMIT 1800`,
+    )
+    .all(ticker) as Array<{ date: string; close: number }>;
+  const latest = rows[0];
+  const latestClose = toFinite(latest?.close);
+  const horizons: PriceActionHorizon[] = [
+    { label: "1Y", horizonDays: 365 },
+    { label: "3Y", horizonDays: 365 * 3 },
+    { label: "5Y", horizonDays: 365 * 5 },
+  ];
+  if (typeof latestClose === "number") {
+    for (const horizon of horizons) {
+      const cutoff = toYmd(Date.now() - horizon.horizonDays * 86_400_000);
+      const base = rows.find((row) => row.date <= cutoff);
+      const baseClose = toFinite(base?.close);
+      horizon.baseDate = base?.date;
+      horizon.baseClose = baseClose;
+      horizon.returnPct =
+        typeof baseClose === "number" && baseClose > 0 ? latestClose / baseClose - 1 : undefined;
+    }
+  }
+  const dailyReturns = rows
+    .slice(0, 31)
+    .map((row, idx, arr) => {
+      const next = arr[idx + 1];
+      const currentClose = toFinite(row?.close);
+      const priorClose = toFinite(next?.close);
+      if (typeof currentClose !== "number" || typeof priorClose !== "number" || priorClose <= 0) {
+        return undefined;
+      }
+      return currentClose / priorClose - 1;
+    })
+    .filter((value): value is number => typeof value === "number");
+  const annualizedVolatility30d =
+    dailyReturns.length >= 10 ? stdev(dailyReturns) * Math.sqrt(252) : undefined;
+  return {
+    latestDate: latest?.date,
+    latestClose,
+    annualizedVolatility30d,
+    horizons,
+  };
+};
+
+const loadFundamentalExhibitRows = (params: {
+  ticker: string;
+  dbPath?: string;
+  limit?: number;
+}): FundamentalExhibitRow[] => {
+  const db = openResearchDb(params.dbPath);
+  const ticker = params.ticker.trim().toUpperCase();
+  const rows = db
+    .prepare(
+      `SELECT ff.period_end, ff.fiscal_period, ff.concept, ff.value
+       FROM fundamental_facts ff
+       JOIN instruments i ON i.id=ff.instrument_id
+       WHERE i.ticker=?
+         AND ff.is_latest=1
+         AND (
+           (ff.taxonomy='us-gaap' AND ff.concept IN ('Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'SalesRevenueNet', 'OperatingIncomeLoss'))
+           OR (ff.taxonomy='ifrs-full' AND ff.concept IN ('Revenue', 'ProfitLossFromOperatingActivities'))
+         )
+       ORDER BY ff.period_end DESC, ff.fiscal_period DESC, ff.filing_date DESC
+       LIMIT 240`,
+    )
+    .all(ticker) as Array<{
+    period_end: string;
+    fiscal_period: string;
+    concept: string;
+    value: number;
+  }>;
+  const byPeriod = new Map<string, FundamentalExhibitRow>();
+  for (const row of rows) {
+    const key = `${row.period_end}|${row.fiscal_period}`;
+    const current = byPeriod.get(key) ?? {
+      periodEnd: row.period_end,
+      fiscalPeriod: row.fiscal_period,
+    };
+    if (REVENUE_CONCEPTS.includes(row.concept as (typeof REVENUE_CONCEPTS)[number])) {
+      current.revenue = toFinite(row.value);
+    }
+    if (
+      OPERATING_INCOME_CONCEPTS.includes(row.concept as (typeof OPERATING_INCOME_CONCEPTS)[number])
+    ) {
+      current.operatingIncome = toFinite(row.value);
+    }
+    if (typeof current.revenue === "number" && typeof current.operatingIncome === "number") {
+      current.operatingMargin =
+        Math.abs(current.revenue) > 1e-9 ? current.operatingIncome / current.revenue : undefined;
+    }
+    byPeriod.set(key, current);
+  }
+  return Array.from(byPeriod.values())
+    .filter((row) => typeof row.revenue === "number")
+    .toSorted((a, b) =>
+      `${b.periodEnd}|${b.fiscalPeriod}`.localeCompare(`${a.periodEnd}|${a.fiscalPeriod}`),
+    )
+    .slice(0, Math.max(2, params.limit ?? 6));
+};
+
+const loadExpectationExhibitRows = (params: {
+  ticker: string;
+  dbPath?: string;
+  limit?: number;
+}): ExpectationExhibitRow[] => {
+  const db = openResearchDb(params.dbPath);
+  const ticker = params.ticker.trim().toUpperCase();
+  const rows = db
+    .prepare(
+      `SELECT fiscal_date_ending, reported_date, estimated_eps, reported_eps, surprise_pct
+       FROM earnings_expectations e
+       JOIN instruments i ON i.id=e.instrument_id
+       WHERE i.ticker=? AND e.period_type='quarterly'
+       ORDER BY CASE
+         WHEN reported_date <> '' THEN reported_date
+         ELSE fiscal_date_ending
+       END DESC
+       LIMIT ?`,
+    )
+    .all(ticker, Math.max(2, params.limit ?? 6)) as Array<{
+    fiscal_date_ending: string;
+    reported_date?: string;
+    estimated_eps?: number;
+    reported_eps?: number;
+    surprise_pct?: number;
+  }>;
+  return rows.map((row) => ({
+    fiscalDateEnding: row.fiscal_date_ending,
+    reportedDate: row.reported_date?.trim() ? row.reported_date : undefined,
+    estimatedEps: toFinite(row.estimated_eps),
+    reportedEps: toFinite(row.reported_eps),
+    surprisePct: toFinite(row.surprise_pct),
+  }));
+};
+
+const buildActionabilityPlan = (params: {
+  valuation: ValuationResult;
+  portfolio: PortfolioPlan;
+  portfolioDecision: ReturnType<typeof composePortfolioDecision>;
+  diagnostics: MemoDiagnostics;
+}) => {
+  const expectedUpside =
+    params.valuation.expectedUpsideWithCatalystsPct ?? params.valuation.expectedUpsidePct;
+  const entryTrigger =
+    typeof expectedUpside === "number"
+      ? expectedUpside >= 0
+        ? `Enter only when expected upside remains >= ${(expectedUpside * 100).toFixed(1)}% and no high-severity contradiction is active.`
+        : `Enter only as a tactical short when expected downside remains <= ${(expectedUpside * 100).toFixed(1)}% and contradiction count stays <= 1.`
+      : "Enter only after valuation refresh yields quantified expected upside/downside and scenario pricing.";
+  const sizingBands = [
+    `Pilot: ${(params.portfolio.recommendedWeightPct * 0.4).toFixed(2)}% weight, risk budget ${(params.portfolio.maxRiskBudgetPct * 0.4).toFixed(2)}%.`,
+    `Core: ${(params.portfolio.recommendedWeightPct * 0.7).toFixed(2)}% weight, risk budget ${(params.portfolio.maxRiskBudgetPct * 0.7).toFixed(2)}%.`,
+    `Full: ${params.portfolio.recommendedWeightPct.toFixed(2)}% weight, risk budget ${params.portfolio.maxRiskBudgetPct.toFixed(2)}% (only if debate passed and no unresolved high risks).`,
+  ];
+  const falsificationTop3 = Array.from(new Set(params.diagnostics.falsificationTriggers))
+    .slice(0, 3)
+    .map((trigger, idx) => `${idx + 1}. ${trigger}`);
+  while (falsificationTop3.length < 3) {
+    falsificationTop3.push(
+      `${falsificationTop3.length + 1}. Re-underwrite if decision score falls below ${Math.max(0.35, params.portfolioDecision.decisionScore - 0.2).toFixed(2)}.`,
+    );
+  }
+  return {
+    entryTrigger,
+    sizingBands,
+    riskLine: `Risk budget ${params.portfolio.maxRiskBudgetPct.toFixed(2)}% with hard stop-loss ${(params.portfolio.stopLossPct * 100).toFixed(1)}%.`,
+    falsificationTop3,
+  };
+};
+
+const buildDisagreementResolutions = (
+  researchCell: ReturnType<typeof runAdversarialResearchCell>,
+) => {
+  if (!researchCell.debate.majorDisagreements.length) {
+    return ["1. None material."];
+  }
+  const unresolved = researchCell.debate.unresolvedRisks;
+  return researchCell.debate.majorDisagreements.slice(0, 4).map((item, idx) => {
+    const linkedRisk = unresolved[idx] ?? unresolved[0];
+    const followUp = researchCell.debate.requiredFollowUps[idx] ?? researchCell.allocator.summary;
+    return `${idx + 1}. Disagreement: ${item} | Resolution path: ${followUp}${linkedRisk ? ` | Residual risk: ${linkedRisk}` : ""}`;
+  });
+};
 
 const extractHost = (url?: string): string | undefined => {
   if (!url?.trim()) return undefined;
@@ -197,6 +455,7 @@ export const generateMemoAsync = async (params: {
   const enforceInstitutionalGrade = params.enforceInstitutionalGrade ?? true;
   const minQualityScore = params.minQualityScore ?? 0.8;
   const requestedEvidence = params.maxEvidence ?? 12;
+  const minimumClaims = enforceInstitutionalGrade ? 7 : 4;
   const hits = await searchResearch({
     query: `${params.ticker} ${params.question}`,
     ticker: params.ticker,
@@ -209,14 +468,44 @@ export const generateMemoAsync = async (params: {
   }
 
   const lines: MemoLine[] = [];
-  const selectedHits = selectDiverseEvidenceHits(hits, Math.min(requestedEvidence, 12));
+  const selectedHits = selectDiverseEvidenceHits(
+    hits,
+    Math.min(28, Math.max(requestedEvidence, minimumClaims * 2)),
+  );
   const pairs = buildCitationPairs(selectedHits);
+  const usedPairKeys = new Set<string>();
   for (const [a, b] of pairs) {
     const text = [a?.text ?? "", b?.text ?? ""].join(" ").trim();
     if (!text) continue;
     const sentence = summarizeText(text, 220);
     const ids = [a?.id, b?.id].filter((n): n is number => typeof n === "number");
+    const key = ids.toSorted((x, y) => x - y).join(":");
+    if (ids.length < 2 || usedPairKeys.has(key)) continue;
+    usedPairKeys.add(key);
     lines.push({ claim: sentence, citationIds: ids });
+  }
+  if (lines.length < minimumClaims) {
+    const fallbackHits = hits.slice(0, Math.min(hits.length, minimumClaims * 6));
+    for (let i = 0; i < fallbackHits.length && lines.length < minimumClaims; i += 1) {
+      const a = fallbackHits[i];
+      const b = fallbackHits[(i + 1) % fallbackHits.length];
+      if (!a || !b || a.id === b.id) continue;
+      const ids = [a.id, b.id].toSorted((x, y) => x - y);
+      const key = ids.join(":");
+      if (usedPairKeys.has(key)) continue;
+      const text = `${a.text} ${b.text}`.trim();
+      if (!text) continue;
+      usedPairKeys.add(key);
+      lines.push({
+        claim: summarizeText(text, 220),
+        citationIds: ids,
+      });
+    }
+  }
+  if (enforceInstitutionalGrade && lines.length < minimumClaims) {
+    throw new Error(
+      `Institutional claim floor not met: generated ${lines.length} claims, required ${minimumClaims}.`,
+    );
   }
   if (lines.length < 2 || lines.some((l) => l.citationIds.length === 0)) {
     throw new Error("Citation enforcement failed: every claim must map to evidence");
@@ -304,6 +593,27 @@ export const generateMemoAsync = async (params: {
     variant,
     researchCell,
   });
+  const priceAction = loadPriceActionSnapshot({
+    ticker: params.ticker,
+    dbPath: params.dbPath,
+  });
+  const fundamentalExhibit = loadFundamentalExhibitRows({
+    ticker: params.ticker,
+    dbPath: params.dbPath,
+    limit: 6,
+  });
+  const expectationExhibit = loadExpectationExhibitRows({
+    ticker: params.ticker,
+    dbPath: params.dbPath,
+    limit: 6,
+  });
+  const actionabilityPlan = buildActionabilityPlan({
+    valuation,
+    portfolio,
+    portfolioDecision,
+    diagnostics,
+  });
+  const disagreementResolutions = buildDisagreementResolutions(researchCell);
 
   const memo = [
     `# Research Memo: ${params.ticker.toUpperCase()}`,
@@ -374,6 +684,46 @@ export const generateMemoAsync = async (params: {
       : ["- Market implied stance: insufficient-evidence"]),
     ...(valuation.notes.length ? valuation.notes.map((note) => `- Note: ${note}`) : []),
     ``,
+    `## Exhibits`,
+    `### Exhibit A: Scenario Pricing`,
+    `| Scenario | Probability | Revenue Growth | Operating Margin | WACC | Implied Price | Upside |`,
+    `|---|---:|---:|---:|---:|---:|---:|`,
+    ...valuation.scenarios.map(
+      (scenario) =>
+        `| ${scenario.name.toUpperCase()} | ${formatPct(scenario.probability)} | ${formatPct(scenario.revenueGrowth)} | ${formatPct(scenario.operatingMargin)} | ${formatPct(scenario.wacc)} | ${formatNum(scenario.impliedSharePrice)} | ${formatPct(scenario.upsidePct)} |`,
+    ),
+    ``,
+    `### Exhibit B: KPI Trend`,
+    `Fundamentals`,
+    `| Period | Fiscal | Revenue | Operating Income | Operating Margin |`,
+    `|---|---|---:|---:|---:|`,
+    ...(fundamentalExhibit.length
+      ? fundamentalExhibit.map(
+          (row) =>
+            `| ${row.periodEnd} | ${row.fiscalPeriod} | ${formatNum(row.revenue, 0)} | ${formatNum(row.operatingIncome, 0)} | ${formatPct(row.operatingMargin)} |`,
+        )
+      : ["| n/a | n/a | n/a | n/a | n/a |"]),
+    ``,
+    `Expectations`,
+    `| Fiscal Date | Reported Date | Est EPS | Reported EPS | Surprise % |`,
+    `|---|---|---:|---:|---:|`,
+    ...(expectationExhibit.length
+      ? expectationExhibit.map(
+          (row) =>
+            `| ${row.fiscalDateEnding} | ${row.reportedDate ?? "n/a"} | ${formatNum(row.estimatedEps, 3)} | ${formatNum(row.reportedEps, 3)} | ${formatPct(typeof row.surprisePct === "number" ? row.surprisePct / 100 : undefined)} |`,
+        )
+      : ["| n/a | n/a | n/a | n/a | n/a |"]),
+    ``,
+    `### Exhibit C: Price Action Summary`,
+    `- Latest close: ${formatNum(priceAction.latestClose)} (${priceAction.latestDate ?? "n/a"})`,
+    `- 30D annualized volatility: ${formatPct(priceAction.annualizedVolatility30d)}`,
+    `| Horizon | Base Date | Base Price | Return |`,
+    `|---|---|---:|---:|`,
+    ...priceAction.horizons.map(
+      (horizon) =>
+        `| ${horizon.label} | ${horizon.baseDate ?? "n/a"} | ${formatNum(horizon.baseClose)} | ${formatPct(horizon.returnPct)} |`,
+    ),
+    ``,
     `## Contradictions`,
     ...(diagnostics.contradictions.length
       ? diagnostics.contradictions.map(
@@ -404,6 +754,8 @@ export const generateMemoAsync = async (params: {
           .slice(0, 4)
           .map((item, index) => `  ${index + 1}. ${item}`)
       : ["  1. None material."]),
+    `- Disagreement resolutions:`,
+    ...disagreementResolutions.map((line) => `  ${line}`),
     `- Unresolved risks:`,
     ...(researchCell.debate.unresolvedRisks.length
       ? researchCell.debate.unresolvedRisks
@@ -417,6 +769,14 @@ export const generateMemoAsync = async (params: {
     ``,
     `## Falsification Triggers`,
     ...diagnostics.falsificationTriggers.map((trigger, index) => `${index + 1}. ${trigger}`),
+    ``,
+    `## Actionability Plan`,
+    `- Entry trigger: ${actionabilityPlan.entryTrigger}`,
+    `- Sizing bands:`,
+    ...actionabilityPlan.sizingBands.map((line, index) => `  ${index + 1}. ${line}`),
+    `- Risk controls: ${actionabilityPlan.riskLine}`,
+    `- Top falsification triggers:`,
+    ...actionabilityPlan.falsificationTop3.map((line) => `  ${line}`),
     ``,
     `## Portfolio Plan`,
     `- Stance: ${portfolio.stance}`,
