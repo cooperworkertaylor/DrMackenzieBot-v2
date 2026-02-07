@@ -2,6 +2,7 @@ const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
 const DEFAULT_OPENAI_MODEL = "text-embedding-3-large";
 const DEFAULT_HASH_DIMS = 256;
 const DEFAULT_OPENAI_BATCH_SIZE = 64;
+const DEFAULT_OPENAI_MAX_INPUT_TOKENS = 1800;
 
 export type ResearchEmbeddingProvider = {
   id: "openai" | "hash";
@@ -61,11 +62,60 @@ const chunk = <T>(items: T[], size: number): T[][] => {
   return out;
 };
 
+const tokenizeApprox = (text: string): string[] =>
+  text
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+const splitTextForEmbedding = (text: string, maxTokens: number): string[] => {
+  const tokens = tokenizeApprox(text);
+  if (tokens.length <= maxTokens) return [text];
+  const segments: string[] = [];
+  for (let i = 0; i < tokens.length; i += maxTokens) {
+    const part = tokens
+      .slice(i, i + maxTokens)
+      .join(" ")
+      .trim();
+    if (part) segments.push(part);
+  }
+  return segments.length > 0 ? segments : [text];
+};
+
 const parseOpenAiBatchSize = (): number => {
   const raw = process.env.RESEARCH_EMBED_BATCH_SIZE;
   const value = raw ? Number.parseInt(raw, 10) : DEFAULT_OPENAI_BATCH_SIZE;
   if (!Number.isFinite(value) || value <= 0) return DEFAULT_OPENAI_BATCH_SIZE;
   return Math.max(1, Math.min(2048, value));
+};
+
+const parseOpenAiMaxInputTokens = (): number => {
+  const raw = process.env.RESEARCH_EMBED_MAX_INPUT_TOKENS;
+  const value = raw ? Number.parseInt(raw, 10) : DEFAULT_OPENAI_MAX_INPUT_TOKENS;
+  if (!Number.isFinite(value) || value <= 256) return DEFAULT_OPENAI_MAX_INPUT_TOKENS;
+  return Math.max(256, Math.min(6000, value));
+};
+
+const averageVectors = (vectors: number[][], weights: number[]): number[] => {
+  if (!vectors.length) return [];
+  const dims = vectors[0]?.length ?? 0;
+  if (dims <= 0) return [];
+  const out = Array.from({ length: dims }, () => 0);
+  let totalWeight = 0;
+  for (let i = 0; i < vectors.length; i += 1) {
+    const vec = vectors[i] ?? [];
+    const weight = Math.max(1, Math.round(weights[i] ?? 1));
+    if (vec.length !== dims) continue;
+    totalWeight += weight;
+    for (let d = 0; d < dims; d += 1) {
+      out[d] = (out[d] ?? 0) + (vec[d] ?? 0) * weight;
+    }
+  }
+  if (totalWeight <= 0) return sanitizeVector(out);
+  for (let d = 0; d < dims; d += 1) {
+    out[d] = (out[d] ?? 0) / totalWeight;
+  }
+  return sanitizeVector(out);
 };
 
 const embedOpenAi = async (params: {
@@ -115,29 +165,53 @@ const createOpenAiProvider = async (
     throw new Error("OpenAI embeddings returned zero dimensions");
   }
   const batchSize = parseOpenAiBatchSize();
+  const maxInputTokens = parseOpenAiMaxInputTokens();
   return {
     id: "openai",
     model,
     dims,
-    embedQuery: async (text: string) =>
-      (
-        await embedOpenAi({
-          apiKey,
-          model,
-          input: [text],
-        })
-      )[0] ?? Array.from({ length: dims }, () => 0),
+    embedQuery: async (text: string) => {
+      const segments = splitTextForEmbedding(text, maxInputTokens);
+      const vectors = await embedOpenAi({
+        apiKey,
+        model,
+        input: segments,
+      });
+      if (vectors.length <= 1) return vectors[0] ?? Array.from({ length: dims }, () => 0);
+      const weights = segments.map((segment) => tokenizeApprox(segment).length);
+      return averageVectors(vectors, weights);
+    },
     embedBatch: async (texts: string[]) => {
       if (texts.length === 0) return [];
-      const batches = chunk(texts, batchSize);
-      const vectors: number[][] = [];
+      const expandedInputs: string[] = [];
+      const spans: Array<{ start: number; length: number; weights: number[] }> = [];
+      for (const text of texts) {
+        const segments = splitTextForEmbedding(text, maxInputTokens);
+        spans.push({
+          start: expandedInputs.length,
+          length: segments.length,
+          weights: segments.map((segment) => tokenizeApprox(segment).length),
+        });
+        expandedInputs.push(...segments);
+      }
+      const batches = chunk(expandedInputs, batchSize);
+      const expandedVectors: number[][] = [];
       for (const batch of batches) {
         const out = await embedOpenAi({
           apiKey,
           model,
           input: batch,
         });
-        vectors.push(...out);
+        expandedVectors.push(...out);
+      }
+      const vectors: number[][] = [];
+      for (const span of spans) {
+        if (span.length <= 1) {
+          vectors.push(expandedVectors[span.start] ?? Array.from({ length: dims }, () => 0));
+          continue;
+        }
+        const segmentVectors = expandedVectors.slice(span.start, span.start + span.length);
+        vectors.push(averageVectors(segmentVectors, span.weights));
       }
       return vectors;
     },
@@ -181,4 +255,9 @@ export const createResearchEmbeddingProvider = async (): Promise<EmbeddingProvid
     provider: createHashEmbeddingProvider(),
     warning: "OPENAI_API_KEY not set; using hash embeddings",
   };
+};
+
+export const __testOnly = {
+  splitTextForEmbedding,
+  averageVectors,
 };
