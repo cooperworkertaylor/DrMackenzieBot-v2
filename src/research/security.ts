@@ -85,18 +85,20 @@ export const runResearchSecurityAudit = (
       : "Provenance signing key is missing; events remain hash-chained but unsigned.",
   });
 
-  const apiKeyControls: Array<{ name: string; value?: string }> = [
-    { name: "ALPHA_VANTAGE_API_KEY", value: process.env.ALPHA_VANTAGE_API_KEY },
-    { name: "OPENAI_API_KEY", value: process.env.OPENAI_API_KEY },
-  ];
-  apiKeyControls.forEach((entry) => {
-    controls.push({
-      id: `secret_presence_${entry.name.toLowerCase()}`,
-      status: entry.value?.trim() ? "pass" : "warn",
-      detail: entry.value?.trim()
-        ? `${entry.name} is configured.`
-        : `${entry.name} is not set (feature paths may degrade or skip).`,
-    });
+  const massiveKey = process.env.MASSIVE_API_KEY?.trim() || process.env.POLYGON_API_KEY?.trim();
+  controls.push({
+    id: "secret_presence_massive_api_key",
+    status: massiveKey ? "pass" : "warn",
+    detail: massiveKey
+      ? "MASSIVE_API_KEY/POLYGON_API_KEY is configured."
+      : "MASSIVE_API_KEY (or POLYGON_API_KEY) is not set (price/expectation/macro ingest may skip).",
+  });
+  controls.push({
+    id: "secret_presence_openai_api_key",
+    status: process.env.OPENAI_API_KEY?.trim() ? "pass" : "warn",
+    detail: process.env.OPENAI_API_KEY?.trim()
+      ? "OPENAI_API_KEY is configured."
+      : "OPENAI_API_KEY is not set (embedding paths may degrade or skip).",
   });
 
   const passCount = controls.filter((control) => control.status === "pass").length;

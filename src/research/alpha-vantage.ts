@@ -1,42 +1,44 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { defaultRuntime } from "../runtime.js";
 
-const BASE = "https://www.alphavantage.co/query";
+const BASE = "https://api.polygon.io";
 
-type DailyResponse = {
-  "Time Series (Daily)"?: Record<
-    string,
-    {
-      "1. open": string;
-      "2. high": string;
-      "3. low": string;
-      "4. close": string;
-      "6. volume"?: string;
-      "5. adjusted close"?: string;
-      "7. dividend amount"?: string;
-      "8. split coefficient"?: string;
-    }
-  >;
-  Note?: string;
-  Information?: string;
+type AggregateResponse = {
+  status?: string;
+  error?: string;
+  message?: string;
+  results?: Array<{
+    t?: number;
+    o?: number;
+    h?: number;
+    l?: number;
+    c?: number;
+    v?: number;
+  }>;
 };
 
-type EarningsResponse = {
-  annualEarnings?: Array<{
-    fiscalDateEnding?: string;
-    reportedEPS?: string;
-  }>;
-  quarterlyEarnings?: Array<{
-    fiscalDateEnding?: string;
-    reportedDate?: string;
-    reportedEPS?: string;
-    estimatedEPS?: string;
-    surprise?: string;
-    surprisePercentage?: string;
-    reportTime?: string;
-  }>;
-  Note?: string;
-  Information?: string;
+type FinancialStatementValue = {
+  value?: number | string;
+};
+
+type FinancialsResult = {
+  timeframe?: string;
+  filing_date?: string;
+  acceptance_datetime?: string;
+  end_date?: string;
+  source_filing_url?: string;
+  source_filing_file_url?: string;
+  financials?: {
+    income_statement?: Record<string, FinancialStatementValue | undefined>;
+  };
+};
+
+type FinancialsResponse = {
+  status?: string;
+  error?: string;
+  message?: string;
+  next_url?: string;
+  results?: FinancialsResult[];
 };
 
 export type PriceRow = {
@@ -70,41 +72,122 @@ const toNumber = (raw?: string): number | undefined => {
   return Number.isFinite(value) ? value : undefined;
 };
 
+const toYmd = (epochMs?: number): string | undefined => {
+  if (typeof epochMs !== "number" || !Number.isFinite(epochMs)) return undefined;
+  return new Date(epochMs).toISOString().slice(0, 10);
+};
+
+const parseValue = (value: unknown): number | undefined => {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value === "string") return toNumber(value);
+  return undefined;
+};
+
+const parseEps = (row: FinancialsResult): number | undefined => {
+  const income = row.financials?.income_statement;
+  if (!income) return undefined;
+  const candidates = [
+    income.diluted_earnings_per_share?.value,
+    income.basic_earnings_per_share?.value,
+    income.earnings_per_share_diluted?.value,
+    income.earnings_per_share_basic?.value,
+    income.net_income_loss_available_to_common_stockholders_basic?.value,
+  ];
+  for (const candidate of candidates) {
+    const parsed = parseValue(candidate);
+    if (typeof parsed === "number") return parsed;
+  }
+  return undefined;
+};
+
+const resolveMassiveApiKey = (provided?: string): string | undefined => {
+  const key =
+    provided?.trim() || process.env.MASSIVE_API_KEY?.trim() || process.env.POLYGON_API_KEY?.trim();
+  return key ? key : undefined;
+};
+
+const appendApiKey = (url: string, apiKey: string): string => {
+  const parsed = new URL(url);
+  if (!parsed.searchParams.has("apiKey")) {
+    parsed.searchParams.set("apiKey", apiKey);
+  }
+  return parsed.toString();
+};
+
+const fetchJsonWithRetries = async <T>(
+  url: string,
+  opts: { retries: number; pauseMs: number },
+): Promise<T> => {
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt <= opts.retries; attempt += 1) {
+    try {
+      const res = await fetch(url);
+      if (res.status === 429 || res.status === 503) {
+        if (attempt >= opts.retries) {
+          throw new Error(`Massive throttled (HTTP ${res.status})`);
+        }
+        await delay(opts.pauseMs);
+        continue;
+      }
+      if (!res.ok) {
+        throw new Error(`Massive HTTP ${res.status}`);
+      }
+      const json = (await res.json()) as T;
+      return json;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt >= opts.retries) break;
+      await delay(opts.pauseMs);
+    }
+  }
+  throw lastError ?? new Error("Massive request failed");
+};
+
 export const fetchAlphaVantageDaily = async (
   ticker: string,
   apiKey: string,
   { retries = 3, pauseMs = 15000 }: { retries?: number; pauseMs?: number } = {},
 ): Promise<PriceRow[]> => {
-  const params = new URLSearchParams({
-    function: "TIME_SERIES_DAILY_ADJUSTED",
-    symbol: ticker,
-    outputsize: "full",
-    apikey: apiKey,
-  });
-  const url = `${BASE}?${params.toString()}`;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`AlphaVantage HTTP ${res.status}`);
-    const body = (await res.json()) as DailyResponse;
-    if (body.Information || body.Note) {
-      if (attempt >= retries) {
-        throw new Error(`AlphaVantage throttled: ${body.Information ?? body.Note}`);
-      }
-      await delay(pauseMs);
-      continue;
-    }
-    const series = body["Time Series (Daily)"] ?? {};
-    return Object.entries(series).map(([date, row]) => ({
-      date,
-      open: Number(row["1. open"]),
-      high: Number(row["2. high"]),
-      low: Number(row["3. low"]),
-      close: Number(row["5. adjusted close"] ?? row["4. close"]),
-      volume: Number(row["6. volume"] ?? 0),
-      source: "alphavantage",
-    }));
+  const resolved = resolveMassiveApiKey(apiKey);
+  if (!resolved) throw new Error("Missing MASSIVE_API_KEY");
+  const endDate = new Date().toISOString().slice(0, 10);
+  const startDate = "2000-01-01";
+  const url = `${BASE}/v2/aggs/ticker/${encodeURIComponent(
+    ticker.trim().toUpperCase(),
+  )}/range/1/day/${startDate}/${endDate}?adjusted=true&sort=asc&limit=50000&apiKey=${encodeURIComponent(resolved)}`;
+  const body = await fetchJsonWithRetries<AggregateResponse>(url, { retries, pauseMs });
+  if (body.error) throw new Error(`Massive error: ${body.error}`);
+  if (body.message && /error|invalid|not found|permission/i.test(body.message)) {
+    throw new Error(`Massive error: ${body.message}`);
   }
-  throw new Error("AlphaVantage: unexpected retry exhaustion");
+  return (body.results ?? [])
+    .map((row) => {
+      const date = toYmd(row.t);
+      const open = parseValue(row.o);
+      const high = parseValue(row.h);
+      const low = parseValue(row.l);
+      const close = parseValue(row.c);
+      const volume = parseValue(row.v) ?? 0;
+      if (
+        !date ||
+        typeof open !== "number" ||
+        typeof high !== "number" ||
+        typeof low !== "number" ||
+        typeof close !== "number"
+      ) {
+        return undefined;
+      }
+      return {
+        date,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        source: "massive",
+      } satisfies PriceRow;
+    })
+    .filter((row): row is PriceRow => Boolean(row));
 };
 
 export const fetchAlphaVantageEarnings = async (
@@ -112,57 +195,65 @@ export const fetchAlphaVantageEarnings = async (
   apiKey: string,
   { retries = 3, pauseMs = 15000 }: { retries?: number; pauseMs?: number } = {},
 ): Promise<EarningsRow[]> => {
-  const params = new URLSearchParams({
-    function: "EARNINGS",
-    symbol: ticker,
-    apikey: apiKey,
-  });
-  const url = `${BASE}?${params.toString()}`;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`AlphaVantage HTTP ${res.status}`);
-    const body = (await res.json()) as EarningsResponse;
-    if (body.Information || body.Note) {
-      if (attempt >= retries) {
-        throw new Error(`AlphaVantage throttled: ${body.Information ?? body.Note}`);
-      }
-      await delay(pauseMs);
-      continue;
+  const resolved = resolveMassiveApiKey(apiKey);
+  if (!resolved) throw new Error("Missing MASSIVE_API_KEY");
+  const tickerNorm = ticker.trim().toUpperCase();
+
+  const fetchFinancials = async (
+    timeframe: "quarterly" | "annual",
+    maxPages = 8,
+  ): Promise<FinancialsResult[]> => {
+    let url = `${BASE}/vX/reference/financials?ticker=${encodeURIComponent(
+      tickerNorm,
+    )}&timeframe=${timeframe}&order=desc&sort=filing_date&limit=100&apiKey=${encodeURIComponent(resolved)}`;
+    const out: FinancialsResult[] = [];
+    let page = 0;
+    while (url && page < maxPages) {
+      const body = await fetchJsonWithRetries<FinancialsResponse>(url, { retries, pauseMs });
+      if (body.error) throw new Error(`Massive error: ${body.error}`);
+      out.push(...(body.results ?? []));
+      const next = body.next_url?.trim();
+      url = next ? appendApiKey(next, resolved) : "";
+      page += 1;
     }
-    const sourceUrl = "https://www.alphavantage.co/documentation/#earnings";
-    const annual: EarningsRow[] = (body.annualEarnings ?? [])
-      .map((row) => ({
-        periodType: "annual" as const,
-        fiscalDateEnding: row.fiscalDateEnding?.trim() ?? "",
-        reportedEps: toNumber(row.reportedEPS),
-        source: "alphavantage",
-        sourceUrl,
-      }))
-      .filter((row) => Boolean(row.fiscalDateEnding));
-    const quarterly: EarningsRow[] = (body.quarterlyEarnings ?? [])
-      .map((row) => ({
-        periodType: "quarterly" as const,
-        fiscalDateEnding: row.fiscalDateEnding?.trim() ?? "",
-        reportedDate: row.reportedDate?.trim() || undefined,
-        reportedEps: toNumber(row.reportedEPS),
-        estimatedEps: toNumber(row.estimatedEPS),
-        surprise: toNumber(row.surprise),
-        surprisePct: toNumber(row.surprisePercentage),
-        reportTime: row.reportTime?.trim() || undefined,
-        source: "alphavantage",
-        sourceUrl,
-      }))
-      .filter((row) => Boolean(row.fiscalDateEnding));
-    return [...annual, ...quarterly];
+    return out;
+  };
+
+  const sourceUrl = "https://massive.com/docs/rest/stocks/fundamentals/financials";
+  const mapRows = (periodType: "quarterly" | "annual", rows: FinancialsResult[]): EarningsRow[] => {
+    const out: EarningsRow[] = [];
+    for (const row of rows) {
+      const fiscalDateEnding = row.end_date?.trim() ?? "";
+      if (!fiscalDateEnding) continue;
+      const reportedDate = row.filing_date?.trim() || row.acceptance_datetime?.slice(0, 10);
+      const reportedEps = parseEps(row);
+      out.push({
+        periodType,
+        fiscalDateEnding,
+        ...(reportedDate ? { reportedDate } : {}),
+        ...(typeof reportedEps === "number" ? { reportedEps } : {}),
+        source: "massive",
+        sourceUrl: row.source_filing_url?.trim() || row.source_filing_file_url?.trim() || sourceUrl,
+      });
+    }
+    return out;
+  };
+
+  const quarterly = mapRows("quarterly", await fetchFinancials("quarterly"));
+  const annual = mapRows("annual", await fetchFinancials("annual"));
+  const deduped = new Map<string, EarningsRow>();
+  for (const row of [...quarterly, ...annual]) {
+    const key = `${row.periodType}|${row.fiscalDateEnding}|${row.reportedDate ?? ""}`;
+    if (!deduped.has(key)) deduped.set(key, row);
   }
-  throw new Error("AlphaVantage: unexpected retry exhaustion");
+  return Array.from(deduped.values());
 };
 
 export const ensureApiKey = (): string => {
-  const key = process.env.ALPHA_VANTAGE_API_KEY;
+  const key = resolveMassiveApiKey();
   if (!key) {
-    defaultRuntime.error("Set ALPHA_VANTAGE_API_KEY to fetch prices.");
-    throw new Error("Missing ALPHA_VANTAGE_API_KEY");
+    defaultRuntime.error("Set MASSIVE_API_KEY (or POLYGON_API_KEY) to fetch prices via Massive.");
+    throw new Error("Missing MASSIVE_API_KEY");
   }
   return key.trim();
 };

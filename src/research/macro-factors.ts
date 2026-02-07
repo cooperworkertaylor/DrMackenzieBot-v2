@@ -26,8 +26,8 @@ export type MacroIngestResult = {
   factors: MacroIngestFactorResult[];
 };
 
-const DEFAULT_SOURCE = "alphavantage_macro_proxy";
-const DEFAULT_SOURCE_URL = "https://www.alphavantage.co/documentation/";
+const DEFAULT_SOURCE = "massive_macro_proxy";
+const DEFAULT_SOURCE_URL = "https://massive.com/docs/rest/stocks/aggregates/custom-bars/";
 
 export const DEFAULT_MACRO_FACTOR_KEYS: MacroFactorKey[] = [
   "rates",

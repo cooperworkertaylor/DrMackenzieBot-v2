@@ -284,8 +284,8 @@ export function registerResearchCli(program: Command) {
 
   research
     .command("macro-ingest")
-    .description("Ingest default external macro factor proxies (Alpha Vantage)")
-    .option("--api-key <value>", "Alpha Vantage API key (or ALPHAVANTAGE_API_KEY env)")
+    .description("Ingest default external macro factor proxies (Massive/Polygon)")
+    .option("--api-key <value>", "Massive API key (or MASSIVE_API_KEY / POLYGON_API_KEY env)")
     .option("--retries <n>", "Retry count", "3")
     .option("--pause-ms <n>", "Pause between requests (ms)", "12500")
     .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
@@ -337,7 +337,7 @@ export function registerResearchCli(program: Command) {
 
   research
     .command("prices")
-    .description("Ingest daily prices from Alpha Vantage")
+    .description("Ingest daily prices from Massive/Polygon")
     .requiredOption("--ticker <symbol>", "Ticker symbol")
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
