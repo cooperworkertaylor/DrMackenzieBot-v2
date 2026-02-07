@@ -138,13 +138,13 @@ describe("external research ingestion", () => {
 
   it("syncs newsletter sources via authenticated crawl and ingests articles", async () => {
     const dbPath = testDbPath("sync");
-    const sourceUrl = "https://example.substack.com/archive";
+    const sourceUrl = "https://substack.com/home";
     const articleA = "https://example.substack.com/p/ai-market-structure";
     const articleB = "https://example.substack.com/p/capex-cycle";
     const archiveHtml = `
       <html><body>
-        <a href="/p/ai-market-structure">AI market structure</a>
-        <a href="/p/capex-cycle">Capex cycle</a>
+        <a href="https://example.substack.com/p/ai-market-structure">AI market structure</a>
+        <a href="https://example.substack.com/p/capex-cycle">Capex cycle</a>
       </body></html>
     `;
     const longTextA =
@@ -162,7 +162,7 @@ describe("external research ingestion", () => {
 
     const fetchFn: typeof fetch = vi.fn(async (input) => {
       const raw = typeof input === "string" ? input : input.url;
-      if (raw === sourceUrl) {
+      if (raw === sourceUrl || raw === `${sourceUrl}/`) {
         return new Response(archiveHtml, {
           status: 200,
           headers: { "content-type": "text/html; charset=utf-8" },
@@ -201,5 +201,58 @@ describe("external research ingestion", () => {
     });
     expect(digest.totalDocs).toBe(2);
     expect(digest.providers[0]?.provider).toBe("substack");
+  });
+
+  it("skips login and static pages from sync candidates", async () => {
+    const dbPath = testDbPath("skip-static");
+    const sourceUrl = "https://stratechery.com/";
+    const article =
+      "https://stratechery.com/2026/an-interview-with-benedict-evans-about-ai-and-software/";
+    const archiveHtml = `
+      <html><body>
+        <a href="/about/">About</a>
+        <a href="https://stratechery.passport.online/member/login?mode=password">Login</a>
+        <a href="/2026/an-interview-with-benedict-evans-about-ai-and-software/">Interview</a>
+      </body></html>
+    `;
+    const longText =
+      "Interview discussion on AI distribution, economics, and competition dynamics with detailed investor implications. ".repeat(
+        20,
+      );
+    const articleHtml = `<html><head><title>Interview</title></head><body><article><h1>Interview</h1><p>${longText}</p></article></body></html>`;
+    const fetchFn: typeof fetch = vi.fn(async (input) => {
+      const raw = typeof input === "string" ? input : input.url;
+      if (raw === sourceUrl || raw === `${sourceUrl}/`) {
+        return new Response(archiveHtml, {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+      if (raw === article) {
+        return new Response(articleHtml, {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+      if (raw.includes("passport.online/member/login")) {
+        return new Response("<html><title>Login</title></html>", {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const result = await syncNewsletterSources({
+      dbPath,
+      sources: [{ provider: "stratechery", url: sourceUrl }],
+      maxLinksPerSource: 10,
+      maxDocs: 10,
+      fetchFn,
+    });
+
+    expect(result.ingested).toBe(1);
+    expect(result.docs.some((doc) => doc.url.includes("/about/"))).toBe(false);
+    expect(result.docs.some((doc) => doc.url.includes("passport.online/member/login"))).toBe(false);
   });
 });

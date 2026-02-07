@@ -195,6 +195,75 @@ const toAbsoluteUrl = (href: string, baseUrl: string): string | null => {
   }
 };
 
+const isLikelyLoginUrl = (url: string): boolean => {
+  const lower = url.toLowerCase();
+  return (
+    lower.includes("passport.online/member/login") ||
+    lower.includes("/member/login") ||
+    lower.includes("/login") ||
+    lower.includes("request_token=") ||
+    lower.includes("mode=password")
+  );
+};
+
+const isStaticPath = (pathname: string): boolean => {
+  const lower = pathname.toLowerCase();
+  const blockedPrefixes = [
+    "/about",
+    "/privacy",
+    "/jobs",
+    "/people",
+    "/manifesto",
+    "/glossary",
+    "/topics",
+    "/topic",
+    "/companies",
+    "/concepts",
+    "/tags",
+    "/tag",
+    "/category",
+    "/categories",
+    "/archive",
+    "/account",
+    "/login",
+    "/subscribe",
+    "/verify",
+    "/member",
+    "/wp-json",
+  ];
+  return blockedPrefixes.some((prefix) => lower === prefix || lower.startsWith(`${prefix}/`));
+};
+
+const isAllowedCandidateHost = (provider: string, sourceHost: string, candidateHost: string) => {
+  const normalizedProvider = normalizeProvider(provider);
+  const source = sourceHost.toLowerCase();
+  const candidate = candidateHost.toLowerCase();
+  if (candidate === source) return true;
+  if (normalizedProvider === "substack") {
+    if (candidate === "substack.com" || candidate.endsWith(".substack.com")) return true;
+    if (source === "substack.com" || source.endsWith(".substack.com")) return true;
+  }
+  return false;
+};
+
+const scoreArticlePath = (provider: string, pathname: string): number => {
+  const normalizedProvider = normalizeProvider(provider);
+  const lower = pathname.toLowerCase();
+  if (!lower || lower === "/" || lower.length < 2) return -10;
+  if (isStaticPath(lower)) return -10;
+  let score = 0;
+  if (/\/20\d{2}\//.test(lower)) score += 4;
+  if (/\/20\d{2}\/\d{2}\//.test(lower)) score += 4;
+  if (/\/p\/[a-z0-9-]+/.test(lower)) score += 5;
+  if (lower.split("/").filter(Boolean).length >= 2) score += 1;
+  if (normalizedProvider === "substack") {
+    if (/\/p\/[a-z0-9-]+/.test(lower)) score += 5;
+    if (lower.startsWith("/archive") || lower.startsWith("/publish")) score -= 4;
+  }
+  if (normalizedProvider === "stratechery" && lower.startsWith("/category/")) score -= 4;
+  return score;
+};
+
 const defaultSenderForProvider = (provider: string): string => {
   if (provider === "substack") return "updates@substack.com";
   if (provider === "stratechery") return "updates@stratechery.com";
@@ -273,30 +342,43 @@ export const resolveNewsletterSourcesFromEnv = (env: NodeJS.ProcessEnv = process
   return Array.from(dedup.values());
 };
 
-const extractCandidateLinks = (html: string, sourceUrl: string, maxLinks: number): string[] => {
+const extractCandidateLinks = (
+  provider: string,
+  html: string,
+  sourceUrl: string,
+  maxLinks: number,
+): string[] => {
   const { document } = parseHTML(html);
   const source = new URL(sourceUrl);
-  const links = new Set<string>();
+  const links = new Map<string, number>();
   const anchors = Array.from(document.querySelectorAll("a[href]"));
   for (const anchor of anchors) {
     const href = anchor.getAttribute("href");
     if (!href) continue;
     const resolved = toAbsoluteUrl(href, sourceUrl);
     if (!resolved) continue;
+    if (isLikelyLoginUrl(resolved)) continue;
     const candidate = new URL(resolved);
-    if (candidate.hostname !== source.hostname) {
+    if (!isAllowedCandidateHost(provider, source.hostname, candidate.hostname)) {
       continue;
     }
-    if (candidate.pathname === "/" || candidate.pathname.length < 2) {
+    const pathScore = scoreArticlePath(provider, candidate.pathname);
+    if (pathScore <= 0) {
       continue;
     }
-    if (candidate.pathname.includes("/archive") || candidate.pathname.includes("/tag/")) {
-      continue;
+    const anchorText = (anchor.textContent ?? "").trim();
+    const textScore = Math.min(3, Math.floor(anchorText.length / 24));
+    const finalScore = pathScore + textScore;
+    const key = candidate.toString();
+    const existing = links.get(key);
+    if (existing === undefined || finalScore > existing) {
+      links.set(key, finalScore);
     }
-    links.add(candidate.toString());
-    if (links.size >= maxLinks) break;
   }
-  return Array.from(links.values());
+  return Array.from(links.entries())
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, maxLinks)
+    .map(([url]) => url);
 };
 
 const extractPublishedTimeFromHtml = (html: string): string => {
@@ -928,7 +1010,7 @@ export const syncNewsletterSources = async (params: {
       continue;
     }
 
-    const candidates = extractCandidateLinks(archiveHtml, archiveUrl, maxLinksPerSource);
+    const candidates = extractCandidateLinks(provider, archiveHtml, archiveUrl, maxLinksPerSource);
     for (const candidateUrl of candidates) {
       if (attempted >= maxDocs) break;
       attempted += 1;
@@ -950,6 +1032,31 @@ export const syncNewsletterSources = async (params: {
             title: candidateUrl,
             ingested: false,
             reason: "article extraction returned insufficient content",
+          });
+          skipped += 1;
+          continue;
+        }
+        if (isLikelyLoginUrl(page.finalUrl)) {
+          docs.push({
+            provider,
+            sourceUrl,
+            url: page.finalUrl,
+            title: extracted.title,
+            ingested: false,
+            reason: "final URL redirected to login",
+          });
+          skipped += 1;
+          continue;
+        }
+        const finalPathScore = scoreArticlePath(provider, new URL(page.finalUrl).pathname);
+        if (finalPathScore <= 0) {
+          docs.push({
+            provider,
+            sourceUrl,
+            url: page.finalUrl,
+            title: extracted.title,
+            ingested: false,
+            reason: "final URL is not an article path",
           });
           skipped += 1;
           continue;
