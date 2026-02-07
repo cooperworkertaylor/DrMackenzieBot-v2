@@ -233,7 +233,8 @@ export const evaluateMemoQualityGate = (params: {
     (scenario) => typeof scenario.impliedSharePrice === "number",
   ).length;
   const benchmarkContextScore = params.valuation.impliedExpectations ? 1 : 0.25;
-  const modelQualityScore = params.grade.score;
+  const hasMemoRequiredFailures = params.grade.requiredFailures.length > 0;
+  const modelQualityScore = hasMemoRequiredFailures ? 0 : params.grade.score;
   const checks: QualityGateCheck[] = [
     makeCheck({
       name: "citation_coverage",
@@ -298,7 +299,7 @@ export const evaluateMemoQualityGate = (params: {
     }),
     makeCheck({
       name: "model_quality",
-      detail: `memo_grade_score=${params.grade.score.toFixed(2)} memo_grade_min=${params.grade.minScore.toFixed(2)} memo_grade_passed=${params.grade.passed ? 1 : 0} memo_grade_required_failures=${params.grade.requiredFailures.length ? params.grade.requiredFailures.join(",") : "none"}`,
+      detail: `memo_grade_score=${params.grade.score.toFixed(2)} memo_grade_min=${params.grade.minScore.toFixed(2)} memo_grade_passed=${params.grade.passed ? 1 : 0} memo_grade_required_failures=${hasMemoRequiredFailures ? params.grade.requiredFailures.join(",") : "none"}`,
       weight: 0.14,
       score: modelQualityScore,
       passThreshold: params.grade.minScore,
@@ -324,6 +325,7 @@ export const evaluateMemoQualityGate = (params: {
       implied_expectations: Boolean(params.valuation.impliedExpectations),
       calibration_score: params.grade.calibration.score,
       memo_grade_score: params.grade.score,
+      memo_grade_required_failures: params.grade.requiredFailures.length,
     },
   });
 };
