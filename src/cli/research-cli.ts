@@ -198,6 +198,61 @@ const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
 const mean = (values: number[]): number =>
   values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
 
+const THEME_HYDRATION_ATTEMPTS = new Set<string>();
+
+const hydrateThemeEvidence = async (params: {
+  theme: string;
+  tickers: string[];
+  dbPath?: string;
+}): Promise<string> => {
+  const key = `${params.theme.trim().toLowerCase()}::${params.dbPath ?? "default"}`;
+  if (THEME_HYDRATION_ATTEMPTS.has(key)) {
+    return "skipped(already-attempted)";
+  }
+  THEME_HYDRATION_ATTEMPTS.add(key);
+  const userAgent =
+    process.env.SEC_USER_AGENT?.trim() || process.env.SEC_EDGAR_USER_AGENT?.trim() || undefined;
+  const tickers = Array.from(new Set(params.tickers.map((ticker) => ticker.trim().toUpperCase())));
+  if (!tickers.length) {
+    return "skipped(no-tickers)";
+  }
+  const notes: string[] = [];
+  const run = async (label: string, task: () => Promise<unknown>) => {
+    try {
+      await task();
+      notes.push(`${label}=ok`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      notes.push(`${label}=skip(${message})`);
+    }
+  };
+  for (const ticker of tickers) {
+    await run(`${ticker}:prices`, async () => {
+      await ingestPrices(ticker, { dbPath: params.dbPath });
+    });
+    await run(`${ticker}:fundamentals`, async () => {
+      await ingestFundamentals(ticker, {
+        userAgent,
+        dbPath: params.dbPath,
+      });
+    });
+    await run(`${ticker}:expectations`, async () => {
+      await ingestExpectations(ticker, { dbPath: params.dbPath });
+    });
+    await run(`${ticker}:filings`, async () => {
+      await ingestFilings(ticker, {
+        limit: 20,
+        userAgent,
+        dbPath: params.dbPath,
+      });
+    });
+  }
+  await run("embed", async () => {
+    await syncEmbeddings(params.dbPath);
+  });
+  return notes.join(",");
+};
+
 const parseQualityGateArtifactType = (value?: string): QualityGateArtifactType | undefined => {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized || normalized === "all") return undefined;
@@ -1569,8 +1624,16 @@ export function registerResearchCli(program: Command) {
           );
           lastError = err;
           if (attempt < qualityAttempts) {
+            let hydration = "";
+            if (attempt === 1) {
+              hydration = await hydrateThemeEvidence({
+                theme: opts.theme as string,
+                tickers: result.tickers,
+                dbPath: opts.db as string,
+              });
+            }
             defaultRuntime.error(
-              `quality_refinement_retry attempt=${attempt}/${qualityAttempts} reason=${err.message}`,
+              `quality_refinement_retry attempt=${attempt}/${qualityAttempts} reason=${err.message}${hydration ? ` hydration=${hydration}` : ""}`,
             );
             continue;
           }
