@@ -85,6 +85,35 @@ const formatPct = (value?: number, scale = 100, digits = 1): string =>
 const formatNum = (value?: number, digits = 2): string =>
   typeof value === "number" ? value.toFixed(digits) : "n/a";
 
+const parseMetadataObject = (raw?: string): Record<string, unknown> => {
+  if (!raw?.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+};
+
+const citationDate = (citation: CitationRow): string | undefined => {
+  const meta = parseMetadataObject(citation.metadata);
+  const keys = [
+    "reportedDate",
+    "filingDate",
+    "filed",
+    "periodEnd",
+    "asOfDate",
+    "eventDate",
+    "event_date",
+  ];
+  for (const key of keys) {
+    const value = meta[key];
+    if (typeof value === "string" && value.trim()) return value.trim().slice(0, 10);
+  }
+  return undefined;
+};
+
 const loadPriceActionSnapshot = (params: {
   ticker: string;
   dbPath?: string;
@@ -786,14 +815,32 @@ export const generateMemoAsync = async (params: {
     diagnostics,
   });
   const disagreementResolutions = buildDisagreementResolutions(researchCell);
+  const expectedUpsidePct = valuation.expectedUpsideWithCatalystsPct ?? valuation.expectedUpsidePct;
+  const baseScenario = valuation.scenarios.find((scenario) => scenario.name === "base");
+  const primaryDisconfirmers = researchCell.debate.disconfirmingEvidence.slice(0, 3);
+  const primaryDisagreements = disagreementResolutions.slice(0, 3);
+  const topFalsification = diagnostics.falsificationTriggers.slice(0, 3);
 
   const memo = [
     `# Research Memo: ${params.ticker.toUpperCase()}`,
     ``,
-    `## Question`,
+    `## Investment Question`,
     params.question,
     ``,
-    `## Evidence-Based Claims`,
+    `## Investment Verdict`,
+    `- Recommendation: ${portfolioDecision.recommendation}`,
+    `- Final stance: ${portfolioDecision.finalStance}`,
+    `- Decision score: ${portfolioDecision.decisionScore.toFixed(2)} | Confidence: ${portfolioDecision.confidence.toFixed(2)}`,
+    `- Expected return: ${portfolioDecision.expectedReturnPct.toFixed(2)}% | Downside risk: ${portfolioDecision.downsideRiskPct.toFixed(2)}%`,
+    `- Variant vs consensus: variant=${variant.stance}, implied_market_view=${valuation.impliedExpectations?.stance ?? "insufficient-evidence"}`,
+    ``,
+    `## Why This Could Work`,
+    `- Variant gap: ${variant.variantGapScore.toFixed(2)} (expectation score ${variant.expectationScore.toFixed(2)} vs fundamental score ${variant.fundamentalScore.toFixed(2)}).`,
+    `- Scenario anchor: base implied price ${formatNum(baseScenario?.impliedSharePrice)} vs current ${formatNum(valuation.currentPrice)}.`,
+    `- Expected upside (with catalysts): ${formatPct(expectedUpsidePct)}; catalyst expected impact ${formatPct(valuation.catalystSummary?.expectedImpactPct)}.`,
+    `- Market-implied expectations: ${valuation.impliedExpectations ? `growth ${(valuation.impliedExpectations.impliedRevenueGrowth * 100).toFixed(1)}% vs model ${(valuation.impliedExpectations.modelRevenueGrowth * 100).toFixed(1)}%; margin ${(valuation.impliedExpectations.impliedOperatingMargin * 100).toFixed(1)}% vs model ${(valuation.impliedExpectations.modelOperatingMargin * 100).toFixed(1)}%.` : "insufficient evidence."}`,
+    ``,
+    `## Evidence-Backed Thesis`,
     ...lines.map((line, idx) => {
       const refs = line.citationIds
         .map((id) => {
@@ -805,59 +852,7 @@ export const generateMemoAsync = async (params: {
       return `${idx + 1}. ${line.claim}\n   Citations: ${refs}`;
     }),
     ``,
-    `## Point-in-Time Graph`,
-    `- Snapshot as-of: ${graphSnapshot.asOfDate}`,
-    `- Graph rows scanned: ${graphBuild.rowsScanned}`,
-    `- Graph events: ${graphSnapshot.events.length} (inserted=${graphBuild.eventsInserted}, updated=${graphBuild.eventsUpdated})`,
-    `- Graph facts: ${graphSnapshot.facts.length} (inserted=${graphBuild.factsInserted}, updated=${graphBuild.factsUpdated})`,
-    `- Key metrics:`,
-    ...graphSnapshot.metrics.slice(0, 8).map((metric) => {
-      if (typeof metric.latestValueNum === "number") {
-        return `  - ${metric.metricKey}: latest=${metric.latestValueNum.toFixed(4)}${typeof metric.previousValueNum === "number" ? ` prev=${metric.previousValueNum.toFixed(4)}` : ""}${typeof metric.deltaValueNum === "number" ? ` delta=${metric.deltaValueNum.toFixed(4)}` : ""} as_of=${metric.latestAsOfDate}`;
-      }
-      return `  - ${metric.metricKey}: latest_text=${metric.latestValueText ?? "n/a"} as_of=${metric.latestAsOfDate}`;
-    }),
-    `- Recent events:`,
-    ...graphSnapshot.events.slice(0, 6).map((event) => {
-      return `  - ${new Date(event.eventTime).toISOString().slice(0, 10)} ${event.eventType} (${event.sourceTable}:${event.sourceRefId}) ${event.title || ""}`.trim();
-    }),
-    ``,
-    `## Variant Perception`,
-    `- Stance: ${variant.stance}`,
-    `- Variant gap score: ${variant.variantGapScore.toFixed(2)}`,
-    `- Expectation score: ${variant.expectationScore.toFixed(2)}`,
-    `- Fundamental score: ${variant.fundamentalScore.toFixed(2)}`,
-    `- Confidence: ${variant.confidence.toFixed(2)}`,
-    `- Expectation observations: ${variant.expectationObservations}`,
-    `- Fundamental observations: ${variant.fundamentalObservations}`,
-    `- Avg surprise %: ${typeof variant.metrics.avgSurprisePct === "number" ? variant.metrics.avgSurprisePct.toFixed(2) : "n/a"}`,
-    `- Estimate trend: ${typeof variant.metrics.estimateTrend === "number" ? variant.metrics.estimateTrend.toFixed(3) : "n/a"}`,
-    `- Revenue growth signal: ${typeof variant.metrics.revenueGrowth === "number" ? variant.metrics.revenueGrowth.toFixed(3) : "n/a"}`,
-    `- Margin delta signal: ${typeof variant.metrics.marginDelta === "number" ? variant.metrics.marginDelta.toFixed(3) : "n/a"}`,
-    ...(variant.notes.length ? variant.notes.map((note) => `- Note: ${note}`) : []),
-    ``,
-    `## Valuation Scenarios`,
-    `- Confidence: ${valuation.confidence.toFixed(2)}`,
-    `- Current price: ${typeof valuation.currentPrice === "number" ? valuation.currentPrice.toFixed(2) : "n/a"}`,
-    `- Expected value/share: ${typeof valuation.expectedSharePrice === "number" ? valuation.expectedSharePrice.toFixed(2) : "n/a"}`,
-    `- Expected upside: ${typeof valuation.expectedUpsidePct === "number" ? `${(valuation.expectedUpsidePct * 100).toFixed(1)}%` : "n/a"}`,
-    `- Expected upside (with catalysts): ${typeof valuation.expectedUpsideWithCatalystsPct === "number" ? `${(valuation.expectedUpsideWithCatalystsPct * 100).toFixed(1)}%` : "n/a"}`,
-    `- Catalyst expected impact: ${typeof valuation.catalystSummary === "object" ? `${(valuation.catalystSummary.expectedImpactPct * 100).toFixed(2)}% (open=${valuation.catalystSummary.openCount})` : "n/a"}`,
-    ...valuation.scenarios.map(
-      (scenario) =>
-        `- ${scenario.name.toUpperCase()}: growth=${(scenario.revenueGrowth * 100).toFixed(1)}% margin=${(scenario.operatingMargin * 100).toFixed(1)}% wacc=${(scenario.wacc * 100).toFixed(1)}% implied_price=${typeof scenario.impliedSharePrice === "number" ? scenario.impliedSharePrice.toFixed(2) : "n/a"}`,
-    ),
-    ...(valuation.impliedExpectations
-      ? [
-          `- Market implied stance: ${valuation.impliedExpectations.stance}`,
-          `- Implied growth vs model: ${(valuation.impliedExpectations.impliedRevenueGrowth * 100).toFixed(1)}% vs ${(valuation.impliedExpectations.modelRevenueGrowth * 100).toFixed(1)}%`,
-          `- Implied margin vs model: ${(valuation.impliedExpectations.impliedOperatingMargin * 100).toFixed(1)}% vs ${(valuation.impliedExpectations.modelOperatingMargin * 100).toFixed(1)}%`,
-        ]
-      : ["- Market implied stance: insufficient-evidence"]),
-    ...(valuation.notes.length ? valuation.notes.map((note) => `- Note: ${note}`) : []),
-    ``,
-    `## Exhibits`,
-    `### Exhibit A: Scenario Pricing`,
+    `## Scenario Pricing`,
     `| Scenario | Probability | Revenue Growth | Operating Margin | WACC | Implied Price | Upside |`,
     `|---|---:|---:|---:|---:|---:|---:|`,
     ...valuation.scenarios.map(
@@ -865,8 +860,8 @@ export const generateMemoAsync = async (params: {
         `| ${scenario.name.toUpperCase()} | ${formatPct(scenario.probability)} | ${formatPct(scenario.revenueGrowth)} | ${formatPct(scenario.operatingMargin)} | ${formatPct(scenario.wacc)} | ${formatNum(scenario.impliedSharePrice)} | ${formatPct(scenario.upsidePct)} |`,
     ),
     ``,
-    `### Exhibit B: KPI Trend`,
-    `Fundamentals`,
+    `## KPI Trend`,
+    `### Fundamentals`,
     `| Period | Fiscal | Revenue | Operating Income | Operating Margin |`,
     `|---|---|---:|---:|---:|`,
     ...(fundamentalExhibit.length
@@ -876,7 +871,7 @@ export const generateMemoAsync = async (params: {
         )
       : ["| n/a | n/a | n/a | n/a | n/a |"]),
     ``,
-    `Expectations`,
+    `### Expectations`,
     `| Fiscal Date | Reported Date | Est EPS | Reported EPS | Surprise % |`,
     `|---|---|---:|---:|---:|`,
     ...(expectationExhibit.length
@@ -886,7 +881,7 @@ export const generateMemoAsync = async (params: {
         )
       : ["| n/a | n/a | n/a | n/a | n/a |"]),
     ``,
-    `### Exhibit C: Price Action Summary`,
+    `## Market Tape`,
     `- Latest close: ${formatNum(priceAction.latestClose)} (${priceAction.latestDate ?? "n/a"})`,
     `- 30D annualized volatility: ${formatPct(priceAction.annualizedVolatility30d)}`,
     `| Horizon | Base Date | Base Price | Return |`,
@@ -896,96 +891,45 @@ export const generateMemoAsync = async (params: {
         `| ${horizon.label} | ${horizon.baseDate ?? "n/a"} | ${formatNum(horizon.baseClose)} | ${formatPct(horizon.returnPct)} |`,
     ),
     ``,
-    `## Contradictions`,
-    ...(diagnostics.contradictions.length
-      ? diagnostics.contradictions.map(
-          (item, index) => `${index + 1}. [${item.severity.toUpperCase()}] ${item.detail}`,
-        )
-      : ["1. None detected."]),
+    `## Disconfirming Evidence`,
+    ...(primaryDisconfirmers.length
+      ? primaryDisconfirmers.map((item, index) => `${index + 1}. ${item}`)
+      : ["1. None captured."]),
     ``,
-    `## Adversarial Research Cell`,
-    `- Coverage score: ${researchCell.debate.adversarialCoverageScore.toFixed(2)}`,
-    `- Consensus score: ${researchCell.debate.consensusScore.toFixed(2)}`,
-    `- Debate passed: ${researchCell.debate.passed ? "yes" : "no"}`,
-    `- Final stance: ${researchCell.allocator.finalStance}`,
-    `- Final confidence: ${researchCell.allocator.confidence.toFixed(2)}`,
-    `- Recommended weight: ${researchCell.allocator.recommendedWeightPct.toFixed(2)}%`,
-    `- Max risk budget: ${researchCell.allocator.maxRiskBudgetPct.toFixed(2)}%`,
-    `- Stop loss: ${(researchCell.allocator.stopLossPct * 100).toFixed(1)}%`,
-    `- Thesis summary: ${researchCell.thesis.summary}`,
-    `- Skeptic summary: ${researchCell.skeptic.summary}`,
-    `- Risk summary: ${researchCell.riskManager.summary}`,
-    `- Allocator summary: ${researchCell.allocator.summary}`,
-    `- Disconfirming evidence:`,
-    ...researchCell.debate.disconfirmingEvidence
-      .slice(0, 6)
-      .map((item, index) => `  ${index + 1}. ${item}`),
-    `- Major disagreements:`,
-    ...(researchCell.debate.majorDisagreements.length
-      ? researchCell.debate.majorDisagreements
-          .slice(0, 4)
-          .map((item, index) => `  ${index + 1}. ${item}`)
-      : ["  1. None material."]),
-    `- Disagreement resolutions:`,
-    ...disagreementResolutions.map((line) => `  ${line}`),
-    `- Unresolved risks:`,
-    ...(researchCell.debate.unresolvedRisks.length
-      ? researchCell.debate.unresolvedRisks
-          .slice(0, 4)
-          .map((item, index) => `  ${index + 1}. ${item}`)
-      : ["  1. None material."]),
-    `- Required follow-ups:`,
-    ...researchCell.debate.requiredFollowUps
-      .slice(0, 4)
-      .map((item, index) => `  ${index + 1}. ${item}`),
+    `## Debate and Resolution`,
+    `- Debate passed: ${researchCell.debate.passed ? "yes" : "no"} | Coverage: ${researchCell.debate.adversarialCoverageScore.toFixed(2)} | Consensus: ${researchCell.debate.consensusScore.toFixed(2)}`,
+    `- Allocator conclusion: ${researchCell.allocator.summary}`,
+    `- Remaining disagreement count: ${researchCell.debate.majorDisagreements.length}`,
+    ...primaryDisagreements.map((line) => `- ${line}`),
     ``,
-    `## Falsification Triggers`,
-    ...diagnostics.falsificationTriggers.map((trigger, index) => `${index + 1}. ${trigger}`),
-    ``,
-    `## Actionability Plan`,
+    `## Action Plan`,
     `- Entry trigger: ${actionabilityPlan.entryTrigger}`,
-    `- Sizing bands:`,
-    ...actionabilityPlan.sizingBands.map((line, index) => `  ${index + 1}. ${line}`),
+    ...actionabilityPlan.sizingBands.map((line, index) => `${index + 1}. ${line}`),
     `- Risk controls: ${actionabilityPlan.riskLine}`,
-    `- Top falsification triggers:`,
-    ...actionabilityPlan.falsificationTop3.map((line) => `  ${line}`),
+    `- Stop loss: ${(portfolio.stopLossPct * 100).toFixed(1)}%`,
+    `- Falsification triggers:`,
+    ...topFalsification.map((trigger, index) => `  ${index + 1}. ${trigger}`),
     ``,
-    `## Portfolio Plan`,
+    `## Portfolio Construction`,
     `- Stance: ${portfolio.stance}`,
-    `- Confidence: ${portfolio.confidence.toFixed(2)}`,
     `- Recommended weight: ${portfolio.recommendedWeightPct.toFixed(2)}%`,
     `- Max risk budget: ${portfolio.maxRiskBudgetPct.toFixed(2)}%`,
-    `- Stop loss: ${(portfolio.stopLossPct * 100).toFixed(1)}%`,
     `- Horizon: ${portfolio.timeHorizonDays} days`,
-    ...portfolio.rationale.map((line) => `- Rationale: ${line}`),
-    ...portfolio.reviewTriggers.map((line) => `- Review trigger: ${line}`),
-    ``,
-    `## Portfolio Decision Layer`,
-    `- Recommendation: ${portfolioDecision.recommendation}`,
-    `- Final stance: ${portfolioDecision.finalStance}`,
-    `- Decision score: ${portfolioDecision.decisionScore.toFixed(2)}`,
-    `- Confidence: ${portfolioDecision.confidence.toFixed(2)}`,
-    `- Expected return: ${portfolioDecision.expectedReturnPct.toFixed(2)}%`,
-    `- Downside risk: ${portfolioDecision.downsideRiskPct.toFixed(2)}%`,
-    `- Risk breaches:`,
+    `- Risk breaches: ${portfolioDecision.riskBreaches.length}`,
     ...(portfolioDecision.riskBreaches.length
       ? portfolioDecision.riskBreaches.map((issue, index) => `  ${index + 1}. ${issue}`)
       : ["  1. None detected."]),
-    `- Size candidates:`,
-    ...portfolioDecision.sizeCandidates.map(
-      (candidate) =>
-        `  - ${candidate.label}: recommendation=${candidate.recommendation} weight=${candidate.weightPct.toFixed(2)}% risk_budget=${candidate.riskBudgetPct.toFixed(2)}% expected_pnl=${candidate.expectedPnlPct.toFixed(2)}% downside_pnl=${candidate.downsidePnlPct.toFixed(2)}% score=${candidate.score.toFixed(2)}`,
-    ),
-    `- Scenario stress:`,
-    ...portfolioDecision.stress.map(
-      (scenario) =>
-        `  - ${scenario.scenario}: probability=${scenario.probability.toFixed(2)} return=${scenario.returnPct.toFixed(2)}% pnl=${scenario.pnlPct.toFixed(2)}% weighted_return=${scenario.weightedReturnPct.toFixed(2)}% risk_breach=${scenario.breachesRiskBudget ? "yes" : "no"}`,
-    ),
+    ``,
+    `## Appendix: Evidence Inventory`,
+    `- Graph snapshot as-of: ${graphSnapshot.asOfDate}; events=${graphSnapshot.events.length}; facts=${graphSnapshot.facts.length}; scanned_rows=${graphBuild.rowsScanned}`,
+    `- Variant confidence: ${variant.confidence.toFixed(2)} | Valuation confidence: ${valuation.confidence.toFixed(2)} | Portfolio confidence: ${portfolio.confidence.toFixed(2)}`,
+    ...(variant.notes.length ? variant.notes.map((note) => `- Note: ${note}`) : []),
+    ...(valuation.notes.length ? valuation.notes.map((note) => `- Note: ${note}`) : []),
     ``,
     `## Citation Index`,
     ...citations.map(
       (c) =>
-        `- C${c.id}: source=${c.source_table} ref=${c.ref_id}${c.url ? ` url=${c.url}` : ""}${c.metadata ? ` meta=${c.metadata}` : ""}`,
+        `- C${c.id}: source=${c.source_table} ref=${c.ref_id}${citationDate(c) ? ` date=${citationDate(c)}` : ""}${extractHost(c.url) ? ` host=${extractHost(c.url)}` : ""}${c.url ? ` | ${c.url}` : ""}`,
     ),
   ].join("\n");
 
