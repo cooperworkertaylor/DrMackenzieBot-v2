@@ -198,7 +198,73 @@ const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
 const mean = (values: number[]): number =>
   values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
 
-const THEME_HYDRATION_ATTEMPTS = new Set<string>();
+const MAX_HYDRATION_ATTEMPTS_PER_KEY = 3;
+const THEME_HYDRATION_ATTEMPTS = new Map<string, number>();
+const MEMO_HYDRATION_ATTEMPTS = new Map<string, number>();
+
+const canAttemptHydration = (params: {
+  attempts: Map<string, number>;
+  key: string;
+  maxAttempts?: number;
+}): boolean => {
+  const maxAttempts = Math.max(1, Math.round(params.maxAttempts ?? MAX_HYDRATION_ATTEMPTS_PER_KEY));
+  const current = params.attempts.get(params.key) ?? 0;
+  if (current >= maxAttempts) return false;
+  params.attempts.set(params.key, current + 1);
+  return true;
+};
+
+const hydrateTickerEvidence = async (params: {
+  ticker: string;
+  dbPath?: string;
+}): Promise<string> => {
+  const ticker = params.ticker.trim().toUpperCase();
+  if (!ticker) return "skipped(no-ticker)";
+  const key = `${ticker}::${params.dbPath ?? "default"}`;
+  if (!canAttemptHydration({ attempts: MEMO_HYDRATION_ATTEMPTS, key })) {
+    return "skipped(max-hydration-attempts)";
+  }
+  const userAgent =
+    process.env.SEC_USER_AGENT?.trim() || process.env.SEC_EDGAR_USER_AGENT?.trim() || undefined;
+  const notes: string[] = [];
+  const run = async (label: string, task: () => Promise<unknown>) => {
+    try {
+      await task();
+      notes.push(`${label}=ok`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      notes.push(`${label}=skip(${message})`);
+    }
+  };
+  await run("prices", async () => {
+    await ingestPrices(ticker, { dbPath: params.dbPath });
+  });
+  await run("fundamentals", async () => {
+    await ingestFundamentals(ticker, {
+      userAgent,
+      dbPath: params.dbPath,
+    });
+  });
+  await run("expectations", async () => {
+    await ingestExpectations(ticker, { dbPath: params.dbPath });
+  });
+  await run("filings", async () => {
+    await ingestFilings(ticker, {
+      limit: 20,
+      userAgent,
+      dbPath: params.dbPath,
+    });
+  });
+  await run("macro", async () => {
+    await ingestDefaultMacroFactors({
+      dbPath: params.dbPath,
+    });
+  });
+  await run("embed", async () => {
+    await syncEmbeddings(params.dbPath);
+  });
+  return notes.join(",");
+};
 
 const hydrateThemeEvidence = async (params: {
   theme: string;
@@ -207,10 +273,9 @@ const hydrateThemeEvidence = async (params: {
   dbPath?: string;
 }): Promise<string> => {
   const key = `${params.theme.trim().toLowerCase()}::${params.dbPath ?? "default"}`;
-  if (THEME_HYDRATION_ATTEMPTS.has(key)) {
-    return "skipped(already-attempted)";
+  if (!canAttemptHydration({ attempts: THEME_HYDRATION_ATTEMPTS, key })) {
+    return "skipped(max-hydration-attempts)";
   }
-  THEME_HYDRATION_ATTEMPTS.add(key);
   const userAgent =
     process.env.SEC_USER_AGENT?.trim() || process.env.SEC_EDGAR_USER_AGENT?.trim() || undefined;
   const tickers = Array.from(new Set(params.tickers.map((ticker) => ticker.trim().toUpperCase())));
@@ -1468,8 +1533,14 @@ export function registerResearchCli(program: Command) {
           );
           lastError = err;
           if (attempt < qualityAttempts) {
+            const remediation = await hydrateThemeEvidence({
+              theme: `sector:${String(opts.sector)}`,
+              tickers: result.tickers,
+              benchmarkTicker: (opts.benchmark as string | undefined) ?? undefined,
+              dbPath: opts.db as string,
+            });
             defaultRuntime.error(
-              `quality_refinement_retry attempt=${attempt}/${qualityAttempts} reason=${err.message}`,
+              `quality_refinement_retry attempt=${attempt}/${qualityAttempts} reason=${err.message}${remediation ? ` remediation=${remediation}` : ""}`,
             );
             continue;
           }
@@ -1649,20 +1720,38 @@ export function registerResearchCli(program: Command) {
           );
           lastError = err;
           if (attempt < qualityAttempts) {
-            let hydration = "";
-            if (attempt === 1) {
-              hydration = await hydrateThemeEvidence({
-                theme: opts.theme as string,
-                tickers: result.tickers,
-                benchmarkTicker:
-                  result.benchmarkTicker ||
-                  result.benchmarkRelative?.benchmarkTicker ||
-                  result.factorAttribution?.benchmarkTicker,
-                dbPath: opts.db as string,
-              });
+            const failedNames = new Set(failed.map((check) => check.name));
+            const remediationParts: string[] = [];
+            if (failedNames.has("source_diversity")) {
+              try {
+                const refreshed = refreshThemeMembership({
+                  theme: opts.theme as string,
+                  version: result.themeVersion,
+                  tickers,
+                  minMembershipScore: parseOptionalNumber(opts["minMembershipScore"]),
+                  source: "quality_retry",
+                  dbPath: opts.db as string,
+                });
+                remediationParts.push(
+                  `membership_refresh=ok(active=${refreshed.activeCount},candidates=${refreshed.candidateCount})`,
+                );
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                remediationParts.push(`membership_refresh=skip(${message})`);
+              }
             }
+            const hydration = await hydrateThemeEvidence({
+              theme: opts.theme as string,
+              tickers: result.tickers,
+              benchmarkTicker:
+                result.benchmarkTicker ||
+                result.benchmarkRelative?.benchmarkTicker ||
+                result.factorAttribution?.benchmarkTicker,
+              dbPath: opts.db as string,
+            });
+            if (hydration) remediationParts.push(`hydration=${hydration}`);
             defaultRuntime.error(
-              `quality_refinement_retry attempt=${attempt}/${qualityAttempts} reason=${err.message}${hydration ? ` hydration=${hydration}` : ""}`,
+              `quality_refinement_retry attempt=${attempt}/${qualityAttempts} reason=${err.message}${remediationParts.length ? ` remediation=${remediationParts.join(",")}` : ""}`,
             );
             continue;
           }
@@ -2803,15 +2892,18 @@ export function registerResearchCli(program: Command) {
             const err = error instanceof Error ? error : new Error(String(error));
             lastError = err;
             const canRetry =
-              strictMode &&
               attempt < qualityAttempts &&
               (err.message.includes("Institutional-grade quality gate failed") ||
                 err.message.includes("Insufficient evidence"));
             if (!canRetry) {
               throw err;
             }
+            const remediation = await hydrateTickerEvidence({
+              ticker: opts.ticker as string,
+              dbPath: opts.db as string,
+            });
             defaultRuntime.error(
-              `quality_refinement_retry attempt=${attempt}/${qualityAttempts} reason=${err.message}`,
+              `quality_refinement_retry attempt=${attempt}/${qualityAttempts} reason=${err.message}${remediation ? ` remediation=${remediation}` : ""}`,
             );
           }
         }
