@@ -1,11 +1,33 @@
 import type { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { requireNodeSqlite } from "../memory/sqlite.js";
 
 export type ResearchDb = DatabaseSync;
 
-const DEFAULT_DB_PATH = path.join(process.cwd(), "data", "research.db");
+const resolveUserPath = (input: string): string => {
+  const trimmed = input.trim();
+  if (!trimmed) return trimmed;
+  if (trimmed.startsWith("~")) {
+    return path.resolve(trimmed.replace(/^~(?=$|[\\/])/, os.homedir()));
+  }
+  return path.resolve(trimmed);
+};
+
+const resolveDefaultDbPath = (env: NodeJS.ProcessEnv = process.env): string => {
+  const explicit = env.RESEARCH_DB_PATH?.trim() || env.OPENCLAW_RESEARCH_DB_PATH?.trim();
+  if (explicit) {
+    return resolveUserPath(explicit);
+  }
+  const stateDir =
+    env.OPENCLAW_STATE_DIR?.trim() ||
+    env.CLAWDBOT_STATE_DIR?.trim() ||
+    path.join(os.homedir(), ".openclaw");
+  return path.join(resolveUserPath(stateDir), "research", "research.db");
+};
+
+const DEFAULT_DB_PATH = resolveDefaultDbPath();
 
 export type ResearchDbOptions = {
   allowExtensions?: boolean;

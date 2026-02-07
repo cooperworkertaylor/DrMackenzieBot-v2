@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadSqliteVecExtension } from "../memory/sqlite-vec.js";
-import { openResearchDb, type ResearchDb } from "./db.js";
+import { openResearchDb, resolveResearchDbPath, type ResearchDb } from "./db.js";
 import {
   createHashEmbeddingProvider,
   createResearchEmbeddingProvider,
@@ -584,7 +584,7 @@ export const searchResearch = async (params: {
 };
 
 export const writeBackup = (params: { dbPath?: string; destDir: string }) => {
-  const dbPath = path.resolve(params.dbPath ?? path.join(process.cwd(), "data", "research.db"));
+  const dbPath = resolveResearchDbPath(params.dbPath);
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
   const out = path.resolve(params.destDir, `research-${ts}.db`);
   fs.mkdirSync(path.dirname(out), { recursive: true });

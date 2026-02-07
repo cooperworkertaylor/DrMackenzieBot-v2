@@ -1,4 +1,4 @@
-import { openResearchDb } from "./db.js";
+import { openResearchDb, resolveResearchDbPath } from "./db.js";
 
 export type SecurityControlStatus = "pass" | "warn" | "fail";
 
@@ -31,7 +31,7 @@ export const runResearchSecurityAudit = (
 ): ResearchSecurityAudit => {
   const controls: SecurityControl[] = [];
   const db = openResearchDb(params.dbPath);
-  const dbPath = params.dbPath ?? `${process.cwd()}/data/research.db`;
+  const dbPath = resolveResearchDbPath(params.dbPath);
 
   const allowExtensions = parseBoolEnv(process.env.RESEARCH_DB_ALLOW_EXTENSIONS) ?? false;
   controls.push({

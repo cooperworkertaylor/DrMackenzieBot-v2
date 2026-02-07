@@ -273,7 +273,7 @@ export function registerResearchCli(program: Command) {
   research
     .command("init-db")
     .description("Create research sqlite db and run migrations")
-    .option("--path <db>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--path <db>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const db = openResearchDb(opts.path);
@@ -288,7 +288,7 @@ export function registerResearchCli(program: Command) {
     .option("--api-key <value>", "Massive API key (or MASSIVE_API_KEY / POLYGON_API_KEY env)")
     .option("--retries <n>", "Retry count", "3")
     .option("--pause-ms <n>", "Pause between requests (ms)", "12500")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const result = await ingestDefaultMacroFactors({
@@ -313,7 +313,7 @@ export function registerResearchCli(program: Command) {
     .option("--start-date <date>", "Start date (YYYY-MM-DD)")
     .option("--end-date <date>", "End date (YYYY-MM-DD)")
     .option("--limit <n>", "Result limit", "200")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const rows = listMacroFactorObservations({
@@ -425,7 +425,7 @@ export function registerResearchCli(program: Command) {
     .command("repo-index")
     .description("Index a code repo into research db (text chunks, no embeddings)")
     .requiredOption("--root <path>", "Repo root to index")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const res = indexRepo({ root: opts.root as string, dbPath: opts.db as string });
@@ -436,7 +436,7 @@ export function registerResearchCli(program: Command) {
   research
     .command("embed")
     .description("Create/update sqlite-vec embeddings for research/code chunks")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const res = await syncEmbeddings(opts.db as string);
@@ -454,7 +454,7 @@ export function registerResearchCli(program: Command) {
     .option("--ticker <symbol>", "Ticker filter for research docs")
     .option("--limit <n>", "Result limit", "8")
     .option("--source <kind>", "research|code", "research")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const hits = await searchResearch({
@@ -484,7 +484,7 @@ export function registerResearchCli(program: Command) {
     .command("variant")
     .description("Compute variant-perception score vs consensus expectations")
     .requiredOption("--ticker <symbol>", "Ticker symbol")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const result = computeVariantPerception({
@@ -509,7 +509,7 @@ export function registerResearchCli(program: Command) {
     .command("valuation")
     .description("Compute base/bull/bear valuation and market-implied expectations")
     .requiredOption("--ticker <symbol>", "Ticker symbol")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const valuation = computeValuation({
@@ -578,7 +578,7 @@ export function registerResearchCli(program: Command) {
     .option("--direction <kind>", "up|down|both", "both")
     .option("--source <text>", "Source provenance", "manual")
     .option("--notes <text>", "Optional notes", "")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const probability = Number.parseFloat(opts.probability as string);
@@ -618,7 +618,7 @@ export function registerResearchCli(program: Command) {
     .description("List catalysts for a ticker")
     .requiredOption("--ticker <symbol>", "Ticker symbol")
     .option("--status <kind>", "open|resolved|cancelled|all", "open")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const status = String(opts.status ?? "open").toLowerCase();
@@ -656,7 +656,7 @@ export function registerResearchCli(program: Command) {
     .option("--occurred <bool>", "true|false", "true")
     .option("--impact-bps <n>", "Realized impact bps")
     .option("--notes <text>", "Resolution notes", "")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const catalystId = Number.parseInt(opts["catalystId"] as string, 10);
@@ -685,7 +685,7 @@ export function registerResearchCli(program: Command) {
     .description("Cancel an open catalyst")
     .requiredOption("--catalyst-id <id>", "Catalyst id")
     .option("--reason <text>", "Cancellation reason", "")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const catalystId = Number.parseInt(opts["catalystId"] as string, 10);
@@ -703,7 +703,7 @@ export function registerResearchCli(program: Command) {
     .command("catalyst-score")
     .description("Show aggregate catalyst score for a ticker")
     .requiredOption("--ticker <symbol>", "Ticker symbol")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const summary = getCatalystSummary({
@@ -726,7 +726,7 @@ export function registerResearchCli(program: Command) {
     .command("position")
     .description("Compute portfolio sizing and risk plan for a ticker")
     .requiredOption("--ticker <symbol>", "Ticker symbol")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const plan = computePortfolioPlan({
@@ -761,7 +761,7 @@ export function registerResearchCli(program: Command) {
     .option("--min-confidence <n>", "Minimum confidence [0-1]")
     .option("--min-coverage <n>", "Minimum adversarial debate coverage [0-1]")
     .option("--max-downside-loss <n>", "Max downside PnL % allowed in stress")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const constraints: Partial<PortfolioDecisionConstraints> = {};
@@ -842,7 +842,7 @@ export function registerResearchCli(program: Command) {
     .option("--min-confidence <n>", "Pass-through single-name confidence floor [0-1]")
     .option("--min-coverage <n>", "Pass-through debate coverage floor [0-1]")
     .option("--max-downside-loss <n>", "Pass-through single-name downside loss cap %")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const tickers = parseTickersOption(opts.tickers as string);
@@ -991,7 +991,7 @@ export function registerResearchCli(program: Command) {
     .option("--min-confidence <n>", "Pass-through single-name confidence floor [0-1]")
     .option("--min-coverage <n>", "Pass-through debate coverage floor [0-1]")
     .option("--max-downside-loss <n>", "Pass-through single-name downside loss cap %")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const tickers = parseTickersOption(opts.tickers as string);
@@ -1106,7 +1106,7 @@ export function registerResearchCli(program: Command) {
     .option("--min-membership-score <n>", "Membership score threshold [0-1]")
     .option("--effective-from <date>", "YYYY-MM-DD")
     .option("--effective-to <date>", "YYYY-MM-DD")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const includeKeywords = parseCsvListOption((opts["includeKeywords"] as string) ?? "");
@@ -1163,7 +1163,7 @@ export function registerResearchCli(program: Command) {
     .description("List theme taxonomy definitions")
     .option("--theme <key>", "Optional theme key filter")
     .option("--all", "Include inactive versions", false)
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const rows = listThemeDefinitions({
@@ -1191,7 +1191,7 @@ export function registerResearchCli(program: Command) {
     .option("--tickers <csv>", "Optional explicit candidate ticker universe")
     .option("--min-score <n>", "Override minimum membership score [0-1]")
     .option("--source <text>", "Membership source tag", "rule_engine")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const tickers =
@@ -1226,7 +1226,7 @@ export function registerResearchCli(program: Command) {
     .option("--min-score <n>", "Minimum membership score", "0")
     .option("--limit <n>", "Result limit", "200")
     .option("--all", "Include inactive rows", false)
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const statusRaw = String(opts.status ?? "active")
@@ -1271,7 +1271,7 @@ export function registerResearchCli(program: Command) {
     .option("--top <n>", "Leaders/laggards count", "5")
     .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
     .option("--min-score <n>", "Institutional quality threshold [0-1]", "0.82")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const overrideTickers =
@@ -1431,7 +1431,7 @@ export function registerResearchCli(program: Command) {
     .option("--top <n>", "Leaders/laggards count", "5")
     .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
     .option("--min-score <n>", "Institutional quality threshold [0-1]", "0.82")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const tickers =
@@ -1605,7 +1605,7 @@ export function registerResearchCli(program: Command) {
     .command("monitor")
     .description("Run thesis monitoring checks for one ticker and persist alerts")
     .requiredOption("--ticker <symbol>", "Ticker symbol")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const result = monitorTicker({
@@ -1627,7 +1627,7 @@ export function registerResearchCli(program: Command) {
     .command("monitor-all")
     .description("Run thesis monitoring checks for multiple tickers")
     .option("--tickers <csv>", "Ticker list (defaults to RESEARCH_TICKERS)")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const tickers =
@@ -1654,7 +1654,7 @@ export function registerResearchCli(program: Command) {
   research
     .command("forecast-sync")
     .description("Resolve matured valuation forecasts against realized prices")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const outcome = resolveMatureForecasts({ dbPath: opts.db as string });
@@ -1692,7 +1692,7 @@ export function registerResearchCli(program: Command) {
     .option("--regressions <n>", "Coding metric: post-merge regressions")
     .option("--review-findings <n>", "Coding metric: review findings count")
     .option("--rollback-rate <n>", "Coding metric: rollback rate [0-1]")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const gradingMetrics: Record<string, number> = {};
@@ -1756,7 +1756,7 @@ export function registerResearchCli(program: Command) {
     .option("--days <n>", "Lookback window in days", "30")
     .option("--task-type <kind>", "investment|coding|other")
     .option("--min-samples <n>", "Minimum samples for archetype routing", "3")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const report = learningReport({
@@ -1850,7 +1850,7 @@ export function registerResearchCli(program: Command) {
     .option("--completed-at <ms>", "Completed timestamp (epoch ms)")
     .option("--steps <json>", "JSON array of trace steps")
     .option("--metadata <json>", "JSON metadata object")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const parsedSteps = (parseOptionalJsonArray(opts.steps) ?? []).map((raw) => {
@@ -1922,7 +1922,7 @@ export function registerResearchCli(program: Command) {
     .option("--repo-root <path>", "Repo filter")
     .option("--lookback-days <n>", "Lookback days", "90")
     .option("--seed-limit <n>", "Max seeds to display", "20")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const report = executionTraceReport({
@@ -1958,7 +1958,7 @@ export function registerResearchCli(program: Command) {
     .option("--entity <name>", "Entity name filter")
     .option("--status <value>", "active|draft|contested|retired")
     .option("--limit <n>", "Result limit", "100")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const rows = listEntityClaims({
@@ -1989,7 +1989,7 @@ export function registerResearchCli(program: Command) {
     .option("--reason <text>", "Status update reason", "")
     .option("--confidence <n>", "Optional confidence [0-1]")
     .option("--metadata <json>", "JSON metadata")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const claim = updateClaimStatus({
@@ -2015,7 +2015,7 @@ export function registerResearchCli(program: Command) {
     .option("--max-filings <n>", "Max filing rows", "160")
     .option("--max-transcripts <n>", "Max transcript rows", "120")
     .option("--max-catalysts <n>", "Max catalyst rows", "120")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const summary = buildTickerPointInTimeGraph({
@@ -2047,7 +2047,7 @@ export function registerResearchCli(program: Command) {
     .option("--event-limit <n>", "Event row limit", "40")
     .option("--fact-limit <n>", "Fact row limit", "300")
     .option("--metric-limit <n>", "Metric summary limit", "40")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const snapshot = getTickerPointInTimeSnapshot({
@@ -2094,7 +2094,7 @@ export function registerResearchCli(program: Command) {
     .option("--entity-type <name>", "Filter by entity type")
     .option("--entity-id <id>", "Filter by entity id")
     .option("--limit <n>", "Max events", "200")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const report = provenanceReport({
@@ -2114,7 +2114,7 @@ export function registerResearchCli(program: Command) {
   research
     .command("security-audit")
     .description("Run research-stack security baseline checks")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const report = runResearchSecurityAudit({
@@ -2139,7 +2139,7 @@ export function registerResearchCli(program: Command) {
     .description("Run learning calibration cycle (forecast sync + regrade + report)")
     .option("--days <n>", "Lookback window for report", "90")
     .option("--min-samples <n>", "Minimum samples for routing", "3")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const result = runLearningCalibration({
@@ -2174,7 +2174,7 @@ export function registerResearchCli(program: Command) {
     .option("--max-quarantine-rate <n>", "Guardrail quarantine rate [0-1]", "0.2")
     .option("--max-calibration-error <n>", "Guardrail calibration error [0-1]", "0.25")
     .option("--metadata <json>", "JSON metadata for prompt/retrieval/workflow profile")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const variant = registerPolicyVariant({
@@ -2204,7 +2204,7 @@ export function registerResearchCli(program: Command) {
     .requiredOption("--task-type <kind>", "investment|coding|other")
     .option("--archetype <name>", "Task archetype", "")
     .option("--include-retired", "Include retired variants", false)
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const variants = listPolicyVariants({
@@ -2233,7 +2233,7 @@ export function registerResearchCli(program: Command) {
     .option("--seed <value>", "Deterministic routing seed")
     .option("--exploration-rate <n>", "Exploration rate [0-1]", "0.15")
     .option("--max-shadows <n>", "Max shadow variants", "2")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const route = routePolicyAssignment({
@@ -2265,7 +2265,7 @@ export function registerResearchCli(program: Command) {
     .requiredOption("--task-type <kind>", "investment|coding|other")
     .option("--archetype <name>", "Task archetype", "")
     .option("--days <n>", "Lookback window in days", "60")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const report = policyPerformanceReport({
@@ -2300,7 +2300,7 @@ export function registerResearchCli(program: Command) {
     .option("--days <n>", "Baseline lookback days", "60")
     .option("--recent-days <n>", "Recent degradation window days", "14")
     .option("--min-samples <n>", "Minimum sample count", "25")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const result = runPolicyGovernance({
@@ -2343,7 +2343,7 @@ export function registerResearchCli(program: Command) {
     )
     .option("--reliability-max-avg-retries <n>", "Reliability max average retries", "1.5")
     .option("--metadata <json>", "JSON metadata")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const suite = upsertBenchmarkSuite({
@@ -2375,7 +2375,7 @@ export function registerResearchCli(program: Command) {
     .option("--task-type <kind>", "investment|coding|other")
     .option("--archetype <name>", "Task archetype", "")
     .option("--include-inactive", "Include inactive suites", false)
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const suites = listBenchmarkSuites({
@@ -2411,7 +2411,7 @@ export function registerResearchCli(program: Command) {
     .option("--expected <json>", "Expected metrics JSON")
     .option("--weight <n>", "Case weight", "1")
     .option("--active <bool>", "true|false", "true")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const benchmarkCase = upsertBenchmarkCase({
@@ -2442,7 +2442,7 @@ export function registerResearchCli(program: Command) {
     .requiredOption("--task-type <kind>", "investment|coding|other")
     .option("--suite-archetype <name>", "Suite archetype", "")
     .option("--include-inactive", "Include inactive cases", false)
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const cases = listBenchmarkCases({
@@ -2478,7 +2478,7 @@ export function registerResearchCli(program: Command) {
     .option("--lookback-days <n>", "Lookback days for replay samples", "90")
     .option("--seed <text>", "Deterministic seed")
     .option("--apply-governance", "Apply benchmark gate decision to policy champion", false)
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const run = runBenchmarkReplay({
@@ -2528,7 +2528,7 @@ export function registerResearchCli(program: Command) {
     .requiredOption("--task-type <kind>", "investment|coding|other")
     .option("--suite-archetype <name>", "Suite archetype", "")
     .option("--limit <n>", "Number of runs", "20")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const report = benchmarkReport({
@@ -2565,7 +2565,7 @@ export function registerResearchCli(program: Command) {
       "champion_vs_challenger|all_policies|champion_only",
       "champion_vs_challenger",
     )
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const result = runAllBenchmarksWithGovernance({
@@ -2593,7 +2593,7 @@ export function registerResearchCli(program: Command) {
     .option("--artifact-id <id>", "Optional artifact id")
     .option("--days <n>", "Lookback window in days", "30")
     .option("--limit <n>", "Result limit", "100")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const artifactType = parseQualityGateArtifactType(opts["artifactType"] as string);
@@ -2631,7 +2631,7 @@ export function registerResearchCli(program: Command) {
     .option("--min-recent-avg-score <n>", "Minimum recent average score [0-1]", "0.82")
     .option("--max-pass-rate-drop <n>", "Maximum pass-rate drop vs baseline [0-1]", "0.08")
     .option("--max-avg-score-drop <n>", "Maximum avg-score drop vs baseline [0-1]", "0.05")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const artifactType = parseQualityGateArtifactType(opts["artifactType"] as string);
@@ -2660,7 +2660,7 @@ export function registerResearchCli(program: Command) {
     .description("Generate citation-enforced research memo")
     .requiredOption("--ticker <symbol>", "Ticker symbol")
     .requiredOption("--question <text>", "Research question")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .option("--out <path>", "Write memo markdown to file")
     .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
     .option("--min-score <n>", "Institutional quality threshold [0-1]", "0.8")
@@ -2812,7 +2812,7 @@ export function registerResearchCli(program: Command) {
   research
     .command("health")
     .description("Check staleness of research data")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const db = openResearchDb(opts.db as string);
@@ -2863,7 +2863,7 @@ export function registerResearchCli(program: Command) {
   research
     .command("backup")
     .description("Backup research sqlite db")
-    .option("--db <path>", "Database path", path.join(process.cwd(), "data", "research.db"))
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .option("--dest <dir>", "Backup destination", path.join(process.cwd(), "data", "backups"))
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
