@@ -42,7 +42,10 @@ import {
 import {
   computeWeeklyNewsletterDigest,
   ingestExternalResearchDocument,
+  parseNewsletterSourceSpecs,
+  resolveNewsletterSourcesFromEnv,
   renderWeeklyNewsletterDigestMarkdown,
+  syncNewsletterSources,
 } from "../research/external-research.js";
 import {
   ingestFilings,
@@ -638,6 +641,61 @@ export function registerResearchCli(program: Command) {
         defaultRuntime.log(
           `external_ingest id=${result.id} source_type=${result.sourceType} provider=${result.provider} chunks=${result.chunks} title="${result.title}"`,
         );
+      });
+    });
+
+  research
+    .command("newsletter-sync")
+    .description(
+      "Fetch newsletter sources (including paywalled archives with cookies) and ingest full text",
+    )
+    .option("--source <spec>", "Source spec: provider|url|ticker (repeatable)", collectOption, [])
+    .option("--sources-file <path>", "Text file of source specs (one per line)")
+    .option("--providers <csv>", "Provider filter (substack,stratechery,diff,other)")
+    .option("--max-links-per-source <n>", "Max article links fetched from each source", "10")
+    .option("--max-docs <n>", "Max article pages fetched in this run", "50")
+    .option("--user-agent <ua>", "HTTP user-agent override")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const inlineSourceSpecs = (opts.source as string[] | undefined) ?? [];
+        let specBlob = inlineSourceSpecs.join("\n");
+        const sourcesFile = (opts["sourcesFile"] as string | undefined)?.trim();
+        if (sourcesFile) {
+          const fromFile = await fs.readFile(path.resolve(sourcesFile), "utf8");
+          specBlob = specBlob ? `${specBlob}\n${fromFile}` : fromFile;
+        }
+        const sources = specBlob.trim()
+          ? parseNewsletterSourceSpecs(specBlob)
+          : resolveNewsletterSourcesFromEnv(process.env);
+
+        const result = await syncNewsletterSources({
+          dbPath: opts.db as string,
+          sources,
+          providers:
+            typeof opts.providers === "string" && opts.providers.trim()
+              ? parseCsvListOption(opts.providers as string)
+              : undefined,
+          maxLinksPerSource: parseOptionalNumber(opts["maxLinksPerSource"]) ?? 10,
+          maxDocs: parseOptionalNumber(opts["maxDocs"]) ?? 50,
+          userAgent: opts["userAgent"] as string | undefined,
+        });
+
+        defaultRuntime.log(
+          `newsletter_sync sources=${result.sources} attempted=${result.attempted} ingested=${result.ingested} skipped=${result.skipped} failures=${result.failures}`,
+        );
+        const preview = result.docs.slice(0, 40);
+        preview.forEach((doc) => {
+          if (doc.ingested) {
+            defaultRuntime.log(
+              `- ingested provider=${doc.provider} title="${doc.title}" url=${doc.url} id=${doc.documentId} chunks=${doc.chunks}`,
+            );
+            return;
+          }
+          defaultRuntime.error(
+            `- skipped provider=${doc.provider} url=${doc.url} reason=${doc.reason ?? "unknown"}`,
+          );
+        });
       });
     });
 

@@ -1,3 +1,5 @@
+import { Readability } from "@mozilla/readability";
+import { parseHTML } from "linkedom";
 import { createHash } from "node:crypto";
 import { chunkText } from "./chunker.js";
 import { openResearchDb } from "./db.js";
@@ -76,8 +78,40 @@ export type WeeklyNewsletterDigest = {
   quickScan: ExternalResearchDigestDoc[];
 };
 
+export type NewsletterSyncSource = {
+  provider: NewsletterProvider | string;
+  url: string;
+  sender?: string;
+  ticker?: string;
+  tags?: string[];
+};
+
+export type NewsletterSyncResultDoc = {
+  provider: string;
+  sourceUrl: string;
+  url: string;
+  title: string;
+  ingested: boolean;
+  reason?: string;
+  documentId?: number;
+  chunks?: number;
+};
+
+export type NewsletterSyncResult = {
+  sources: number;
+  attempted: number;
+  ingested: number;
+  skipped: number;
+  failures: number;
+  docs: NewsletterSyncResultDoc[];
+};
+
 const RESEARCH_SUBJECT_DEFAULT = "RESEARCH";
 const DIGEST_MAX_CONTENT_CHARS = 12_000;
+const NEWSLETTER_SYNC_DEFAULT_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36";
+const NEWSLETTER_SOURCE_DEFAULT_MAX_LINKS = 10;
+const NEWSLETTER_SOURCE_DEFAULT_MAX_DOCS = 50;
 
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 
@@ -91,6 +125,15 @@ const normalizeEmail = (value?: string): string => {
 const normalizeTicker = (value?: string): string => {
   if (!value) return "";
   return value.trim().toUpperCase();
+};
+
+const normalizeProvider = (value?: string): string => {
+  if (!value) return "other";
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "substack" || normalized === "stratechery" || normalized === "diff") {
+    return normalized;
+  }
+  return normalized || "other";
 };
 
 const normalizeDate = (value?: string): string => {
@@ -122,6 +165,219 @@ const parseCsv = (value?: string): string[] =>
 const extractFirstUrl = (value: string): string | undefined => {
   const match = value.match(/https?:\/\/[^\s)\]]+/i);
   return match?.[0];
+};
+
+const parseArchiveList = (value?: string): string[] =>
+  (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+const parseUrlSafe = (value: string): string | null => {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+};
+
+const toAbsoluteUrl = (href: string, baseUrl: string): string | null => {
+  try {
+    const parsed = new URL(href, baseUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+};
+
+const defaultSenderForProvider = (provider: string): string => {
+  if (provider === "substack") return "updates@substack.com";
+  if (provider === "stratechery") return "updates@stratechery.com";
+  if (provider === "diff") return "team@thediff.co";
+  return "research-feed@openclaw.local";
+};
+
+const providerCookieEnv = (provider: string, env: NodeJS.ProcessEnv): string => {
+  if (provider === "substack") return (env.OPENCLAW_RESEARCH_SUBSTACK_COOKIE ?? "").trim();
+  if (provider === "stratechery") return (env.OPENCLAW_RESEARCH_STRATECHERY_COOKIE ?? "").trim();
+  if (provider === "diff") return (env.OPENCLAW_RESEARCH_DIFF_COOKIE ?? "").trim();
+  return "";
+};
+
+const parseSourceSpecLine = (line: string): NewsletterSyncSource | null => {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("#")) return null;
+
+  const parts = trimmed
+    .split("|")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.length) return null;
+  if (parts.length === 1) {
+    const url = parseUrlSafe(parts[0]);
+    if (!url) return null;
+    return { provider: "other", url };
+  }
+  const provider = normalizeProvider(parts[0]);
+  const url = parseUrlSafe(parts[1]);
+  if (!url) return null;
+  const ticker = parts[2] ? normalizeTicker(parts[2]) : "";
+  return {
+    provider,
+    url,
+    ticker: ticker || undefined,
+  };
+};
+
+export const parseNewsletterSourceSpecs = (value: string): NewsletterSyncSource[] =>
+  value
+    .split(/\r?\n|;/)
+    .map((line) => parseSourceSpecLine(line))
+    .filter((entry): entry is NewsletterSyncSource => Boolean(entry));
+
+export const resolveNewsletterSourcesFromEnv = (env: NodeJS.ProcessEnv = process.env) => {
+  const configured: NewsletterSyncSource[] = [];
+  const explicit = parseNewsletterSourceSpecs(env.OPENCLAW_RESEARCH_NEWSLETTER_SOURCES ?? "");
+  configured.push(...explicit);
+  parseArchiveList(env.OPENCLAW_RESEARCH_SUBSTACK_ARCHIVES).forEach((url) =>
+    configured.push({ provider: "substack", url }),
+  );
+  parseArchiveList(env.OPENCLAW_RESEARCH_STRATECHERY_ARCHIVES).forEach((url) =>
+    configured.push({ provider: "stratechery", url }),
+  );
+  parseArchiveList(env.OPENCLAW_RESEARCH_DIFF_ARCHIVES).forEach((url) =>
+    configured.push({ provider: "diff", url }),
+  );
+  const dedup = new Map<string, NewsletterSyncSource>();
+  configured.forEach((source) => {
+    const provider = normalizeProvider(source.provider);
+    const url = parseUrlSafe(source.url);
+    if (!url) return;
+    const key = `${provider}|${url}`;
+    if (!dedup.has(key)) {
+      dedup.set(key, {
+        provider,
+        url,
+        sender: source.sender,
+        ticker: normalizeTicker(source.ticker),
+        tags: source.tags,
+      });
+    }
+  });
+  return Array.from(dedup.values());
+};
+
+const extractCandidateLinks = (html: string, sourceUrl: string, maxLinks: number): string[] => {
+  const { document } = parseHTML(html);
+  const source = new URL(sourceUrl);
+  const links = new Set<string>();
+  const anchors = Array.from(document.querySelectorAll("a[href]"));
+  for (const anchor of anchors) {
+    const href = anchor.getAttribute("href");
+    if (!href) continue;
+    const resolved = toAbsoluteUrl(href, sourceUrl);
+    if (!resolved) continue;
+    const candidate = new URL(resolved);
+    if (candidate.hostname !== source.hostname) {
+      continue;
+    }
+    if (candidate.pathname === "/" || candidate.pathname.length < 2) {
+      continue;
+    }
+    if (candidate.pathname.includes("/archive") || candidate.pathname.includes("/tag/")) {
+      continue;
+    }
+    links.add(candidate.toString());
+    if (links.size >= maxLinks) break;
+  }
+  return Array.from(links.values());
+};
+
+const extractPublishedTimeFromHtml = (html: string): string => {
+  const { document } = parseHTML(html);
+  const selectors = [
+    "meta[property='article:published_time']",
+    "meta[name='article:published_time']",
+    "meta[name='parsely-pub-date']",
+    "meta[name='date']",
+  ];
+  for (const selector of selectors) {
+    const value = document.querySelector(selector)?.getAttribute("content") ?? "";
+    const normalized = normalizeDate(value);
+    if (normalized) return normalized;
+  }
+  return "";
+};
+
+const extractArticleFromHtml = (
+  html: string,
+): { title: string; content: string; publishedAt?: string } | null => {
+  const { document } = parseHTML(html);
+  const reader = new Readability(document, { charThreshold: 200 });
+  const article = reader.parse();
+  const title = (article?.title ?? document.querySelector("title")?.textContent ?? "").trim();
+  const content = (article?.textContent ?? "").replace(/\s+/g, " ").trim();
+  if (!title || content.length < 350) return null;
+  const publishedAt = extractPublishedTimeFromHtml(html);
+  return {
+    title,
+    content,
+    publishedAt: publishedAt || undefined,
+  };
+};
+
+const buildAuthHeaders = (params: {
+  provider: string;
+  userAgent?: string;
+  cookie?: string;
+  env?: NodeJS.ProcessEnv;
+}): HeadersInit => {
+  const env = params.env ?? process.env;
+  const provider = normalizeProvider(params.provider);
+  const providerCookie = params.cookie?.trim() || providerCookieEnv(provider, env);
+  const genericCookie = (env.OPENCLAW_RESEARCH_NEWSLETTER_COOKIE ?? "").trim();
+  const cookie = providerCookie || genericCookie;
+  const headers: Record<string, string> = {
+    "user-agent": (params.userAgent ?? "").trim() || NEWSLETTER_SYNC_DEFAULT_UA,
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  };
+  if (cookie) headers.cookie = cookie;
+  return headers;
+};
+
+const fetchHtmlWithAuth = async (params: {
+  url: string;
+  provider: string;
+  userAgent?: string;
+  cookie?: string;
+  fetchFn?: typeof fetch;
+  env?: NodeJS.ProcessEnv;
+}): Promise<{ html: string; finalUrl: string }> => {
+  const fetchFn = params.fetchFn ?? fetch;
+  const response = await fetchFn(params.url, {
+    method: "GET",
+    redirect: "follow",
+    headers: buildAuthHeaders({
+      provider: params.provider,
+      userAgent: params.userAgent,
+      cookie: params.cookie,
+      env: params.env,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const html = await response.text();
+  return {
+    html,
+    finalUrl: response.url || params.url,
+  };
 };
 
 export const extractTickerFromSubject = (subject: string, prefix = RESEARCH_SUBJECT_DEFAULT) => {
@@ -600,4 +856,149 @@ export const renderWeeklyNewsletterDigestMarkdown = (digest: WeeklyNewsletterDig
   );
   lines.push(`- To improve ranking quality, ingest rich body content (not snippet-only emails).`);
   return lines.join("\n");
+};
+
+export const syncNewsletterSources = async (params: {
+  dbPath?: string;
+  sources?: NewsletterSyncSource[];
+  providers?: string[];
+  maxLinksPerSource?: number;
+  maxDocs?: number;
+  userAgent?: string;
+  cookies?: Record<string, string>;
+  fetchFn?: typeof fetch;
+  env?: NodeJS.ProcessEnv;
+}): Promise<NewsletterSyncResult> => {
+  const env = params.env ?? process.env;
+  const configuredSources =
+    params.sources && params.sources.length ? params.sources : resolveNewsletterSourcesFromEnv(env);
+  const providerFilter = new Set(
+    (params.providers ?? []).map((provider) => normalizeProvider(provider)).filter(Boolean),
+  );
+  const sources = configuredSources.filter((source) => {
+    if (!providerFilter.size) return true;
+    return providerFilter.has(normalizeProvider(source.provider));
+  });
+  if (!sources.length) {
+    throw new Error(
+      "No newsletter sources configured. Set OPENCLAW_RESEARCH_NEWSLETTER_SOURCES or pass --source.",
+    );
+  }
+
+  const maxLinksPerSource = Math.max(
+    1,
+    Math.round(params.maxLinksPerSource ?? NEWSLETTER_SOURCE_DEFAULT_MAX_LINKS),
+  );
+  const maxDocs = Math.max(1, Math.round(params.maxDocs ?? NEWSLETTER_SOURCE_DEFAULT_MAX_DOCS));
+  const docs: NewsletterSyncResultDoc[] = [];
+  let attempted = 0;
+  let ingested = 0;
+  let skipped = 0;
+  let failures = 0;
+
+  for (const source of sources) {
+    if (attempted >= maxDocs) break;
+    const provider = normalizeProvider(source.provider);
+    const sourceUrl = parseUrlSafe(source.url);
+    if (!sourceUrl) continue;
+    const cookie = params.cookies?.[provider] ?? "";
+    let archiveHtml = "";
+    let archiveUrl = sourceUrl;
+    try {
+      const archive = await fetchHtmlWithAuth({
+        url: sourceUrl,
+        provider,
+        userAgent: params.userAgent,
+        cookie,
+        fetchFn: params.fetchFn,
+        env,
+      });
+      archiveHtml = archive.html;
+      archiveUrl = archive.finalUrl;
+    } catch (error) {
+      docs.push({
+        provider,
+        sourceUrl,
+        url: sourceUrl,
+        title: sourceUrl,
+        ingested: false,
+        reason: `source fetch failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      failures += 1;
+      continue;
+    }
+
+    const candidates = extractCandidateLinks(archiveHtml, archiveUrl, maxLinksPerSource);
+    for (const candidateUrl of candidates) {
+      if (attempted >= maxDocs) break;
+      attempted += 1;
+      try {
+        const page = await fetchHtmlWithAuth({
+          url: candidateUrl,
+          provider,
+          userAgent: params.userAgent,
+          cookie,
+          fetchFn: params.fetchFn,
+          env,
+        });
+        const extracted = extractArticleFromHtml(page.html);
+        if (!extracted) {
+          docs.push({
+            provider,
+            sourceUrl,
+            url: page.finalUrl,
+            title: candidateUrl,
+            ingested: false,
+            reason: "article extraction returned insufficient content",
+          });
+          skipped += 1;
+          continue;
+        }
+        const ingestion = ingestExternalResearchDocument({
+          dbPath: params.dbPath,
+          sourceType: "newsletter",
+          provider,
+          sender: source.sender || defaultSenderForProvider(provider),
+          externalId: sha256(`${provider}|${page.finalUrl}`),
+          title: extracted.title,
+          subject: extracted.title,
+          content: extracted.content,
+          url: page.finalUrl,
+          ticker: source.ticker,
+          publishedAt: extracted.publishedAt,
+          receivedAt: new Date().toISOString(),
+          tags: ["newsletter", "newsletter-sync", `provider:${provider}`, ...(source.tags ?? [])],
+        });
+        docs.push({
+          provider,
+          sourceUrl,
+          url: page.finalUrl,
+          title: extracted.title,
+          ingested: true,
+          documentId: ingestion.id,
+          chunks: ingestion.chunks,
+        });
+        ingested += 1;
+      } catch (error) {
+        docs.push({
+          provider,
+          sourceUrl,
+          url: candidateUrl,
+          title: candidateUrl,
+          ingested: false,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        failures += 1;
+      }
+    }
+  }
+
+  return {
+    sources: sources.length,
+    attempted,
+    ingested,
+    skipped,
+    failures,
+    docs,
+  };
 };

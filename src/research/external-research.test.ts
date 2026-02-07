@@ -1,13 +1,16 @@
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openResearchDb } from "./db.js";
 import {
   buildResearchCandidateFromGmailHook,
   computeWeeklyNewsletterDigest,
   ingestExternalResearchDocument,
+  parseNewsletterSourceSpecs,
   parseGmailHookMessage,
+  resolveNewsletterSourcesFromEnv,
   renderWeeklyNewsletterDigestMarkdown,
+  syncNewsletterSources,
 } from "./external-research.js";
 
 const testDbPath = (name: string) =>
@@ -110,5 +113,93 @@ describe("external research ingestion", () => {
     const markdown = renderWeeklyNewsletterDigestMarkdown(digest);
     expect(markdown).toContain("Weekly Research Newsletter Digest");
     expect(markdown).toContain("Read In Full");
+  });
+
+  it("parses newsletter source specs and env defaults", () => {
+    const specs = parseNewsletterSourceSpecs(
+      [
+        "substack|https://example.substack.com/archive|NVDA",
+        "stratechery|https://stratechery.com/archive",
+        "# comment",
+      ].join("\n"),
+    );
+    expect(specs).toHaveLength(2);
+    expect(specs[0]?.provider).toBe("substack");
+    expect(specs[0]?.ticker).toBe("NVDA");
+
+    const envSpecs = resolveNewsletterSourcesFromEnv({
+      OPENCLAW_RESEARCH_SUBSTACK_ARCHIVES: "https://x.substack.com/archive",
+      OPENCLAW_RESEARCH_STRATECHERY_ARCHIVES: "https://stratechery.com/archive",
+      OPENCLAW_RESEARCH_DIFF_ARCHIVES: "https://www.thediff.co/archive",
+      OPENCLAW_RESEARCH_NEWSLETTER_SOURCES: "substack|https://x.substack.com/archive",
+    });
+    expect(envSpecs.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("syncs newsletter sources via authenticated crawl and ingests articles", async () => {
+    const dbPath = testDbPath("sync");
+    const sourceUrl = "https://example.substack.com/archive";
+    const articleA = "https://example.substack.com/p/ai-market-structure";
+    const articleB = "https://example.substack.com/p/capex-cycle";
+    const archiveHtml = `
+      <html><body>
+        <a href="/p/ai-market-structure">AI market structure</a>
+        <a href="/p/capex-cycle">Capex cycle</a>
+      </body></html>
+    `;
+    const longTextA =
+      "AI infrastructure spending is shifting from experimental pilots to core production budgets. " +
+      "Operating leverage is emerging in networking and optical components while training cost curves flatten. ".repeat(
+        8,
+      );
+    const longTextB =
+      "Capex guidance now signals a multi-year digestion cycle, but supply-chain bottlenecks keep gross margin dispersion wide. " +
+      "Investors should separate cyclicality from structural adoption and track revision breadth across vendors. ".repeat(
+        8,
+      );
+    const articleHtmlA = `<html><head><title>AI Market Structure</title><meta property="article:published_time" content="2026-02-01T10:00:00Z" /></head><body><article><h1>AI Market Structure</h1><p>${longTextA}</p></article></body></html>`;
+    const articleHtmlB = `<html><head><title>Capex Cycle</title></head><body><article><h1>Capex Cycle</h1><p>${longTextB}</p></article></body></html>`;
+
+    const fetchFn: typeof fetch = vi.fn(async (input) => {
+      const raw = typeof input === "string" ? input : input.url;
+      if (raw === sourceUrl) {
+        return new Response(archiveHtml, {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+      if (raw === articleA) {
+        return new Response(articleHtmlA, {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+      if (raw === articleB) {
+        return new Response(articleHtmlB, {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const result = await syncNewsletterSources({
+      dbPath,
+      sources: [{ provider: "substack", url: sourceUrl }],
+      maxLinksPerSource: 3,
+      maxDocs: 4,
+      fetchFn,
+    });
+
+    expect(result.ingested).toBe(2);
+    expect(result.failures).toBe(0);
+    const digest = computeWeeklyNewsletterDigest({
+      dbPath,
+      lookbackDays: 14,
+      providers: ["substack"],
+      limit: 20,
+    });
+    expect(digest.totalDocs).toBe(2);
+    expect(digest.providers[0]?.provider).toBe("substack");
   });
 });
