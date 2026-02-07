@@ -257,7 +257,8 @@ export const ingestFilings = async (
       source_url=excluded.source_url,
       text=excluded.text,
       filing_hash=excluded.filing_hash,
-      fetched_at=excluded.fetched_at;
+      fetched_at=excluded.fetched_at
+    returning id;
   `);
   const insertVersion = db.prepare(`
     insert into filing_versions (
@@ -393,8 +394,10 @@ export const ingestTranscript = async (ticker: string, url: string) => {
     values (@instrument_id, @event_date, @event_type, @source, @url, @title, @speakers, @content, @fetched_at)
     on conflict(url) do update set
       title=excluded.title,
+      speakers=excluded.speakers,
       content=excluded.content,
-      fetched_at=excluded.fetched_at;
+      fetched_at=excluded.fetched_at
+    returning id;
   `);
   const row = insertTranscript.get({
     instrument_id: instrumentId,
