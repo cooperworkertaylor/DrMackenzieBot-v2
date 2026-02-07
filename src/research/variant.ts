@@ -20,7 +20,11 @@ const REVENUE_CONCEPTS = [
   "SalesRevenueNet",
   "Revenue",
 ];
-const OPERATING_INCOME_CONCEPTS = ["OperatingIncomeLoss", "ProfitLossFromOperatingActivities"];
+const OPERATING_INCOME_CONCEPTS = [
+  "OperatingIncomeLoss",
+  "ProfitLossFromOperatingActivities",
+  "ProfitLoss",
+];
 
 export type VariantPerceptionResult = {
   ticker: string;
@@ -152,7 +156,7 @@ const loadFundamentalSeries = (ticker: string, dbPath?: string): FundamentalPoin
          AND ff.is_latest=1
          AND (
            (ff.taxonomy='us-gaap' AND ff.concept IN ('Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'SalesRevenueNet', 'OperatingIncomeLoss'))
-           OR (ff.taxonomy='ifrs-full' AND ff.concept IN ('Revenue', 'ProfitLossFromOperatingActivities'))
+           OR (ff.taxonomy='ifrs-full' AND ff.concept IN ('Revenue', 'ProfitLossFromOperatingActivities', 'ProfitLoss'))
          )
        ORDER BY ff.period_end DESC
        LIMIT 48`,

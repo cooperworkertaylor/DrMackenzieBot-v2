@@ -8,6 +8,7 @@ type FundamentalPeriod = {
   fiscalPeriod: string;
   revenue?: number;
   operatingIncome?: number;
+  operatingIncomeConcept?: string;
 };
 
 const REVENUE_CONCEPTS = [
@@ -16,7 +17,18 @@ const REVENUE_CONCEPTS = [
   "SalesRevenueNet",
   "Revenue",
 ];
-const OPERATING_INCOME_CONCEPTS = ["OperatingIncomeLoss", "ProfitLossFromOperatingActivities"];
+const OPERATING_INCOME_CONCEPTS = [
+  "OperatingIncomeLoss",
+  "ProfitLossFromOperatingActivities",
+  "ProfitLoss",
+];
+
+const operatingIncomeConceptPriority = (concept: string): number => {
+  if (concept === "OperatingIncomeLoss") return 3;
+  if (concept === "ProfitLossFromOperatingActivities") return 2;
+  if (concept === "ProfitLoss") return 1;
+  return 0;
+};
 
 type ScenarioDriver = {
   name: ScenarioName;
@@ -325,7 +337,7 @@ const loadFundamentals = (ticker: string, dbPath?: string): FundamentalPeriod[] 
          AND ff.is_latest=1
          AND (
            (ff.taxonomy='us-gaap' AND ff.concept IN ('Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'SalesRevenueNet', 'OperatingIncomeLoss'))
-           OR (ff.taxonomy='ifrs-full' AND ff.concept IN ('Revenue', 'ProfitLossFromOperatingActivities'))
+           OR (ff.taxonomy='ifrs-full' AND ff.concept IN ('Revenue', 'ProfitLossFromOperatingActivities', 'ProfitLoss'))
          )
        ORDER BY ff.period_end DESC
        LIMIT 80`,
@@ -344,8 +356,16 @@ const loadFundamentals = (ticker: string, dbPath?: string): FundamentalPeriod[] 
       fiscalPeriod: row.fiscal_period,
     };
     if (REVENUE_CONCEPTS.includes(row.concept)) current.revenue = toFiniteOrUndefined(row.value);
-    if (OPERATING_INCOME_CONCEPTS.includes(row.concept))
-      current.operatingIncome = toFiniteOrUndefined(row.value);
+    if (OPERATING_INCOME_CONCEPTS.includes(row.concept)) {
+      const nextPriority = operatingIncomeConceptPriority(row.concept);
+      const existingPriority = current.operatingIncomeConcept
+        ? operatingIncomeConceptPriority(current.operatingIncomeConcept)
+        : 0;
+      if (!current.operatingIncomeConcept || nextPriority > existingPriority) {
+        current.operatingIncome = toFiniteOrUndefined(row.value);
+        current.operatingIncomeConcept = row.concept;
+      }
+    }
     byPeriod.set(key, current);
   }
   return Array.from(byPeriod.values()).toSorted((a, b) => b.periodEnd.localeCompare(a.periodEnd));
@@ -359,13 +379,31 @@ const loadSharesOutstanding = (ticker: string, dbPath?: string): number | undefi
        FROM fundamental_facts ff
        JOIN instruments i ON i.id=ff.instrument_id
        WHERE i.ticker=?
-         AND ff.is_latest=1
          AND (
            (ff.taxonomy='dei' AND ff.concept='EntityCommonStockSharesOutstanding')
            OR (ff.taxonomy='us-gaap' AND ff.concept='CommonStockSharesOutstanding')
-           OR (ff.taxonomy='ifrs-full' AND ff.concept='NumberOfSharesOutstanding')
+           OR (ff.taxonomy='ifrs-full' AND ff.concept IN (
+             'NumberOfSharesOutstanding',
+             'AdjustedWeightedAverageShares',
+             'WeightedAverageShares',
+             'AdjustedWeightedAverageNumberOfSharesOutstanding',
+             'WeightedAverageNumberOfSharesOutstanding'
+           ))
          )
-       ORDER BY ff.period_end DESC, ff.filing_date DESC
+       ORDER BY
+         CASE ff.concept
+           WHEN 'EntityCommonStockSharesOutstanding' THEN 1
+           WHEN 'CommonStockSharesOutstanding' THEN 2
+           WHEN 'NumberOfSharesOutstanding' THEN 3
+           WHEN 'AdjustedWeightedAverageShares' THEN 4
+           WHEN 'AdjustedWeightedAverageNumberOfSharesOutstanding' THEN 5
+           WHEN 'WeightedAverageShares' THEN 6
+           WHEN 'WeightedAverageNumberOfSharesOutstanding' THEN 7
+           ELSE 99
+         END,
+         ff.period_end DESC,
+         ff.filing_date DESC,
+         ff.fetched_at DESC
        LIMIT 1`,
     )
     .get(ticker) as { value?: number } | undefined;

@@ -58,6 +58,7 @@ const REVENUE_CONCEPTS = [
 const OPERATING_INCOME_CONCEPTS = [
   "OperatingIncomeLoss",
   "ProfitLossFromOperatingActivities",
+  "ProfitLoss",
 ] as const;
 
 const toFinite = (value: unknown): number | undefined => {
@@ -156,7 +157,7 @@ const loadFundamentalExhibitRows = (params: {
          AND ff.is_latest=1
          AND (
            (ff.taxonomy='us-gaap' AND ff.concept IN ('Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'SalesRevenueNet', 'OperatingIncomeLoss'))
-           OR (ff.taxonomy='ifrs-full' AND ff.concept IN ('Revenue', 'ProfitLossFromOperatingActivities'))
+           OR (ff.taxonomy='ifrs-full' AND ff.concept IN ('Revenue', 'ProfitLossFromOperatingActivities', 'ProfitLoss'))
          )
        ORDER BY ff.period_end DESC, ff.fiscal_period DESC, ff.filing_date DESC
        LIMIT 240`,
