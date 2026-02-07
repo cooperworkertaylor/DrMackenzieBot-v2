@@ -180,6 +180,10 @@ describe("institutional memo grading", () => {
     params.portfolio.stance = "insufficient-evidence";
     params.portfolio.recommendedWeightPct = 0;
     params.portfolio.maxRiskBudgetPct = 0;
+    params.portfolio.reviewTriggers = [];
+    params.valuation.expectedUpsideWithCatalystsPct = undefined;
+    params.valuation.expectedUpsidePct = undefined;
+    params.portfolio.expectedUpsidePct = undefined;
     const grade = gradeInstitutionalMemo(params);
     expect(grade.passed).toBe(false);
     expect(grade.requiredFailures).toContain("actionability");
@@ -188,8 +192,23 @@ describe("institutional memo grading", () => {
   it("passes actionability for a disciplined watch plan with quantified expected value", () => {
     const params = baseInputs();
     params.portfolio.stance = "watch";
+    params.portfolio.recommendedWeightPct = 1;
+    params.portfolio.maxRiskBudgetPct = 0.5;
     params.valuation.expectedUpsideWithCatalystsPct = undefined;
     params.valuation.expectedUpsidePct = 0.11;
+    const grade = gradeInstitutionalMemo(params);
+    const actionability = grade.checks.find((check) => check.name === "actionability");
+    expect(actionability?.passed).toBe(true);
+    expect(grade.requiredFailures).not.toContain("actionability");
+  });
+
+  it("passes actionability for disciplined no-position stance", () => {
+    const params = baseInputs();
+    params.portfolio.stance = "insufficient-evidence";
+    params.portfolio.recommendedWeightPct = 0;
+    params.portfolio.maxRiskBudgetPct = 0;
+    params.valuation.expectedUpsideWithCatalystsPct = undefined;
+    params.valuation.expectedUpsidePct = 0.08;
     const grade = gradeInstitutionalMemo(params);
     const actionability = grade.checks.find((check) => check.name === "actionability");
     expect(actionability?.passed).toBe(true);

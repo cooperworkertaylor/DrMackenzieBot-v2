@@ -137,25 +137,41 @@ const evaluateActionability = (params: {
   valuation: ValuationResult;
   variant: VariantPerceptionResult;
 }): { score: number; passed: boolean; detail: string } => {
-  const stanceActionableScore =
-    params.portfolio.stance === "long" || params.portfolio.stance === "short"
-      ? 1
-      : params.portfolio.stance === "watch"
-        ? 0.7
+  const inMarketStance = params.portfolio.stance === "long" || params.portfolio.stance === "short";
+  const noPositionStance =
+    params.portfolio.stance === "watch" || params.portfolio.stance === "insufficient-evidence";
+  const stanceActionableScore = inMarketStance
+    ? 1
+    : params.portfolio.stance === "watch"
+      ? 0.75
+      : params.portfolio.stance === "insufficient-evidence"
+        ? 0.55
         : 0;
   const expectedValue =
     params.valuation.expectedUpsideWithCatalystsPct ??
     params.valuation.expectedUpsidePct ??
     params.portfolio.expectedUpsidePct;
   const hasExpectedValue = typeof expectedValue === "number" ? 1 : 0;
-  const sizingDiscipline =
-    params.portfolio.recommendedWeightPct > 0 &&
-    params.portfolio.maxRiskBudgetPct > 0 &&
-    params.portfolio.maxRiskBudgetPct <= Math.max(4, params.portfolio.recommendedWeightPct * 0.7)
+  const noPositionSizingDiscipline =
+    params.portfolio.recommendedWeightPct <= 0.25 && params.portfolio.maxRiskBudgetPct <= 0.25;
+  const watchProbeSizingDiscipline =
+    params.portfolio.stance === "watch" &&
+    params.portfolio.recommendedWeightPct <= 2 &&
+    params.portfolio.maxRiskBudgetPct <= 1;
+  const sizingDiscipline = inMarketStance
+    ? params.portfolio.recommendedWeightPct > 0 &&
+      params.portfolio.maxRiskBudgetPct > 0 &&
+      params.portfolio.maxRiskBudgetPct <= Math.max(4, params.portfolio.recommendedWeightPct * 0.7)
+      ? 1
+      : 0
+    : noPositionStance && (noPositionSizingDiscipline || watchProbeSizingDiscipline)
       ? 1
       : 0;
-  const stopLossDiscipline =
-    params.portfolio.stopLossPct >= 0.06 && params.portfolio.stopLossPct <= 0.25 ? 1 : 0;
+  const stopLossDiscipline = inMarketStance
+    ? params.portfolio.stopLossPct >= 0.06 && params.portfolio.stopLossPct <= 0.25
+      ? 1
+      : 0
+    : 1;
   const triggerCoverage = clamp01(params.portfolio.reviewTriggers.length / 4);
   const confidenceQuality = clamp01(
     (Math.min(params.portfolio.confidence, params.valuation.confidence, params.variant.confidence) -
@@ -171,11 +187,16 @@ const evaluateActionability = (params: {
       0.1 * triggerCoverage +
       0.1 * confidenceQuality,
   );
-  const passed = score >= 0.7 && stanceActionableScore >= 0.7 && hasExpectedValue === 1;
+  const passed =
+    score >= 0.7 &&
+    hasExpectedValue === 1 &&
+    (inMarketStance
+      ? stanceActionableScore >= 1
+      : noPositionStance && stanceActionableScore >= 0.55 && triggerCoverage >= 0.75);
   return {
     score,
     passed,
-    detail: `score=${score.toFixed(2)} stance=${params.portfolio.stance} stance_score=${stanceActionableScore.toFixed(2)} expected_value=${hasExpectedValue} weight=${params.portfolio.recommendedWeightPct.toFixed(2)} risk_budget=${params.portfolio.maxRiskBudgetPct.toFixed(2)} stop_loss=${(params.portfolio.stopLossPct * 100).toFixed(1)}% triggers=${params.portfolio.reviewTriggers.length}`,
+    detail: `score=${score.toFixed(2)} stance=${params.portfolio.stance} stance_score=${stanceActionableScore.toFixed(2)} expected_value=${hasExpectedValue} in_market=${inMarketStance ? 1 : 0} weight=${params.portfolio.recommendedWeightPct.toFixed(2)} risk_budget=${params.portfolio.maxRiskBudgetPct.toFixed(2)} stop_loss=${(params.portfolio.stopLossPct * 100).toFixed(1)}% triggers=${params.portfolio.reviewTriggers.length}`,
   };
 };
 
