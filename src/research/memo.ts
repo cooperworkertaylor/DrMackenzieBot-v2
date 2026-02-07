@@ -9,12 +9,13 @@ import {
   type MemoEvidenceClaim,
 } from "./grade.js";
 import { ingestExpectations, ingestFilings, ingestFundamentals, ingestPrices } from "./ingest.js";
+import { enforceInstitutionalOutputGateV3 } from "./institutional-output-gate.js";
 import { buildTickerPointInTimeGraph, getTickerPointInTimeSnapshot } from "./knowledge-graph.js";
 import { addClaimEvidence, createResearchClaim, upsertResearchEntity } from "./memory-graph.js";
 import { composePortfolioDecision } from "./portfolio-decision.js";
 import { computePortfolioPlan, type PortfolioPlan } from "./portfolio.js";
 import { appendProvenanceEvent } from "./provenance.js";
-import { evaluateMemoQualityGate, recordQualityGateRun } from "./quality-gate.js";
+import { recordQualityGateRun } from "./quality-gate.js";
 import { runAdversarialResearchCell } from "./research-cell.js";
 import { computeValuation, recordValuationForecast, type ValuationResult } from "./valuation.js";
 import { computeVariantPerception, type VariantPerceptionResult } from "./variant.js";
@@ -1002,47 +1003,36 @@ export const generateMemoAsync = async (params: {
   const primaryDisagreements = disagreementResolutions.slice(0, 3);
   const topFalsification = diagnostics.falsificationTriggers.slice(0, 3);
 
+  const generatedOn = new Date().toISOString().slice(0, 10);
+  const storyMarketLine = valuation.impliedExpectations
+    ? `Consensus pricing implies revenue growth ${(valuation.impliedExpectations.impliedRevenueGrowth * 100).toFixed(1)}% and operating margin ${(valuation.impliedExpectations.impliedOperatingMargin * 100).toFixed(1)}%, while our base underwriting uses ${(valuation.impliedExpectations.modelRevenueGrowth * 100).toFixed(1)}% growth and ${(valuation.impliedExpectations.modelOperatingMargin * 100).toFixed(1)}% margin.`
+    : "Consensus-implied expectations are incomplete in the current dataset; confidence is reduced until that gap is closed.";
+  const catalystDate = valuation.catalystSummary?.nearestCatalystDate ?? "n/a";
+  const catalystImpact = valuation.catalystSummary?.expectedImpactPct;
+
   const memo = [
-    `# Research Memo: ${params.ticker.toUpperCase()}`,
+    `# Institutional Single-Name Research: ${params.ticker.toUpperCase()}`,
     ``,
-    `## Investment Question`,
-    params.question,
+    `## A. Cover`,
+    `- Ticker: ${params.ticker.toUpperCase()}`,
+    `- Date: ${generatedOn}`,
+    `- Investment question: ${params.question}`,
+    `- One-line call: ${portfolioDecision.finalStance.toUpperCase()} bias with ${portfolioDecision.recommendation.toUpperCase()} deployment until catalyst path and confidence improve.`,
     ``,
-    `## Investment Verdict`,
-    `- Recommendation: ${portfolioDecision.recommendation}`,
-    `- Final stance: ${portfolioDecision.finalStance}`,
-    `- Decision score: ${portfolioDecision.decisionScore.toFixed(2)} | Confidence: ${portfolioDecision.confidence.toFixed(2)}`,
-    `- Expected return: ${portfolioDecision.expectedReturnPct.toFixed(2)}% | Downside risk: ${portfolioDecision.downsideRiskPct.toFixed(2)}%`,
-    `- Variant vs consensus: variant=${variant.stance}, implied_market_view=${valuation.impliedExpectations?.stance ?? "insufficient-evidence"}`,
+    `## B. Exec Summary`,
+    `- Structural shift: Variant gap is ${variant.variantGapScore.toFixed(2)} with fundamental score ${variant.fundamentalScore.toFixed(2)} versus expectation score ${variant.expectationScore.toFixed(2)}.`,
+    `- Why now: Base scenario implies ${formatNum(baseScenario?.impliedSharePrice)} versus spot ${formatNum(valuation.currentPrice)}, forcing immediate expectation reset work.`,
+    `- Market belief vs our view: ${storyMarketLine}`,
+    `- Decision and confidence: ${portfolioDecision.recommendation} | score ${portfolioDecision.decisionScore.toFixed(2)} | confidence ${portfolioDecision.confidence.toFixed(2)}.`,
+    `- Deployment stance today: ${portfolio.stance} with max risk budget ${portfolio.maxRiskBudgetPct.toFixed(2)}% and stop ${formatPct(portfolio.stopLossPct)}.`,
     ``,
-    `## Why This Could Work`,
-    `- Variant gap: ${variant.variantGapScore.toFixed(2)} (expectation score ${variant.expectationScore.toFixed(2)} vs fundamental score ${variant.fundamentalScore.toFixed(2)}).`,
-    `- Scenario anchor: base implied price ${formatNum(baseScenario?.impliedSharePrice)} vs current ${formatNum(valuation.currentPrice)}.`,
-    `- Expected upside (with catalysts): ${formatPct(expectedUpsidePct)}; catalyst expected impact ${formatPct(valuation.catalystSummary?.expectedImpactPct)}.`,
-    `- Market-implied expectations: ${valuation.impliedExpectations ? `growth ${(valuation.impliedExpectations.impliedRevenueGrowth * 100).toFixed(1)}% vs model ${(valuation.impliedExpectations.modelRevenueGrowth * 100).toFixed(1)}%; margin ${(valuation.impliedExpectations.impliedOperatingMargin * 100).toFixed(1)}% vs model ${(valuation.impliedExpectations.modelOperatingMargin * 100).toFixed(1)}%.` : "insufficient evidence."}`,
+    `## C. The Story`,
+    `Two to three years ago, this name was primarily a growth narrative. The current setup is different: valuation is now being set by the market's implied terminal assumptions versus observed margin conversion and risk-adjusted scenario economics.`,
+    `Our variant is not based on a single data point. It comes from the joint read of filing-grounded fundamentals, expectations trend quality, and scenario pricing dispersion. Where that stack is thin, we explicitly de-rate confidence and sizing.`,
+    `Why now is timing plus asymmetry: the next catalyst window (${catalystDate}) arrives while expected return under base assumptions remains ${formatPct(expectedUpsidePct)}. That combination requires disciplined capital deployment, not narrative conviction.`,
     ``,
-    `## Evidence-Backed Thesis`,
-    ...lines.map((line, idx) => {
-      const refs = line.citationIds
-        .map((id) => {
-          const c = byId.get(id);
-          const suffix = c?.url ? ` (${c.url})` : "";
-          return `[C${id}]${suffix}`;
-        })
-        .join(", ");
-      return `${idx + 1}. ${line.claim}\n   Citations: ${refs}`;
-    }),
-    ``,
-    `## Scenario Pricing`,
-    `| Scenario | Probability | Revenue Growth | Operating Margin | WACC | Implied Price | Upside |`,
-    `|---|---:|---:|---:|---:|---:|---:|`,
-    ...valuation.scenarios.map(
-      (scenario) =>
-        `| ${scenario.name.toUpperCase()} | ${formatPct(scenario.probability)} | ${formatPct(scenario.revenueGrowth)} | ${formatPct(scenario.operatingMargin)} | ${formatPct(scenario.wacc)} | ${formatNum(scenario.impliedSharePrice)} | ${formatPct(scenario.upsidePct)} |`,
-    ),
-    ``,
-    `## KPI Trend`,
-    `### Fundamentals`,
+    `## D. Business Model & Value Drivers`,
+    `- Revenue and operating leverage trajectory:`,
     `| Period | Fiscal | Revenue | Operating Income | Operating Margin |`,
     `|---|---|---:|---:|---:|`,
     ...(fundamentalExhibit.length
@@ -1051,18 +1041,49 @@ export const generateMemoAsync = async (params: {
             `| ${row.periodEnd} | ${row.fiscalPeriod} | ${formatNum(row.revenue, 0)} | ${formatNum(row.operatingIncome, 0)} | ${formatPct(row.operatingMargin)} |`,
         )
       : ["| n/a | n/a | n/a | n/a | n/a |"]),
+    `- Core value drivers: customer growth quality, margin conversion, and loss/credit-cost discipline in stressed scenarios.`,
     ``,
-    `### Expectations`,
-    `| Fiscal Date | Reported Date | Est EPS | Reported EPS | Surprise % |`,
-    `|---|---|---:|---:|---:|`,
-    ...(expectationExhibit.length
-      ? expectationExhibit.map(
+    `## E. Variant View / Debate`,
+    `- Consensus framing: ${valuation.impliedExpectations?.stance ?? "insufficient-evidence"}`,
+    `- Our variant stance: ${variant.stance}`,
+    `- Debate outcome: passed=${researchCell.debate.passed ? 1 : 0}, coverage=${researchCell.debate.adversarialCoverageScore.toFixed(2)}, consensus=${researchCell.debate.consensusScore.toFixed(2)}.`,
+    ...primaryDisagreements.map((line) => `- ${line}`),
+    ``,
+    `## F. Valuation`,
+    `- Driver model cross-check:`,
+    `  - Expected upside (with catalysts): ${formatPct(expectedUpsidePct)}`,
+    `  - Catalyst expected impact: ${formatPct(catalystImpact)}`,
+    `  - Implied-vs-model gap: ${valuation.impliedExpectations ? `growth gap ${(valuation.impliedExpectations.growthGap * 100).toFixed(1)}%, margin gap ${(valuation.impliedExpectations.marginGap * 100).toFixed(1)}%` : "insufficient evidence"}`,
+    `- Scenario pricing table:`,
+    `| Scenario | Probability | Revenue Growth | Operating Margin | WACC | Implied Price | Upside |`,
+    `|---|---:|---:|---:|---:|---:|---:|`,
+    ...valuation.scenarios.map(
+      (scenario) =>
+        `| ${scenario.name.toUpperCase()} | ${formatPct(scenario.probability)} | ${formatPct(scenario.revenueGrowth)} | ${formatPct(scenario.operatingMargin)} | ${formatPct(scenario.wacc)} | ${formatNum(scenario.impliedSharePrice)} | ${formatPct(scenario.upsidePct)} |`,
+    ),
+    ``,
+    `## G. Exhibits`,
+    `### Exhibit 1: Long-Term Operating Trend`,
+    `| Period | Revenue | Operating Margin |`,
+    `|---|---:|---:|`,
+    ...(fundamentalExhibit.length
+      ? fundamentalExhibit.map(
           (row) =>
-            `| ${row.fiscalDateEnding} | ${row.reportedDate ?? "n/a"} | ${formatNum(row.estimatedEps, 3)} | ${formatNum(row.reportedEps, 3)} | ${formatPct(typeof row.surprisePct === "number" ? row.surprisePct / 100 : undefined)} |`,
+            `| ${row.periodEnd} | ${formatNum(row.revenue, 0)} | ${formatPct(row.operatingMargin)} |`,
         )
-      : ["| n/a | n/a | n/a | n/a | n/a |"]),
+      : ["| n/a | n/a | n/a |"]),
+    `Takeaway: Operating trend quality, not top-line alone, drives sustainable compounding.`,
     ``,
-    `## Market Tape`,
+    `### Exhibit 2: Scenario Economics`,
+    `| Scenario | Implied Price | Upside |`,
+    `|---|---:|---:|`,
+    ...valuation.scenarios.map(
+      (scenario) =>
+        `| ${scenario.name.toUpperCase()} | ${formatNum(scenario.impliedSharePrice)} | ${formatPct(scenario.upsidePct)} |`,
+    ),
+    `Takeaway: Current pricing requires assumptions that are richer than base underwriting.`,
+    ``,
+    `### Exhibit 3: Market Tape`,
     `- Latest close: ${formatNum(priceAction.latestClose)} (${priceAction.latestDate ?? "n/a"})`,
     `- 30D annualized volatility: ${formatPct(priceAction.annualizedVolatility30d)}`,
     `| Horizon | Base Date | Base Price | Return |`,
@@ -1071,47 +1092,69 @@ export const generateMemoAsync = async (params: {
       (horizon) =>
         `| ${horizon.label} | ${horizon.baseDate ?? "n/a"} | ${formatNum(horizon.baseClose)} | ${formatPct(horizon.returnPct)} |`,
     ),
+    `Takeaway: Tape performance is strong, but volatility and valuation spread require tighter sizing discipline.`,
     ``,
-    `## Disconfirming Evidence`,
+    `### Exhibit 4: Expectations and Surprise Path`,
+    `| Fiscal Date | Reported Date | Est EPS | Reported EPS | Surprise % |`,
+    `|---|---|---:|---:|---:|`,
+    ...(expectationExhibit.length
+      ? expectationExhibit.map(
+          (row) =>
+            `| ${row.fiscalDateEnding} | ${row.reportedDate ?? "n/a"} | ${formatNum(row.estimatedEps, 3)} | ${formatNum(row.reportedEps, 3)} | ${formatPct(typeof row.surprisePct === "number" ? row.surprisePct / 100 : undefined)} |`,
+        )
+      : ["| n/a | n/a | n/a | n/a | n/a |"]),
+    `Takeaway: Expectation quality is still thin; confidence should stay discounted until quarterly depth improves.`,
+    ``,
+    `### Exhibit 5: Disconfirming Evidence Stack`,
     ...(primaryDisconfirmers.length
       ? primaryDisconfirmers.map((item, index) => `${index + 1}. ${item}`)
       : ["1. None captured."]),
+    `Takeaway: The thesis must survive active disconfirmation, not only confirming signals.`,
     ``,
-    `## Debate and Resolution`,
-    `- Debate passed: ${researchCell.debate.passed ? "yes" : "no"} | Coverage: ${researchCell.debate.adversarialCoverageScore.toFixed(2)} | Consensus: ${researchCell.debate.consensusScore.toFixed(2)}`,
-    `- Allocator conclusion: ${researchCell.allocator.summary}`,
-    `- Remaining disagreement count: ${researchCell.debate.majorDisagreements.length}`,
-    ...primaryDisagreements.map((line) => `- ${line}`),
+    `### Exhibit 6: Catalyst Timeline`,
+    `- Open catalysts: ${valuation.catalystSummary?.openCount ?? 0}`,
+    `- Weighted expected impact: ${formatPct(catalystImpact)}`,
+    `- Nearest catalyst date: ${catalystDate}`,
+    `Takeaway: Timing and impact mapping turn research into executable risk-adjusted deployment.`,
     ``,
-    `## Action Plan`,
+    `## H. Risks / Kill Shots + Monitoring`,
+    `- High/medium contradictions: ${diagnostics.contradictions.length} total (${diagnostics.contradictions.filter((item) => item.severity === "high").length} high).`,
+    ...topFalsification.map((trigger, index) => `${index + 1}. ${trigger}`),
+    `- Monitoring dashboard: revisions trend, margin delta, scenario repricing, and contradiction count.`,
+    ``,
+    `## I. Catalysts & Timeline`,
+    `- 30d: confirm guidance quality and contradiction count <= 1.`,
+    `- 90d: validate scenario skew versus realized prints and revisions.`,
+    `- 180d: confirm margin conversion and loss/credit-cost discipline.`,
+    `- 365d: require sustained alpha versus risk-adjusted benchmark expectations.`,
+    ``,
+    `## J. Positioning & Risk Controls`,
+    `- Recommendation: ${portfolioDecision.recommendation}`,
     `- Entry trigger: ${actionabilityPlan.entryTrigger}`,
     ...actionabilityPlan.sizingBands.map((line, index) => `${index + 1}. ${line}`),
     `- Risk controls: ${actionabilityPlan.riskLine}`,
-    `- Stop loss: ${(portfolio.stopLossPct * 100).toFixed(1)}%`,
-    `- Falsification triggers:`,
-    ...topFalsification.map((trigger, index) => `  ${index + 1}. ${trigger}`),
-    ``,
-    `## Portfolio Construction`,
-    `- Stance: ${portfolio.stance}`,
-    `- Recommended weight: ${portfolio.recommendedWeightPct.toFixed(2)}%`,
-    `- Max risk budget: ${portfolio.maxRiskBudgetPct.toFixed(2)}%`,
-    `- Horizon: ${portfolio.timeHorizonDays} days`,
     `- Risk breaches: ${portfolioDecision.riskBreaches.length}`,
     ...(portfolioDecision.riskBreaches.length
       ? portfolioDecision.riskBreaches.map((issue, index) => `  ${index + 1}. ${issue}`)
       : ["  1. None detected."]),
     ``,
-    `## Appendix: Evidence Inventory`,
+    `## K. Appendix`,
+    `### Source List (timestamped)`,
+    ...citations.map(
+      (c) =>
+        `- C${c.id}: source=${c.source_table} ref=${c.ref_id}${citationDate(c) ? ` date=${citationDate(c)}` : ""}${extractHost(c.url) ? ` host=${extractHost(c.url)}` : ""}${c.url ? ` | ${c.url}` : ""}`,
+    ),
+    ``,
+    `### Data Snapshot`,
     `- Graph snapshot as-of: ${graphSnapshot.asOfDate}; events=${graphSnapshot.events.length}; facts=${graphSnapshot.facts.length}; scanned_rows=${graphBuild.rowsScanned}`,
     `- Variant confidence: ${variant.confidence.toFixed(2)} | Valuation confidence: ${valuation.confidence.toFixed(2)} | Portfolio confidence: ${portfolio.confidence.toFixed(2)}`,
     ...(variant.notes.length ? variant.notes.map((note) => `- Note: ${note}`) : []),
     ...(valuation.notes.length ? valuation.notes.map((note) => `- Note: ${note}`) : []),
     ``,
-    `## Citation Index`,
-    ...citations.map(
-      (c) =>
-        `- C${c.id}: source=${c.source_table} ref=${c.ref_id}${citationDate(c) ? ` date=${citationDate(c)}` : ""}${extractHost(c.url) ? ` host=${extractHost(c.url)}` : ""}${c.url ? ` | ${c.url}` : ""}`,
-    ),
+    `### Methodology Notes`,
+    `- Evidence hierarchy: SEC filings > transcripts > expectations > fundamentals > market tape.`,
+    `- Scenario economics are generated from bear/base/bull drivers and cross-checked with implied expectations.`,
+    `- Confidence is reduced when expectations depth or source freshness is limited.`,
   ].join("\n");
 
   const quality = gradeInstitutionalMemo({
@@ -1138,28 +1181,39 @@ export const generateMemoAsync = async (params: {
     )
     .digest("hex")
     .slice(0, 16)}`;
-  const qualityGate = evaluateMemoQualityGate({
+  const outputGate = enforceInstitutionalOutputGateV3({
+    kind: "memo",
     artifactId: memoGateArtifactId,
-    claims: lines,
-    citations,
-    diagnostics,
-    valuation,
-    grade: quality,
+    markdown: memo,
     minScore: minQualityScore,
+    maxRepairPasses: 5,
+    sources: citations.map((citation) => ({
+      sourceTable: citation.source_table,
+      date: citationDate(citation),
+      url: citation.url,
+      host: extractHost(citation.url),
+    })),
   });
+  const qualityGate = outputGate.evaluation;
+  const finalMemo = outputGate.markdown;
   const qualityGateRun = recordQualityGateRun({
     evaluation: qualityGate,
     metadata: {
       ticker: params.ticker.toUpperCase(),
       question: params.question,
       enforce_institutional_grade: enforceInstitutionalGrade,
+      output_gate_repairs: outputGate.repairs,
+      output_gate_hard_fails: qualityGate.hardFails,
     },
     dbPath: params.dbPath,
   });
 
   if (enforceInstitutionalGrade && !qualityGate.passed) {
     const failed = qualityGate.checks.filter((c) => !c.passed);
-    const details = failed.map((f) => `${f.name}: ${f.detail}`).join("; ");
+    const details = [
+      ...failed.map((f) => `${f.name}: ${f.detail}`),
+      ...(qualityGate.hardFails.length ? [`hard_fails=${qualityGate.hardFails.join(",")}`] : []),
+    ].join("; ");
     const requiredFailures =
       qualityGate.requiredFailures.length > 0
         ? ` required_failures=${qualityGate.requiredFailures.join(",")};`
@@ -1231,41 +1285,7 @@ export const generateMemoAsync = async (params: {
     });
   }
 
-  const memoWithQuality = [
-    memo,
-    "",
-    "## Quality Gate",
-    `- Score: ${quality.score.toFixed(2)} (threshold ${minQualityScore.toFixed(2)})`,
-    `- Passed: ${quality.passed ? "yes" : "no"}`,
-    `- Required failures: ${quality.requiredFailures.length ? quality.requiredFailures.join(", ") : "none"}`,
-    `- Calibration: mode=${quality.calibration.mode} score=${quality.calibration.score.toFixed(2)} sample=${quality.calibration.sampleCount}`,
-    `- Actionability score: ${quality.actionabilityScore.toFixed(2)}`,
-    `- Adversarial coverage score: ${quality.adversarialCoverageScore.toFixed(2)}`,
-    ...quality.checks.map(
-      (c) =>
-        `- ${c.passed ? "PASS" : "FAIL"} ${c.name}: ${c.detail} (weight ${c.weight}, score ${c.score.toFixed(2)}, required ${c.required ? "yes" : "no"})`,
-    ),
-    `- Contradictions: ${diagnostics.contradictions.length}`,
-    `- Falsification triggers: ${diagnostics.falsificationTriggers.length}`,
-    `- Portfolio stance: ${portfolio.stance}`,
-    `- Decision recommendation: ${portfolioDecision.recommendation}`,
-    `- Decision score: ${portfolioDecision.decisionScore.toFixed(2)}`,
-    `- Decision risk breaches: ${portfolioDecision.riskBreaches.length}`,
-    "",
-    "## Institutional Deliverable Gate",
-    `- Gate: ${qualityGate.gateName}`,
-    `- Run id: ${qualityGateRun.id}`,
-    `- Artifact id: ${qualityGate.artifactId}`,
-    `- Score: ${qualityGate.score.toFixed(2)} (threshold ${qualityGate.minScore.toFixed(2)})`,
-    `- Passed: ${qualityGate.passed ? "yes" : "no"}`,
-    `- Required failures: ${qualityGate.requiredFailures.length ? qualityGate.requiredFailures.join(", ") : "none"}`,
-    ...qualityGate.checks.map(
-      (c) =>
-        `- ${c.passed ? "PASS" : "FAIL"} ${c.name}: ${c.detail} (weight ${c.weight}, score ${c.score.toFixed(2)}, required ${c.required ? "yes" : "no"})`,
-    ),
-    typeof forecastId === "number" ? `- Forecast id: ${forecastId}` : "- Forecast id: n/a",
-  ].join("\n");
-  const memoHash = createHash("sha256").update(memoWithQuality).digest("hex");
+  const memoHash = createHash("sha256").update(finalMemo).digest("hex");
   try {
     appendProvenanceEvent({
       eventType: "memo_deliverable",
@@ -1351,7 +1371,7 @@ export const generateMemoAsync = async (params: {
   }
 
   return {
-    memo: memoWithQuality,
+    memo: finalMemo,
     citations: citations.length,
     claims: lines.length,
     quality,

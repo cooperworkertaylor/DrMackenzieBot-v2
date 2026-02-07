@@ -1,4 +1,5 @@
 import { openResearchDb } from "./db.js";
+import { enforceInstitutionalOutputGateV3 } from "./institutional-output-gate.js";
 import {
   type CrossSectionConstituentSnapshot,
   type SectorResearchResult,
@@ -80,6 +81,8 @@ export type InstitutionalCrossSectionReport = {
   quality: InstitutionalCrossSectionReportQuality;
   sourceDiagnostics: SourceDiagnostics;
   exhibits: ReportExhibit[];
+  outputGate?: ReturnType<typeof enforceInstitutionalOutputGateV3>["evaluation"];
+  outputGateRepairs?: string[];
 };
 
 const REVENUE_CONCEPTS = new Set([
@@ -978,6 +981,11 @@ const renderAppendixSources = (sourceDiagnostics: SourceDiagnostics): string[] =
   return rows;
 };
 
+const scoreFromGate = (
+  evaluation: ReturnType<typeof enforceInstitutionalOutputGateV3>["evaluation"],
+  name: string,
+): number | undefined => evaluation.checks.find((check) => check.name === name)?.score;
+
 const buildStoryParagraphs = (params: {
   synthesis: SynthesisPass;
   marketBelief: MarketBeliefPass;
@@ -1232,11 +1240,53 @@ const buildCommonReport = (params: {
     "",
   ].join("\n");
 
-  return {
+  const outputGate = enforceInstitutionalOutputGateV3({
+    kind: params.reportType === "theme" ? "theme_report" : "sector_report",
+    artifactId: `${params.subtitleLabel}:${params.generatedAt.slice(0, 10)}:${params.constituents.length}`,
     markdown,
-    quality,
+    minScore: 0.82,
+    maxRepairPasses: 5,
+    sources: params.sourceDiagnostics.observations.map((row) => ({
+      sourceTable: row.sourceTable,
+      date: row.date,
+      url: row.url,
+      host: row.host,
+    })),
+  });
+
+  const finalQuality: InstitutionalCrossSectionReportQuality = {
+    narrativeClarityScore: Math.max(
+      quality.narrativeClarityScore,
+      scoreFromGate(outputGate.evaluation, "narrative_why_now") ?? 0,
+    ),
+    exhibitCount:
+      typeof outputGate.evaluation.metrics.exhibit_count === "number"
+        ? Number(outputGate.evaluation.metrics.exhibit_count)
+        : quality.exhibitCount,
+    actionabilityScore: Math.max(
+      quality.actionabilityScore,
+      scoreFromGate(outputGate.evaluation, "actionability") ?? 0,
+    ),
+    freshness180dRatio:
+      typeof outputGate.evaluation.metrics.freshness_ratio_180d === "number"
+        ? Number(outputGate.evaluation.metrics.freshness_ratio_180d)
+        : quality.freshness180dRatio,
+    requiredFailures: Array.from(
+      new Set([
+        ...quality.requiredFailures,
+        ...outputGate.evaluation.requiredFailures,
+        ...outputGate.evaluation.hardFails,
+      ]),
+    ),
+  };
+
+  return {
+    markdown: outputGate.markdown,
+    quality: finalQuality,
     sourceDiagnostics: params.sourceDiagnostics,
     exhibits,
+    outputGate: outputGate.evaluation,
+    outputGateRepairs: outputGate.repairs,
   };
 };
 

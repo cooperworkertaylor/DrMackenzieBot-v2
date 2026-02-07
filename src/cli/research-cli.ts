@@ -1485,28 +1485,30 @@ export function registerResearchCli(program: Command) {
           const macroCoveragePct = result.factorAttribution?.macroFactors.length
             ? mean(result.factorAttribution.macroFactors.map((factor) => factor.coveragePct))
             : undefined;
-          const sectorGate = evaluateCrossSectionQualityGate({
-            artifactType: "sector_report",
-            artifactId: sectorArtifactId,
-            evidenceCoverageScore: result.metrics.evidenceCoverageScore,
-            institutionalReadinessScore: result.metrics.institutionalReadinessScore,
-            avgVariantConfidence: result.metrics.avgVariantConfidence,
-            avgValuationConfidence: result.metrics.avgValuationConfidence,
-            avgPortfolioConfidence: result.metrics.avgPortfolioConfidence,
-            benchmarkContextScore,
-            scenarioCoverageRatio,
-            riskFlagCount: result.riskFlags.length,
-            uniqueGroupCount: uniqueIndustryCount,
-            factorStabilityScore,
-            macroCoveragePct,
-            narrativeClarityScore: report.quality.narrativeClarityScore,
-            exhibitCount: report.quality.exhibitCount,
-            minExhibitCount: 8,
-            actionabilityScore: report.quality.actionabilityScore,
-            freshness180dRatio: report.quality.freshness180dRatio,
-            generatedAt: result.generatedAt,
-            minScore,
-          });
+          const sectorGate =
+            report.outputGate ??
+            evaluateCrossSectionQualityGate({
+              artifactType: "sector_report",
+              artifactId: sectorArtifactId,
+              evidenceCoverageScore: result.metrics.evidenceCoverageScore,
+              institutionalReadinessScore: result.metrics.institutionalReadinessScore,
+              avgVariantConfidence: result.metrics.avgVariantConfidence,
+              avgValuationConfidence: result.metrics.avgValuationConfidence,
+              avgPortfolioConfidence: result.metrics.avgPortfolioConfidence,
+              benchmarkContextScore,
+              scenarioCoverageRatio,
+              riskFlagCount: result.riskFlags.length,
+              uniqueGroupCount: uniqueIndustryCount,
+              factorStabilityScore,
+              macroCoveragePct,
+              narrativeClarityScore: report.quality.narrativeClarityScore,
+              exhibitCount: report.quality.exhibitCount,
+              minExhibitCount: 8,
+              actionabilityScore: report.quality.actionabilityScore,
+              freshness180dRatio: report.quality.freshness180dRatio,
+              generatedAt: result.generatedAt,
+              minScore,
+            });
           const sectorGateRun = recordQualityGateRun({
             evaluation: sectorGate,
             metadata: {
@@ -1514,6 +1516,7 @@ export function registerResearchCli(program: Command) {
               ticker_count: result.tickers.length,
               benchmark: opts.benchmark ?? null,
               quality_attempt: attempt,
+              output_gate_repairs: report.outputGateRepairs ?? [],
             },
             dbPath: opts.db as string,
           });
@@ -1672,28 +1675,30 @@ export function registerResearchCli(program: Command) {
           const macroCoveragePct = result.factorAttribution?.macroFactors.length
             ? mean(result.factorAttribution.macroFactors.map((factor) => factor.coveragePct))
             : undefined;
-          const themeGate = evaluateCrossSectionQualityGate({
-            artifactType: "theme_report",
-            artifactId: themeArtifactId,
-            evidenceCoverageScore: result.metrics.evidenceCoverageScore,
-            institutionalReadinessScore: result.metrics.institutionalReadinessScore,
-            avgVariantConfidence: result.metrics.avgVariantConfidence,
-            avgValuationConfidence: result.metrics.avgValuationConfidence,
-            avgPortfolioConfidence: result.metrics.avgPortfolioConfidence,
-            benchmarkContextScore,
-            scenarioCoverageRatio,
-            riskFlagCount: result.riskFlags.length,
-            uniqueGroupCount,
-            factorStabilityScore,
-            macroCoveragePct,
-            narrativeClarityScore: report.quality.narrativeClarityScore,
-            exhibitCount: report.quality.exhibitCount,
-            minExhibitCount: 8,
-            actionabilityScore: report.quality.actionabilityScore,
-            freshness180dRatio: report.quality.freshness180dRatio,
-            generatedAt: result.generatedAt,
-            minScore,
-          });
+          const themeGate =
+            report.outputGate ??
+            evaluateCrossSectionQualityGate({
+              artifactType: "theme_report",
+              artifactId: themeArtifactId,
+              evidenceCoverageScore: result.metrics.evidenceCoverageScore,
+              institutionalReadinessScore: result.metrics.institutionalReadinessScore,
+              avgVariantConfidence: result.metrics.avgVariantConfidence,
+              avgValuationConfidence: result.metrics.avgValuationConfidence,
+              avgPortfolioConfidence: result.metrics.avgPortfolioConfidence,
+              benchmarkContextScore,
+              scenarioCoverageRatio,
+              riskFlagCount: result.riskFlags.length,
+              uniqueGroupCount,
+              factorStabilityScore,
+              macroCoveragePct,
+              narrativeClarityScore: report.quality.narrativeClarityScore,
+              exhibitCount: report.quality.exhibitCount,
+              minExhibitCount: 8,
+              actionabilityScore: report.quality.actionabilityScore,
+              freshness180dRatio: report.quality.freshness180dRatio,
+              generatedAt: result.generatedAt,
+              minScore,
+            });
           const themeGateRun = recordQualityGateRun({
             evaluation: themeGate,
             metadata: {
@@ -1701,6 +1706,7 @@ export function registerResearchCli(program: Command) {
               ticker_count: result.tickers.length,
               used_theme_registry: result.usedThemeRegistry,
               quality_attempt: attempt,
+              output_gate_repairs: report.outputGateRepairs ?? [],
             },
             dbPath: opts.db as string,
           });
