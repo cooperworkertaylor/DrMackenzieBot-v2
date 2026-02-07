@@ -1,0 +1,25 @@
+Task: Produce an institutional thematic/sector report using schema v3.
+
+Required schema:
+A. Cover
+B. Exec Summary (1 page max)
+C. The Story (2-4 pages, narrative prose)
+D. Mechanics of the Theme
+E. Exhibits (minimum 8)
+F. Winners, Losers, and Second-Order Effects
+G. Capital Allocation Playbook
+H. Risks, Falsifiers, and Monitoring Dashboard
+I. Timeline & Checkpoints (30/90/180/365)
+J. Appendix
+
+Hard requirements:
+- Include market belief vs variant view.
+- Include capital allocation playbook (core/satellite/public/private/infrastructure/optionality/avoid).
+- Minimum 8 exhibits, each with title, real data summary, and a final line: "Takeaway: ..."
+- Every exhibit must answer a specific investment question.
+- Distinguish direct beneficiaries, indirect beneficiaries, disrupted incumbents, and second-order effects.
+- No telemetry/debug output in the report.
+
+Actionability:
+- Translate conclusions into deployment logic today, not just descriptive analysis.
+- Include sizing framework and trigger-based adjustments.

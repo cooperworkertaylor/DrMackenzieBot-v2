@@ -1,0 +1,212 @@
+[
+  {
+    "id": "url-b7e91107ab",
+    "source": "https://altimeter.com/research/",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:49:54.386Z"
+  },
+  {
+    "id": "url-caf529f75b",
+    "source": "https://altimeter.com/wp-content/uploads/2022/10/Meta-Open-Letter.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:49:54.387Z"
+  },
+  {
+    "id": "url-ba715e98f0",
+    "source": "https://www.allianceofceos.com/assets/forum/2008-10-Sequoia%20Capital%20on%20New%20Realities.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:49:54.388Z"
+  },
+  {
+    "id": "url-1a4fbe070d",
+    "source": "https://www.sequoiacap.com/wp-content/uploads/sites/6/2022/06/Adapting-to-Endure_Sequoia-Capital-2022.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:49:54.389Z"
+  },
+  {
+    "id": "url-98a0f102f4",
+    "source": "https://a16z.com/state-of-markets/",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:49:54.390Z"
+  },
+  {
+    "id": "url-421f13954d",
+    "source": "https://d2hguprl3w2sje.cloudfront.net/uploads/2025/10/State-of-Crypto-2025-a16z-crypto.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:49:54.390Z"
+  },
+  {
+    "id": "url-06cd24ed64",
+    "source": "https://info.a16z.com/rs/382-JZB-798/images/marketplace-100-2021.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:49:54.391Z"
+  },
+  {
+    "id": "url-6c964b3eb9",
+    "source": "https://www.goldmansachs.com/pdfs/insights/pages/top-of-mind/market-concentration-how-big-a-worry/report.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:49:54.391Z"
+  },
+  {
+    "id": "url-7757a0b282",
+    "source": "https://www.goldmansachs.com/pdfs/insights/pages/top-of-mind/generative-ai-hype-or-truly-transformative/report.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:49:54.392Z"
+  },
+  {
+    "id": "url-f0b51493e7",
+    "source": "https://www.goldmansachs.com/pdfs/insights/goldman-sachs-research/americas-first/report.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:49:54.392Z"
+  },
+  {
+    "id": "url-d863725c5a",
+    "source": "https://abovethecrowd.com/2009/06/08/amazons-aws-strategy-becomes-clearer-every-day/",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:49:54.393Z"
+  },
+  {
+    "id": "url-a1a7d882a9",
+    "source": "https://abovethecrowd.com/2016/04/21/on-the-road-to-recap/",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:49:54.393Z"
+  },
+  {
+    "id": "url-49aa8bc9d5",
+    "source": "https://csun.edu/~vcact00f/497CapStone/Peter%20Thiel_%20Competition%20Is%20for%20Losers%20-%20WSJ.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:49:54.393Z"
+  },
+  {
+    "id": "url-8464e15d85",
+    "source": "https://colossus.com/episode/man-versus-machine/",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:49:54.394Z"
+  },
+  {
+    "id": "local-8489f777ae",
+    "source": "/mnt/data/world-class-investment-memos-corpus-2026-02-07.pdf",
+    "stage": "local_pdf",
+    "reason": "ENOENT: no such file or directory, open '/mnt/data/world-class-investment-memos-corpus-2026-02-07.pdf'",
+    "timestamp": "2026-02-07T18:49:54.394Z"
+  },
+  {
+    "id": "url-b7e91107ab",
+    "source": "https://altimeter.com/research/",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:50:22.370Z"
+  },
+  {
+    "id": "url-caf529f75b",
+    "source": "https://altimeter.com/wp-content/uploads/2022/10/Meta-Open-Letter.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:50:22.372Z"
+  },
+  {
+    "id": "url-ba715e98f0",
+    "source": "https://www.allianceofceos.com/assets/forum/2008-10-Sequoia%20Capital%20on%20New%20Realities.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:50:22.372Z"
+  },
+  {
+    "id": "url-1a4fbe070d",
+    "source": "https://www.sequoiacap.com/wp-content/uploads/sites/6/2022/06/Adapting-to-Endure_Sequoia-Capital-2022.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:50:22.373Z"
+  },
+  {
+    "id": "url-98a0f102f4",
+    "source": "https://a16z.com/state-of-markets/",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:50:22.374Z"
+  },
+  {
+    "id": "url-421f13954d",
+    "source": "https://d2hguprl3w2sje.cloudfront.net/uploads/2025/10/State-of-Crypto-2025-a16z-crypto.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:50:22.374Z"
+  },
+  {
+    "id": "url-06cd24ed64",
+    "source": "https://info.a16z.com/rs/382-JZB-798/images/marketplace-100-2021.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:50:22.375Z"
+  },
+  {
+    "id": "url-6c964b3eb9",
+    "source": "https://www.goldmansachs.com/pdfs/insights/pages/top-of-mind/market-concentration-how-big-a-worry/report.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:50:22.375Z"
+  },
+  {
+    "id": "url-7757a0b282",
+    "source": "https://www.goldmansachs.com/pdfs/insights/pages/top-of-mind/generative-ai-hype-or-truly-transformative/report.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:50:22.376Z"
+  },
+  {
+    "id": "url-f0b51493e7",
+    "source": "https://www.goldmansachs.com/pdfs/insights/goldman-sachs-research/americas-first/report.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:50:22.377Z"
+  },
+  {
+    "id": "url-d863725c5a",
+    "source": "https://abovethecrowd.com/2009/06/08/amazons-aws-strategy-becomes-clearer-every-day/",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:50:22.377Z"
+  },
+  {
+    "id": "url-a1a7d882a9",
+    "source": "https://abovethecrowd.com/2016/04/21/on-the-road-to-recap/",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:50:22.378Z"
+  },
+  {
+    "id": "url-49aa8bc9d5",
+    "source": "https://csun.edu/~vcact00f/497CapStone/Peter%20Thiel_%20Competition%20Is%20for%20Losers%20-%20WSJ.pdf",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:50:22.379Z"
+  },
+  {
+    "id": "url-8464e15d85",
+    "source": "https://colossus.com/episode/man-versus-machine/",
+    "stage": "fetch",
+    "reason": "fetch failed",
+    "timestamp": "2026-02-07T18:50:22.380Z"
+  },
+  {
+    "id": "local-8489f777ae",
+    "source": "/mnt/data/world-class-investment-memos-corpus-2026-02-07.pdf",
+    "stage": "local_pdf",
+    "reason": "ENOENT: no such file or directory, open '/mnt/data/world-class-investment-memos-corpus-2026-02-07.pdf'",
+    "timestamp": "2026-02-07T18:50:22.380Z"
+  }
+]

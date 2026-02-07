@@ -1,0 +1,22 @@
+Task: Produce an institutional single-name report using schema v3.
+
+Required schema:
+A. Cover
+B. Exec Summary (5 bullets)
+C. The Story
+D. Business Model & Value Drivers
+E. Variant View / Debate
+F. Valuation (driver model + comps + implied expectations)
+G. Exhibits (minimum 6)
+H. Risks / Kill Shots + Monitoring
+I. Catalysts & Timeline
+J. Positioning & Risk Controls (sizing tiers, stop/trim)
+K. Appendix
+
+Hard requirements:
+- Minimum 6 exhibits, each ending with: "Takeaway: ..."
+- Explicit market belief versus variant view.
+- Include driver-based valuation with cross-checks from comps and implied expectations.
+- Provide actionable recommendation with sizing tiers, triggers, and explicit risk controls.
+- If evidence is weak, state uncertainty and reduce confidence/size.
+- No debug/telemetry/log output in final memo body.
