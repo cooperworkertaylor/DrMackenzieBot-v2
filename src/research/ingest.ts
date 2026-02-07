@@ -39,9 +39,11 @@ export const upsertInstrument = (params: {
     returning id;
   `);
   const row = stmt.get({
-    ...params,
     ticker: normalizeTicker(params.ticker),
     cik: params.cik ? padCik(params.cik) : null,
+    name: params.name ?? null,
+    exchange: params.exchange ?? null,
+    currency: params.currency ?? null,
     updated_at: Date.now(),
   }) as { id: number };
   return row.id;
