@@ -185,6 +185,17 @@ describe("institutional memo grading", () => {
     expect(grade.requiredFailures).toContain("actionability");
   });
 
+  it("passes actionability for a disciplined watch plan with quantified expected value", () => {
+    const params = baseInputs();
+    params.portfolio.stance = "watch";
+    params.valuation.expectedUpsideWithCatalystsPct = undefined;
+    params.valuation.expectedUpsidePct = 0.11;
+    const grade = gradeInstitutionalMemo(params);
+    const actionability = grade.checks.find((check) => check.name === "actionability");
+    expect(actionability?.passed).toBe(true);
+    expect(grade.requiredFailures).not.toContain("actionability");
+  });
+
   it("fails when adversarial debate coverage is weak", () => {
     const params = baseInputs();
     params.researchCell = {

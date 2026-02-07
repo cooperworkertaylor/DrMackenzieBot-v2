@@ -137,10 +137,17 @@ const evaluateActionability = (params: {
   valuation: ValuationResult;
   variant: VariantPerceptionResult;
 }): { score: number; passed: boolean; detail: string } => {
-  const stanceActionable =
-    params.portfolio.stance === "long" || params.portfolio.stance === "short" ? 1 : 0;
-  const hasExpectedValue =
-    typeof params.valuation.expectedUpsideWithCatalystsPct === "number" ? 1 : 0;
+  const stanceActionableScore =
+    params.portfolio.stance === "long" || params.portfolio.stance === "short"
+      ? 1
+      : params.portfolio.stance === "watch"
+        ? 0.7
+        : 0;
+  const expectedValue =
+    params.valuation.expectedUpsideWithCatalystsPct ??
+    params.valuation.expectedUpsidePct ??
+    params.portfolio.expectedUpsidePct;
+  const hasExpectedValue = typeof expectedValue === "number" ? 1 : 0;
   const sizingDiscipline =
     params.portfolio.recommendedWeightPct > 0 &&
     params.portfolio.maxRiskBudgetPct > 0 &&
@@ -157,18 +164,18 @@ const evaluateActionability = (params: {
   );
 
   const score = clamp01(
-    0.32 * stanceActionable +
+    0.32 * stanceActionableScore +
       0.18 * hasExpectedValue +
       0.2 * sizingDiscipline +
       0.1 * stopLossDiscipline +
       0.1 * triggerCoverage +
       0.1 * confidenceQuality,
   );
-  const passed = score >= 0.7 && stanceActionable === 1;
+  const passed = score >= 0.7 && stanceActionableScore >= 0.7 && hasExpectedValue === 1;
   return {
     score,
     passed,
-    detail: `score=${score.toFixed(2)} stance=${params.portfolio.stance} weight=${params.portfolio.recommendedWeightPct.toFixed(2)} risk_budget=${params.portfolio.maxRiskBudgetPct.toFixed(2)} stop_loss=${(params.portfolio.stopLossPct * 100).toFixed(1)}% triggers=${params.portfolio.reviewTriggers.length}`,
+    detail: `score=${score.toFixed(2)} stance=${params.portfolio.stance} stance_score=${stanceActionableScore.toFixed(2)} expected_value=${hasExpectedValue} weight=${params.portfolio.recommendedWeightPct.toFixed(2)} risk_budget=${params.portfolio.maxRiskBudgetPct.toFixed(2)} stop_loss=${(params.portfolio.stopLossPct * 100).toFixed(1)}% triggers=${params.portfolio.reviewTriggers.length}`,
   };
 };
 
