@@ -2664,15 +2664,65 @@ export function registerResearchCli(program: Command) {
     .option("--out <path>", "Write memo markdown to file")
     .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
     .option("--min-score <n>", "Institutional quality threshold [0-1]", "0.8")
+    .option("--quality-attempts <n>", "Quality refinement attempts before hard fail", "4")
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
-        const result = await generateMemoAsync({
-          ticker: opts.ticker as string,
-          question: opts.question as string,
-          dbPath: opts.db as string,
-          enforceInstitutionalGrade: !Boolean(opts.allowDraft),
-          minQualityScore: Number.parseFloat(opts.minScore as string) || 0.8,
-        });
+        const qualityAttempts = Math.max(1, parseOptionalNumber(opts["qualityAttempts"]) ?? 4);
+        const strictMode = !Boolean(opts.allowDraft);
+        const baseQuestion = (opts.question as string).trim();
+        const refinementHints = [
+          "",
+          "Prioritize multi-source evidence (filings, transcript, expectations) and resolve contradictions explicitly.",
+          "Strengthen actionability with entry trigger, sizing bands, and falsification thresholds.",
+          "Stress-test bear/base/bull scenarios and justify final stance against disconfirming evidence.",
+        ];
+
+        let result: Awaited<ReturnType<typeof generateMemoAsync>> | undefined;
+        let lastError: Error | undefined;
+
+        for (let attempt = 1; attempt <= qualityAttempts; attempt += 1) {
+          const hint =
+            refinementHints[Math.min(refinementHints.length - 1, attempt - 1)] ??
+            refinementHints[refinementHints.length - 1] ??
+            "";
+          const question = hint ? `${baseQuestion} ${hint}` : baseQuestion;
+          const maxEvidence = Math.min(40, 12 + (attempt - 1) * 6);
+          try {
+            result = await generateMemoAsync({
+              ticker: opts.ticker as string,
+              question,
+              dbPath: opts.db as string,
+              maxEvidence,
+              enforceInstitutionalGrade: strictMode,
+              minQualityScore: Number.parseFloat(opts.minScore as string) || 0.8,
+            });
+            if (attempt > 1) {
+              defaultRuntime.log(`quality_refinement attempts_used=${attempt}`);
+            }
+            break;
+          } catch (error) {
+            const err = error instanceof Error ? error : new Error(String(error));
+            lastError = err;
+            const canRetry =
+              strictMode &&
+              attempt < qualityAttempts &&
+              (err.message.includes("Institutional-grade quality gate failed") ||
+                err.message.includes("Insufficient evidence"));
+            if (!canRetry) {
+              throw err;
+            }
+            defaultRuntime.error(
+              `quality_refinement_retry attempt=${attempt}/${qualityAttempts} reason=${err.message}`,
+            );
+          }
+        }
+
+        if (!result) {
+          throw (
+            lastError ??
+            new Error(`Memo generation failed after ${qualityAttempts} quality attempts`)
+          );
+        }
         if (opts.out) {
           await fs.writeFile(path.resolve(opts.out as string), `${result.memo}\n`, "utf8");
           defaultRuntime.log(`Memo written to ${path.resolve(opts.out as string)}`);

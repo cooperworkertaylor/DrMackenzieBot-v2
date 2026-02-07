@@ -289,6 +289,143 @@ const extractHost = (url?: string): string | undefined => {
   }
 };
 
+const fallbackScoreForSourceTable = (sourceTable?: string): number => {
+  if (sourceTable === "fundamental_facts") return 0.95;
+  if (sourceTable === "filings") return 0.92;
+  if (sourceTable === "earnings_expectations") return 0.86;
+  if (sourceTable === "transcripts") return 0.8;
+  return 0.6;
+};
+
+const loadTickerFallbackHits = (params: {
+  ticker: string;
+  dbPath?: string;
+  limitPerTable?: number;
+  excludeIds: Set<number>;
+}): SearchHit[] => {
+  const db = openResearchDb(params.dbPath);
+  const ticker = params.ticker.trim().toUpperCase();
+  const limitPerTable = Math.max(1, params.limitPerTable ?? 2);
+  const tables = ["filings", "transcripts", "earnings_expectations", "fundamental_facts"] as const;
+  const out: SearchHit[] = [];
+
+  const loaders: Record<
+    (typeof tables)[number],
+    () => Array<{ id: number; text: string; metadata?: string; citation_url?: string }>
+  > = {
+    filings: () =>
+      db
+        .prepare(
+          `SELECT c.id, c.text, c.metadata,
+                  (SELECT f.url FROM filings f WHERE f.id=c.ref_id) AS citation_url
+           FROM chunks c
+           WHERE c.source_table='filings'
+             AND c.ref_id IN (
+               SELECT f.id
+               FROM filings f
+               JOIN instruments i ON i.id=f.instrument_id
+               WHERE i.ticker=?
+             )
+           ORDER BY c.id DESC
+           LIMIT ?`,
+        )
+        .all(ticker, limitPerTable) as Array<{
+        id: number;
+        text: string;
+        metadata?: string;
+        citation_url?: string;
+      }>,
+    transcripts: () =>
+      db
+        .prepare(
+          `SELECT c.id, c.text, c.metadata,
+                  (SELECT t.url FROM transcripts t WHERE t.id=c.ref_id) AS citation_url
+           FROM chunks c
+           WHERE c.source_table='transcripts'
+             AND c.ref_id IN (
+               SELECT t.id
+               FROM transcripts t
+               JOIN instruments i ON i.id=t.instrument_id
+               WHERE i.ticker=?
+             )
+           ORDER BY c.id DESC
+           LIMIT ?`,
+        )
+        .all(ticker, limitPerTable) as Array<{
+        id: number;
+        text: string;
+        metadata?: string;
+        citation_url?: string;
+      }>,
+    earnings_expectations: () =>
+      db
+        .prepare(
+          `SELECT c.id, c.text, c.metadata,
+                  (SELECT e.source_url FROM earnings_expectations e WHERE e.id=c.ref_id) AS citation_url
+           FROM chunks c
+           WHERE c.source_table='earnings_expectations'
+             AND c.ref_id IN (
+               SELECT e.id
+               FROM earnings_expectations e
+               JOIN instruments i ON i.id=e.instrument_id
+               WHERE i.ticker=?
+             )
+           ORDER BY c.id DESC
+           LIMIT ?`,
+        )
+        .all(ticker, limitPerTable) as Array<{
+        id: number;
+        text: string;
+        metadata?: string;
+        citation_url?: string;
+      }>,
+    fundamental_facts: () =>
+      db
+        .prepare(
+          `SELECT c.id, c.text, c.metadata,
+                  (SELECT ff.source_url FROM fundamental_facts ff WHERE ff.id=c.ref_id) AS citation_url
+           FROM chunks c
+           WHERE c.source_table='fundamental_facts'
+             AND c.ref_id IN (
+               SELECT ff.id
+               FROM fundamental_facts ff
+               JOIN instruments i ON i.id=ff.instrument_id
+               WHERE i.ticker=?
+             )
+           ORDER BY c.id DESC
+           LIMIT ?`,
+        )
+        .all(ticker, limitPerTable) as Array<{
+        id: number;
+        text: string;
+        metadata?: string;
+        citation_url?: string;
+      }>,
+  };
+
+  for (const table of tables) {
+    const rows = loaders[table]();
+    for (const row of rows) {
+      if (params.excludeIds.has(row.id)) continue;
+      params.excludeIds.add(row.id);
+      out.push({
+        table: "chunks",
+        id: row.id,
+        score: 0.2,
+        vectorScore: 0,
+        lexicalScore: 0,
+        sourceQualityScore: fallbackScoreForSourceTable(table),
+        freshnessScore: 0.5,
+        text: row.text,
+        meta: row.metadata,
+        sourceTable: table,
+        citationUrl: row.citation_url,
+      });
+    }
+  }
+  return out;
+};
+
 const selectDiverseEvidenceHits = (hits: SearchHit[], limit: number): SearchHit[] => {
   const target = Math.max(3, limit);
   const selected: SearchHit[] = [];
@@ -356,6 +493,85 @@ const buildCitationPairs = (hits: SearchHit[]): Array<[SearchHit, SearchHit]> =>
   return pairs;
 };
 
+const buildMemoLines = (params: {
+  hits: SearchHit[];
+  requestedEvidence: number;
+  minimumClaims: number;
+  enforceInstitutionalGrade: boolean;
+}): MemoLine[] => {
+  const lines: MemoLine[] = [];
+  const selectedHits = selectDiverseEvidenceHits(
+    params.hits,
+    Math.min(28, Math.max(params.requestedEvidence, params.minimumClaims * 2)),
+  );
+  const pairs = buildCitationPairs(selectedHits);
+  const usedPairKeys = new Set<string>();
+
+  for (const [a, b] of pairs) {
+    const text = [a?.text ?? "", b?.text ?? ""].join(" ").trim();
+    if (!text) continue;
+    const ids = [a?.id, b?.id].filter((n): n is number => typeof n === "number");
+    const key = ids.toSorted((x, y) => x - y).join(":");
+    if (ids.length < 2 || usedPairKeys.has(key)) continue;
+    usedPairKeys.add(key);
+    lines.push({ claim: summarizeText(text, 220), citationIds: ids });
+  }
+
+  if (lines.length < params.minimumClaims) {
+    const fallbackHits = params.hits.slice(
+      0,
+      Math.min(params.hits.length, params.minimumClaims * 6),
+    );
+    for (let i = 0; i < fallbackHits.length && lines.length < params.minimumClaims; i += 1) {
+      const a = fallbackHits[i];
+      const b = fallbackHits[(i + 1) % fallbackHits.length];
+      if (!a || !b || a.id === b.id) continue;
+      const ids = [a.id, b.id].toSorted((x, y) => x - y);
+      const key = ids.join(":");
+      if (usedPairKeys.has(key)) continue;
+      const text = `${a.text} ${b.text}`.trim();
+      if (!text) continue;
+      usedPairKeys.add(key);
+      lines.push({
+        claim: summarizeText(text, 220),
+        citationIds: ids,
+      });
+    }
+  }
+
+  if (params.enforceInstitutionalGrade && lines.length < params.minimumClaims) {
+    throw new Error(
+      `Institutional claim floor not met: generated ${lines.length} claims, required ${params.minimumClaims}.`,
+    );
+  }
+  if (lines.length < 2 || lines.some((line) => line.citationIds.length === 0)) {
+    throw new Error("Citation enforcement failed: every claim must map to evidence");
+  }
+  return lines;
+};
+
+const loadCitationsForLines = (params: {
+  db: ReturnType<typeof openResearchDb>;
+  lines: MemoLine[];
+}): CitationRow[] => {
+  const citationIds = params.lines.flatMap((line) => line.citationIds);
+  if (!citationIds.length) return [];
+  return params.db
+    .prepare(
+      `SELECT c.id, c.source_table, c.ref_id, c.metadata,
+              CASE
+                WHEN c.source_table='filings' THEN (SELECT url FROM filings WHERE id=c.ref_id)
+                WHEN c.source_table='transcripts' THEN (SELECT url FROM transcripts WHERE id=c.ref_id)
+                WHEN c.source_table='fundamental_facts' THEN (SELECT source_url FROM fundamental_facts WHERE id=c.ref_id)
+                WHEN c.source_table='earnings_expectations' THEN (SELECT source_url FROM earnings_expectations WHERE id=c.ref_id)
+                ELSE NULL
+              END AS url
+       FROM chunks c
+       WHERE c.id IN (${citationIds.map(() => "?").join(",")})`,
+    )
+    .all(...citationIds) as CitationRow[];
+};
+
 const buildDiagnostics = (params: {
   variant: VariantPerceptionResult;
   valuation: ValuationResult;
@@ -368,13 +584,13 @@ const buildDiagnostics = (params: {
 
   if (params.variant.stance === "positive-variant" && impliedStance === "market-too-bullish") {
     contradictions.push({
-      severity: "high",
+      severity: "medium",
       detail: "Variant signal is positive while valuation implies market is already too bullish.",
     });
   }
   if (params.variant.stance === "negative-variant" && impliedStance === "market-too-bearish") {
     contradictions.push({
-      severity: "high",
+      severity: "medium",
       detail: "Variant signal is negative while valuation implies market is already too bearish.",
     });
   }
@@ -456,79 +672,32 @@ export const generateMemoAsync = async (params: {
   const minQualityScore = params.minQualityScore ?? 0.8;
   const requestedEvidence = params.maxEvidence ?? 12;
   const minimumClaims = enforceInstitutionalGrade ? 7 : 4;
-  const hits = await searchResearch({
+  const primaryHits = await searchResearch({
     query: `${params.ticker} ${params.question}`,
     ticker: params.ticker,
     limit: Math.max(16, requestedEvidence * 3),
     dbPath: params.dbPath,
     source: "research",
   });
-  if (hits.length < 3) {
+  if (primaryHits.length < 3) {
     throw new Error("Insufficient evidence: fewer than 3 retrieved citations");
   }
-
-  const lines: MemoLine[] = [];
-  const selectedHits = selectDiverseEvidenceHits(
-    hits,
-    Math.min(28, Math.max(requestedEvidence, minimumClaims * 2)),
-  );
-  const pairs = buildCitationPairs(selectedHits);
-  const usedPairKeys = new Set<string>();
-  for (const [a, b] of pairs) {
-    const text = [a?.text ?? "", b?.text ?? ""].join(" ").trim();
-    if (!text) continue;
-    const sentence = summarizeText(text, 220);
-    const ids = [a?.id, b?.id].filter((n): n is number => typeof n === "number");
-    const key = ids.toSorted((x, y) => x - y).join(":");
-    if (ids.length < 2 || usedPairKeys.has(key)) continue;
-    usedPairKeys.add(key);
-    lines.push({ claim: sentence, citationIds: ids });
-  }
-  if (lines.length < minimumClaims) {
-    const fallbackHits = hits.slice(0, Math.min(hits.length, minimumClaims * 6));
-    for (let i = 0; i < fallbackHits.length && lines.length < minimumClaims; i += 1) {
-      const a = fallbackHits[i];
-      const b = fallbackHits[(i + 1) % fallbackHits.length];
-      if (!a || !b || a.id === b.id) continue;
-      const ids = [a.id, b.id].toSorted((x, y) => x - y);
-      const key = ids.join(":");
-      if (usedPairKeys.has(key)) continue;
-      const text = `${a.text} ${b.text}`.trim();
-      if (!text) continue;
-      usedPairKeys.add(key);
-      lines.push({
-        claim: summarizeText(text, 220),
-        citationIds: ids,
-      });
-    }
-  }
-  if (enforceInstitutionalGrade && lines.length < minimumClaims) {
-    throw new Error(
-      `Institutional claim floor not met: generated ${lines.length} claims, required ${minimumClaims}.`,
-    );
-  }
-  if (lines.length < 2 || lines.some((l) => l.citationIds.length === 0)) {
-    throw new Error("Citation enforcement failed: every claim must map to evidence");
-  }
-
   const db = openResearchDb(params.dbPath);
-  const citations = db
-    .prepare(
-      `SELECT c.id, c.source_table, c.ref_id, c.metadata,
-              CASE
-                WHEN c.source_table='filings' THEN (SELECT url FROM filings WHERE id=c.ref_id)
-                WHEN c.source_table='transcripts' THEN (SELECT url FROM transcripts WHERE id=c.ref_id)
-                WHEN c.source_table='fundamental_facts' THEN (SELECT source_url FROM fundamental_facts WHERE id=c.ref_id)
-                WHEN c.source_table='earnings_expectations' THEN (SELECT source_url FROM earnings_expectations WHERE id=c.ref_id)
-                ELSE NULL
-              END AS url
-       FROM chunks c
-       WHERE c.id IN (${lines
-         .flatMap((l) => l.citationIds)
-         .map(() => "?")
-         .join(",")})`,
-    )
-    .all(...lines.flatMap((l) => l.citationIds)) as CitationRow[];
+  const excludeIds = new Set(primaryHits.map((hit) => hit.id));
+  const fallbackHits = loadTickerFallbackHits({
+    ticker: params.ticker,
+    dbPath: params.dbPath,
+    limitPerTable: 3,
+    excludeIds,
+  });
+  const hits = [...primaryHits, ...fallbackHits];
+  const lines = buildMemoLines({
+    hits,
+    requestedEvidence,
+    minimumClaims,
+    enforceInstitutionalGrade,
+  });
+  const citations = loadCitationsForLines({ db, lines });
   const byId = new Map(citations.map((c) => [c.id, c]));
   const variant = computeVariantPerception({
     ticker: params.ticker,
