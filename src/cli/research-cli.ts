@@ -343,9 +343,10 @@ export function registerResearchCli(program: Command) {
     .command("prices")
     .description("Ingest daily prices from Massive/Polygon")
     .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
-        const count = await ingestPrices(opts.ticker as string);
+        const count = await ingestPrices(opts.ticker as string, { dbPath: opts.db as string });
         defaultRuntime.log(`Saved ${count} price rows for ${opts.ticker}`);
       });
     });
@@ -356,11 +357,13 @@ export function registerResearchCli(program: Command) {
     .requiredOption("--ticker <symbol>", "Ticker symbol")
     .option("--limit <n>", "Max filings", "20")
     .option("--user-agent <ua>", "SEC User-Agent header")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const results = await ingestFilings(opts.ticker as string, {
           limit: Number.parseInt(opts.limit as string, 10) || 20,
           userAgent: opts.userAgent as string | undefined,
+          dbPath: opts.db as string,
         });
         const ok = results.filter((r) => r.ok).length;
         const failed = results.filter((r) => !r.ok);
@@ -380,6 +383,7 @@ export function registerResearchCli(program: Command) {
     .option("--concept <key>", "Repeatable concept key (e.g., us-gaap:Revenues)", collectOption, [])
     .option("--forms <csv>", "Comma-separated form filter (default: 10-K,10-Q,20-F,40-F)")
     .option("--user-agent <ua>", "SEC User-Agent header")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const forms = (opts.forms as string | undefined)
@@ -393,6 +397,7 @@ export function registerResearchCli(program: Command) {
           userAgent: opts.userAgent as string | undefined,
           includeForms: forms?.length ? forms : undefined,
           concepts: concepts?.length ? concepts : undefined,
+          dbPath: opts.db as string,
         });
         defaultRuntime.log(
           `Fundamentals ingested for ${result.ticker} (CIK ${result.cik}): observations=${result.observations}, concepts=${result.conceptCount}`,
@@ -404,9 +409,12 @@ export function registerResearchCli(program: Command) {
     .command("expectations")
     .description("Ingest analyst expectations and EPS surprise history")
     .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
-        const result = await ingestExpectations(opts.ticker as string);
+        const result = await ingestExpectations(opts.ticker as string, {
+          dbPath: opts.db as string,
+        });
         defaultRuntime.log(
           `Expectations ingested for ${(opts.ticker as string).toUpperCase()}: rows=${result.rows}, quarterly=${result.quarterly}, annual=${result.annual}`,
         );
@@ -418,9 +426,12 @@ export function registerResearchCli(program: Command) {
     .description("Scrape a transcript URL (HTML or PDF) and chunk it")
     .requiredOption("--ticker <symbol>", "Ticker symbol")
     .requiredOption("--url <url>", "Transcript URL")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
-        const res = await ingestTranscript(opts.ticker as string, opts.url as string);
+        const res = await ingestTranscript(opts.ticker as string, opts.url as string, {
+          dbPath: opts.db as string,
+        });
         defaultRuntime.log(`Transcript ingested (${res.chunks} chunks)`);
       });
     });

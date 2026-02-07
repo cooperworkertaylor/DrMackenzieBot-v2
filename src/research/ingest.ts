@@ -24,8 +24,9 @@ export const upsertInstrument = (params: {
   name?: string;
   exchange?: string;
   currency?: string;
+  dbPath?: string;
 }) => {
-  const db = openResearchDb();
+  const db = openResearchDb(params.dbPath);
   const stmt = db.prepare(`
     insert into instruments (ticker, cik, name, exchange, currency, updated_at)
     values (@ticker, @cik, @name, @exchange, @currency, @updated_at)
@@ -46,12 +47,17 @@ export const upsertInstrument = (params: {
   return row.id;
 };
 
-export const ingestPrices = async (ticker: string) => {
+export const ingestPrices = async (
+  ticker: string,
+  opts: {
+    dbPath?: string;
+  } = {},
+) => {
   const normalizedTicker = normalizeTicker(ticker);
-  const instrumentId = upsertInstrument({ ticker: normalizedTicker });
+  const instrumentId = upsertInstrument({ ticker: normalizedTicker, dbPath: opts.dbPath });
   const apiKey = ensureApiKey();
   const prices = await fetchAlphaVantageDaily(normalizedTicker, apiKey);
-  const db = openResearchDb();
+  const db = openResearchDb(opts.dbPath);
   const stmt = db.prepare(`
     insert into prices (instrument_id, date, open, high, low, close, volume, source, fetched_at)
     values (@instrument_id, @date, @open, @high, @low, @close, @volume, @source, @fetched_at)
@@ -80,12 +86,17 @@ export const ingestPrices = async (ticker: string) => {
   return prices.length;
 };
 
-export const ingestExpectations = async (ticker: string) => {
+export const ingestExpectations = async (
+  ticker: string,
+  opts: {
+    dbPath?: string;
+  } = {},
+) => {
   const normalizedTicker = normalizeTicker(ticker);
-  const instrumentId = upsertInstrument({ ticker: normalizedTicker });
+  const instrumentId = upsertInstrument({ ticker: normalizedTicker, dbPath: opts.dbPath });
   const apiKey = ensureApiKey();
   const rows = await fetchAlphaVantageEarnings(normalizedTicker, apiKey);
-  const db = openResearchDb();
+  const db = openResearchDb(opts.dbPath);
   const insertExpectation = db.prepare(`
     insert into earnings_expectations (
       instrument_id,
@@ -197,14 +208,14 @@ export const ingestExpectations = async (ticker: string) => {
 
 export const ingestFilings = async (
   ticker: string,
-  opts: { limit?: number; userAgent?: string },
+  opts: { limit?: number; userAgent?: string; dbPath?: string },
 ) => {
   const normalizedTicker = normalizeTicker(ticker);
-  const instrumentId = upsertInstrument({ ticker: normalizedTicker });
+  const instrumentId = upsertInstrument({ ticker: normalizedTicker, dbPath: opts.dbPath });
   const cik = await resolveTickerToCik(normalizedTicker, fetch, opts.userAgent);
-  upsertInstrument({ ticker: normalizedTicker, cik });
+  upsertInstrument({ ticker: normalizedTicker, cik, dbPath: opts.dbPath });
   const filings = await fetchRecentFilings(cik, opts.userAgent, opts.limit);
-  const db = openResearchDb();
+  const db = openResearchDb(opts.dbPath);
   const insertFiling = db.prepare(`
     insert into filings (
       instrument_id,
@@ -385,10 +396,14 @@ export const ingestFilings = async (
   return results;
 };
 
-export const ingestTranscript = async (ticker: string, url: string) => {
-  const instrumentId = upsertInstrument({ ticker: normalizeTicker(ticker) });
+export const ingestTranscript = async (
+  ticker: string,
+  url: string,
+  opts: { dbPath?: string } = {},
+) => {
+  const instrumentId = upsertInstrument({ ticker: normalizeTicker(ticker), dbPath: opts.dbPath });
   const doc = await fetchTranscript(url);
-  const db = openResearchDb();
+  const db = openResearchDb(opts.dbPath);
   const insertTranscript = db.prepare(`
     insert into transcripts (instrument_id, event_date, event_type, source, url, title, speakers, content, fetched_at)
     values (@instrument_id, @event_date, @event_type, @source, @url, @title, @speakers, @content, @fetched_at)
@@ -493,18 +508,19 @@ export const ingestFundamentals = async (
     userAgent?: string;
     includeForms?: string[];
     concepts?: string[];
+    dbPath?: string;
   } = {},
 ) => {
   const normalizedTicker = normalizeTicker(ticker);
-  const instrumentId = upsertInstrument({ ticker: normalizedTicker });
+  const instrumentId = upsertInstrument({ ticker: normalizedTicker, dbPath: opts.dbPath });
   const cik = await resolveTickerToCik(normalizedTicker, fetch, opts.userAgent);
-  upsertInstrument({ ticker: normalizedTicker, cik });
+  upsertInstrument({ ticker: normalizedTicker, cik, dbPath: opts.dbPath });
   const companyFacts = await fetchCompanyFacts(cik, fetch, opts.userAgent);
   const observations = flattenCompanyFacts(companyFacts, {
     includeForms: opts.includeForms,
     concepts: opts.concepts,
   });
-  const db = openResearchDb();
+  const db = openResearchDb(opts.dbPath);
   const insertFact = db.prepare(`
     insert into fundamental_facts (
       instrument_id,

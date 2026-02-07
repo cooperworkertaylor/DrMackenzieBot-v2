@@ -293,4 +293,54 @@ describe("theme and sector research", () => {
     expect(result.laggards.length).toBeGreaterThan(0);
     expect(result.insightSummary.length).toBeGreaterThanOrEqual(2);
   });
+
+  it("bootstraps theme membership on first run when registry has no active members", () => {
+    const dbPath = testDbPath("theme-bootstrap");
+    const dates = generateDates(260, "2024-01-01");
+    seedTicker({
+      dbPath,
+      ticker: "AAPL",
+      name: "Apple Inc",
+      sector: "Technology",
+      industry: "Consumer Electronics",
+      dates,
+      basePrice: 120,
+      drift: 0.0011,
+      phase: 2,
+    });
+    seedTicker({
+      dbPath,
+      ticker: "NVDA",
+      name: "NVIDIA Corp",
+      sector: "Technology",
+      industry: "Semiconductors",
+      dates,
+      basePrice: 100,
+      drift: 0.0014,
+      phase: 7,
+    });
+    seedTicker({
+      dbPath,
+      ticker: "QQQ",
+      name: "Invesco QQQ Trust",
+      sector: "ETF",
+      industry: "Index Fund",
+      dates,
+      basePrice: 300,
+      drift: 0.0007,
+      phase: 6,
+    });
+    seedMacroFactors({ dbPath, dates });
+
+    const result = computeThemeResearch({
+      theme: "technology",
+      lookbackDays: 1200,
+      topN: 2,
+      dbPath,
+    });
+    expect(result.tickers.length).toBeGreaterThan(0);
+    expect(result.metrics.constituentCount).toBeGreaterThan(0);
+    expect(result.themeVersion).toBeGreaterThanOrEqual(1);
+    expect(result.usedThemeRegistry).toBe(true);
+  });
 });

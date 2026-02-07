@@ -7,7 +7,12 @@ import {
 } from "./macro-factors.js";
 import { computePortfolioPlan } from "./portfolio.js";
 import { appendProvenanceEvent } from "./provenance.js";
-import { getThemeConstituents, listThemeDefinitions } from "./theme-ontology.js";
+import {
+  getThemeConstituents,
+  listThemeDefinitions,
+  refreshThemeMembership,
+  upsertThemeDefinition,
+} from "./theme-ontology.js";
 import { computeValuation } from "./valuation.js";
 import { computeVariantPerception } from "./variant.js";
 
@@ -1645,6 +1650,235 @@ const resolveThemeDefinitionForReport = (params: {
   return active ?? definitions[0];
 };
 
+const THEME_BOOTSTRAP_STOPWORDS = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "from",
+  "that",
+  "this",
+  "into",
+  "theme",
+  "sector",
+  "global",
+  "market",
+  "markets",
+  "strategy",
+  "structural",
+  "shift",
+  "analysis",
+]);
+
+const THEME_TERM_EXPANSIONS: Record<string, string[]> = {
+  ai: [
+    "artificial intelligence",
+    "machine learning",
+    "semiconductor",
+    "software",
+    "cloud",
+    "datacenter",
+    "networking",
+    "gpu",
+    "accelerator",
+  ],
+  infrastructure: [
+    "infrastructure",
+    "datacenter",
+    "cloud",
+    "networking",
+    "power",
+    "utility",
+    "equipment",
+  ],
+  semiconductor: ["semiconductor", "chip", "foundry", "memory", "fab", "equipment"],
+  cybersecurity: ["cybersecurity", "security", "identity", "network security", "endpoint"],
+  fintech: ["fintech", "payments", "bank", "lending", "financial"],
+  energy: ["energy", "oil", "gas", "utility", "power", "renewable", "battery"],
+  climate: ["climate", "renewable", "solar", "wind", "battery", "electrification"],
+  defense: ["defense", "aerospace", "military"],
+  healthcare: ["healthcare", "pharma", "biotech", "therapeutics", "medical"],
+  biotech: ["biotech", "pharma", "therapeutics", "genomics", "drug"],
+};
+
+const humanizeThemeLabel = (theme: string): string =>
+  theme
+    .trim()
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+
+const escapeRegExpLiteral = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const compileThemeMatchRegex = (term: string): RegExp => {
+  const escaped = escapeRegExpLiteral(term.toLowerCase().trim());
+  if (!escaped) return /$^/;
+  if (/[a-z0-9]/i.test(term)) return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i");
+  return new RegExp(escaped, "i");
+};
+
+const deriveThemeBootstrapTerms = (theme: string): string[] => {
+  const normalized = theme
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const tokens = normalized
+    .split(" ")
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2 && !THEME_BOOTSTRAP_STOPWORDS.has(token));
+  const out = new Set<string>();
+  if (normalized) out.add(normalized);
+  for (const token of tokens) {
+    out.add(token);
+    const expansions = THEME_TERM_EXPANSIONS[token] ?? [];
+    for (const term of expansions) {
+      const normalizedTerm = term.trim().toLowerCase();
+      if (!normalizedTerm) continue;
+      out.add(normalizedTerm);
+    }
+  }
+  return Array.from(out);
+};
+
+const deriveThemeBootstrapTickers = (params: {
+  theme: string;
+  maxConstituents?: number;
+  dbPath?: string;
+}): string[] => {
+  const maxConstituents = clamp(Math.round(params.maxConstituents ?? 24), 6, 80);
+  const terms = deriveThemeBootstrapTerms(params.theme);
+  if (!terms.length) return [];
+  const weightedTerms = terms.map((term) => ({
+    term,
+    regex: compileThemeMatchRegex(term),
+    weight: term.includes(" ") ? 2 : term.length >= 8 ? 1.5 : term.length >= 5 ? 1.2 : 1,
+  }));
+  const db = openResearchDb(params.dbPath);
+  const cutoffDate = toIsoDate(new Date(Date.now() - 365 * 3 * 24 * 60 * 60 * 1000));
+  const rows = db
+    .prepare(
+      `SELECT
+         UPPER(i.ticker) AS ticker,
+         COALESCE(NULLIF(TRIM(i.name), ''), UPPER(i.ticker)) AS name,
+         COALESCE(NULLIF(TRIM(i.sector), ''), 'Unknown') AS sector,
+         COALESCE(NULLIF(TRIM(i.industry), ''), 'Unknown') AS industry,
+         COUNT(p.date) AS price_count,
+         MAX(p.date) AS last_price_date
+       FROM instruments i
+       LEFT JOIN prices p
+         ON p.instrument_id = i.id
+        AND p.date >= ?
+       WHERE TRIM(COALESCE(i.ticker, '')) <> ''
+       GROUP BY i.id
+       ORDER BY price_count DESC, i.ticker ASC
+       LIMIT 5000`,
+    )
+    .all(cutoffDate) as Array<{
+    ticker: string;
+    name: string;
+    sector: string;
+    industry: string;
+    price_count: number;
+    last_price_date: string | null;
+  }>;
+  const scored = rows
+    .map((row) => {
+      const text = `${row.name} ${row.sector} ${row.industry}`.toLowerCase();
+      const freshBoost =
+        typeof row.last_price_date === "string" && row.last_price_date.length >= 10 ? 0.2 : 0;
+      const depthBoost = clamp(Math.log10(Math.max(1, Number(row.price_count) || 0)) / 4, 0, 0.4);
+      let matchScore = 0;
+      for (const term of weightedTerms) {
+        if (!term.regex.test(text)) continue;
+        matchScore += term.weight;
+      }
+      if (matchScore <= 0) return undefined;
+      return {
+        ticker: normalizeTicker(row.ticker),
+        score: matchScore + freshBoost + depthBoost,
+        priceCount: Number(row.price_count) || 0,
+      };
+    })
+    .filter((row): row is { ticker: string; score: number; priceCount: number } => Boolean(row))
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        right.priceCount - left.priceCount ||
+        left.ticker.localeCompare(right.ticker),
+    );
+  return Array.from(new Set(scored.map((row) => row.ticker))).slice(0, maxConstituents);
+};
+
+const bootstrapThemeMembership = (params: {
+  theme: string;
+  version?: number;
+  minMembershipScore?: number;
+  maxConstituents?: number;
+  dbPath?: string;
+}): {
+  membershipRows: ReturnType<typeof getThemeConstituents>;
+  bootstrapTickers: string[];
+  resolvedVersion?: number;
+} => {
+  const bootstrapTickers = deriveThemeBootstrapTickers({
+    theme: params.theme,
+    maxConstituents: params.maxConstituents,
+    dbPath: params.dbPath,
+  });
+  if (!bootstrapTickers.length) {
+    return { membershipRows: [], bootstrapTickers: [] };
+  }
+  let resolvedVersion = params.version;
+  const existingDefinitions = listThemeDefinitions({
+    theme: params.theme,
+    includeInactive: true,
+    dbPath: params.dbPath,
+  });
+  if (!existingDefinitions.length) {
+    const includeKeywords = deriveThemeBootstrapTerms(params.theme)
+      .filter((term) => term.length >= 3)
+      .slice(0, 12);
+    const created = upsertThemeDefinition({
+      theme: params.theme,
+      displayName: humanizeThemeLabel(params.theme),
+      description: `Auto-generated on first theme report run (${new Date().toISOString()}).`,
+      rules: {
+        includeKeywords,
+        tickerAllowlist: bootstrapTickers,
+        minMembershipScore:
+          typeof params.minMembershipScore === "number"
+            ? clamp(params.minMembershipScore, 0.2, 0.95)
+            : 0.52,
+      },
+      activate: true,
+      dbPath: params.dbPath,
+    });
+    resolvedVersion = created.version;
+  }
+  refreshThemeMembership({
+    theme: params.theme,
+    version: resolvedVersion,
+    tickers: bootstrapTickers,
+    minMembershipScore: params.minMembershipScore,
+    source: "auto_first_report",
+    dbPath: params.dbPath,
+  });
+  const membershipRows = getThemeConstituents({
+    theme: params.theme,
+    version: resolvedVersion,
+    status: "active",
+    minMembershipScore: params.minMembershipScore,
+    limit: Math.max(5, Math.round(params.maxConstituents ?? 400)),
+    dbPath: params.dbPath,
+  });
+  return { membershipRows, bootstrapTickers, resolvedVersion };
+};
+
 const computeThemeBenchmarkRelative = (params: {
   rows: CrossSectionConstituentInternal[];
   benchmarkTicker: string;
@@ -1896,7 +2130,7 @@ export const computeThemeResearch = (params: {
   let usedThemeRegistry = false;
   let resolvedThemeVersion: number | undefined;
   if (!normalizedTickers.length) {
-    const membershipRows = getThemeConstituents({
+    let membershipRows = getThemeConstituents({
       theme,
       version: params.themeVersion,
       status: "active",
@@ -1904,14 +2138,37 @@ export const computeThemeResearch = (params: {
       limit: Math.max(5, Math.round(params.maxConstituents ?? 400)),
       dbPath: params.dbPath,
     });
+    let bootstrapTickers: string[] = [];
     if (!membershipRows.length) {
-      throw new Error(
-        "No active theme membership found; pass --tickers or refresh theme membership first.",
-      );
+      const bootstrap = bootstrapThemeMembership({
+        theme,
+        version: params.themeVersion,
+        minMembershipScore: params.minMembershipScore,
+        maxConstituents: params.maxConstituents,
+        dbPath: params.dbPath,
+      });
+      membershipRows = bootstrap.membershipRows;
+      bootstrapTickers = bootstrap.bootstrapTickers;
+      if (typeof bootstrap.resolvedVersion === "number") {
+        resolvedThemeVersion = bootstrap.resolvedVersion;
+      }
     }
-    normalizedTickers = membershipRows.map((row) => normalizeTicker(row.ticker));
-    usedThemeRegistry = true;
-    resolvedThemeVersion = membershipRows[0]?.themeVersion;
+    if (!membershipRows.length) {
+      if (bootstrapTickers.length) {
+        normalizedTickers = bootstrapTickers;
+      } else {
+        throw new Error(
+          "No active theme membership found and no auto-bootstrap candidates were inferred; pass --tickers for first run.",
+        );
+      }
+    } else {
+      normalizedTickers = membershipRows.map((row) => normalizeTicker(row.ticker));
+      usedThemeRegistry = true;
+      resolvedThemeVersion =
+        typeof resolvedThemeVersion === "number"
+          ? resolvedThemeVersion
+          : membershipRows[0]?.themeVersion;
+    }
   }
   const resolvedThemeDefinition = resolveThemeDefinitionForReport({
     theme,

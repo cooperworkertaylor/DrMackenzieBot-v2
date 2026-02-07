@@ -8,6 +8,7 @@ import {
   type MemoDiagnostics,
   type MemoEvidenceClaim,
 } from "./grade.js";
+import { ingestExpectations, ingestFilings, ingestFundamentals, ingestPrices } from "./ingest.js";
 import { buildTickerPointInTimeGraph, getTickerPointInTimeSnapshot } from "./knowledge-graph.js";
 import { addClaimEvidence, createResearchClaim, upsertResearchEntity } from "./memory-graph.js";
 import { composePortfolioDecision } from "./portfolio-decision.js";
@@ -17,7 +18,7 @@ import { evaluateMemoQualityGate, recordQualityGateRun } from "./quality-gate.js
 import { runAdversarialResearchCell } from "./research-cell.js";
 import { computeValuation, recordValuationForecast, type ValuationResult } from "./valuation.js";
 import { computeVariantPerception, type VariantPerceptionResult } from "./variant.js";
-import { searchResearch, type SearchHit } from "./vector-search.js";
+import { searchResearch, syncEmbeddings, type SearchHit } from "./vector-search.js";
 
 type MemoLine = MemoEvidenceClaim;
 type CitationRow = MemoCitation;
@@ -325,6 +326,165 @@ const fallbackScoreForSourceTable = (sourceTable?: string): number => {
   if (sourceTable === "earnings_expectations") return 0.86;
   if (sourceTable === "transcripts") return 0.8;
   return 0.6;
+};
+
+const MEMO_BOOTSTRAP_ATTEMPTS = new Set<string>();
+
+type TickerEvidenceCoverage = {
+  filingsChunks: number;
+  transcriptChunks: number;
+  expectationChunks: number;
+  fundamentalChunks: number;
+  priceRows: number;
+};
+
+type MemoAutoBootstrapResult = {
+  attempted: boolean;
+  notes: string[];
+  before: TickerEvidenceCoverage;
+  after: TickerEvidenceCoverage;
+};
+
+const bootstrapKeyForTicker = (ticker: string, dbPath?: string): string =>
+  `${ticker.trim().toUpperCase()}::${dbPath ?? "default"}`;
+
+const loadTickerEvidenceCoverage = (params: {
+  ticker: string;
+  dbPath?: string;
+}): TickerEvidenceCoverage => {
+  const db = openResearchDb(params.dbPath);
+  const ticker = params.ticker.trim().toUpperCase();
+  const count = (sql: string): number => {
+    const row = db.prepare(sql).get(ticker) as { count?: number } | undefined;
+    return Number(row?.count ?? 0);
+  };
+  const filingsChunks = count(
+    `SELECT COUNT(*) AS count
+     FROM chunks c
+     WHERE c.source_table='filings'
+       AND c.ref_id IN (
+         SELECT f.id
+         FROM filings f
+         JOIN instruments i ON i.id=f.instrument_id
+         WHERE i.ticker=?
+       )`,
+  );
+  const transcriptChunks = count(
+    `SELECT COUNT(*) AS count
+     FROM chunks c
+     WHERE c.source_table='transcripts'
+       AND c.ref_id IN (
+         SELECT t.id
+         FROM transcripts t
+         JOIN instruments i ON i.id=t.instrument_id
+         WHERE i.ticker=?
+       )`,
+  );
+  const expectationChunks = count(
+    `SELECT COUNT(*) AS count
+     FROM chunks c
+     WHERE c.source_table='earnings_expectations'
+       AND c.ref_id IN (
+         SELECT e.id
+         FROM earnings_expectations e
+         JOIN instruments i ON i.id=e.instrument_id
+         WHERE i.ticker=?
+       )`,
+  );
+  const fundamentalChunks = count(
+    `SELECT COUNT(*) AS count
+     FROM chunks c
+     WHERE c.source_table='fundamental_facts'
+       AND c.ref_id IN (
+         SELECT ff.id
+         FROM fundamental_facts ff
+         JOIN instruments i ON i.id=ff.instrument_id
+         WHERE i.ticker=?
+       )`,
+  );
+  const priceRows = count(
+    `SELECT COUNT(*) AS count
+     FROM prices p
+     JOIN instruments i ON i.id=p.instrument_id
+     WHERE i.ticker=?`,
+  );
+  return {
+    filingsChunks,
+    transcriptChunks,
+    expectationChunks,
+    fundamentalChunks,
+    priceRows,
+  };
+};
+
+const maybeAutoBootstrapCompanyEvidence = async (params: {
+  ticker: string;
+  dbPath?: string;
+}): Promise<MemoAutoBootstrapResult> => {
+  const key = bootstrapKeyForTicker(params.ticker, params.dbPath);
+  const before = loadTickerEvidenceCoverage(params);
+  if (MEMO_BOOTSTRAP_ATTEMPTS.has(key)) {
+    return {
+      attempted: false,
+      notes: ["auto-bootstrap already attempted in current process"],
+      before,
+      after: before,
+    };
+  }
+  MEMO_BOOTSTRAP_ATTEMPTS.add(key);
+  const notes: string[] = [];
+  const userAgent =
+    process.env.SEC_USER_AGENT?.trim() || process.env.SEC_EDGAR_USER_AGENT?.trim() || undefined;
+
+  const runStep = async (label: string, fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+      notes.push(`${label}=ok`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      notes.push(`${label}=skip(${message})`);
+    }
+  };
+
+  if (before.fundamentalChunks < 2) {
+    await runStep("fundamentals", async () => {
+      await ingestFundamentals(params.ticker, {
+        userAgent,
+        dbPath: params.dbPath,
+      });
+    });
+  }
+  if (before.filingsChunks < 2) {
+    await runStep("filings", async () => {
+      await ingestFilings(params.ticker, {
+        limit: 20,
+        userAgent,
+        dbPath: params.dbPath,
+      });
+    });
+  }
+  if (before.expectationChunks < 1) {
+    await runStep("expectations", async () => {
+      await ingestExpectations(params.ticker, { dbPath: params.dbPath });
+    });
+  }
+  if (before.priceRows < 120) {
+    await runStep("prices", async () => {
+      await ingestPrices(params.ticker, { dbPath: params.dbPath });
+    });
+  }
+  await runStep("embed", async () => {
+    await syncEmbeddings(params.dbPath);
+  });
+
+  const after = loadTickerEvidenceCoverage(params);
+  if (!notes.length) notes.push("no bootstrap steps required");
+  return {
+    attempted: true,
+    notes,
+    before,
+    after,
+  };
 };
 
 const loadTickerFallbackHits = (params: {
@@ -702,25 +862,46 @@ export const generateMemoAsync = async (params: {
   const minQualityScore = params.minQualityScore ?? 0.8;
   const requestedEvidence = params.maxEvidence ?? 12;
   const minimumClaims = enforceInstitutionalGrade ? 7 : 4;
-  const primaryHits = await searchResearch({
-    query: `${params.ticker} ${params.question}`,
-    ticker: params.ticker,
-    limit: Math.max(16, requestedEvidence * 3),
-    dbPath: params.dbPath,
-    source: "research",
-  });
+  const loadEvidenceHits = async () => {
+    const primaryHits = await searchResearch({
+      query: `${params.ticker} ${params.question}`,
+      ticker: params.ticker,
+      limit: Math.max(16, requestedEvidence * 3),
+      dbPath: params.dbPath,
+      source: "research",
+    });
+    const excludeIds = new Set(primaryHits.map((hit) => hit.id));
+    const fallbackHits = loadTickerFallbackHits({
+      ticker: params.ticker,
+      dbPath: params.dbPath,
+      limitPerTable: 3,
+      excludeIds,
+    });
+    return {
+      primaryHits,
+      fallbackHits,
+      hits: [...primaryHits, ...fallbackHits],
+    };
+  };
   const db = openResearchDb(params.dbPath);
-  const excludeIds = new Set(primaryHits.map((hit) => hit.id));
-  const fallbackHits = loadTickerFallbackHits({
-    ticker: params.ticker,
-    dbPath: params.dbPath,
-    limitPerTable: 3,
-    excludeIds,
-  });
-  const hits = [...primaryHits, ...fallbackHits];
+  let { primaryHits, fallbackHits, hits } = await loadEvidenceHits();
+  let bootstrapResult: MemoAutoBootstrapResult | undefined;
   if (hits.length < 3) {
+    bootstrapResult = await maybeAutoBootstrapCompanyEvidence({
+      ticker: params.ticker,
+      dbPath: params.dbPath,
+    });
+    const refreshed = await loadEvidenceHits();
+    primaryHits = refreshed.primaryHits;
+    fallbackHits = refreshed.fallbackHits;
+    hits = refreshed.hits;
+  }
+  if (hits.length < 3) {
+    const bootstrapDetail = bootstrapResult
+      ? ` bootstrap_steps=${bootstrapResult.notes.join(", ")} before=${JSON.stringify(bootstrapResult.before)} after=${JSON.stringify(bootstrapResult.after)}`
+      : "";
     throw new Error(
-      `Insufficient evidence: fewer than 3 retrieved citations (search_hits=${primaryHits.length}, fallback_hits=${fallbackHits.length}).`,
+      `Insufficient evidence: fewer than 3 retrieved citations (search_hits=${primaryHits.length}, fallback_hits=${fallbackHits.length}).${bootstrapDetail}`,
     );
   }
   const lines = buildMemoLines({
