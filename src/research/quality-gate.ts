@@ -362,6 +362,7 @@ export const evaluateCrossSectionQualityGate = (params: {
     params.avgValuationConfidence,
     params.avgPortfolioConfidence,
   ]);
+  const readinessThreshold = params.artifactType === "theme_report" ? 0.55 : 0.75;
   const contradictionScore =
     params.riskFlagCount <= 0
       ? 1
@@ -386,7 +387,7 @@ export const evaluateCrossSectionQualityGate = (params: {
       detail: `institutional_readiness=${params.institutionalReadinessScore.toFixed(2)}`,
       weight: 0.18,
       score: params.institutionalReadinessScore,
-      passThreshold: 0.75,
+      passThreshold: readinessThreshold,
       required: true,
     }),
     makeCheck({

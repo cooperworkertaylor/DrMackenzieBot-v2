@@ -203,6 +203,7 @@ const THEME_HYDRATION_ATTEMPTS = new Set<string>();
 const hydrateThemeEvidence = async (params: {
   theme: string;
   tickers: string[];
+  benchmarkTicker?: string;
   dbPath?: string;
 }): Promise<string> => {
   const key = `${params.theme.trim().toLowerCase()}::${params.dbPath ?? "default"}`;
@@ -245,6 +246,12 @@ const hydrateThemeEvidence = async (params: {
         userAgent,
         dbPath: params.dbPath,
       });
+    });
+  }
+  const benchmarkTicker = params.benchmarkTicker?.trim().toUpperCase() ?? "";
+  if (benchmarkTicker && !tickers.includes(benchmarkTicker)) {
+    await run(`${benchmarkTicker}:prices`, async () => {
+      await ingestPrices(benchmarkTicker, { dbPath: params.dbPath });
     });
   }
   await run("embed", async () => {
@@ -1629,6 +1636,10 @@ export function registerResearchCli(program: Command) {
               hydration = await hydrateThemeEvidence({
                 theme: opts.theme as string,
                 tickers: result.tickers,
+                benchmarkTicker:
+                  result.benchmarkTicker ||
+                  result.benchmarkRelative?.benchmarkTicker ||
+                  result.factorAttribution?.benchmarkTicker,
                 dbPath: opts.db as string,
               });
             }

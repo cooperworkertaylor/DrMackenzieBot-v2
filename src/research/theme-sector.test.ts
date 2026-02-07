@@ -369,6 +369,17 @@ describe("theme and sector research", () => {
       drift: 0.001,
       phase: 5,
     });
+    seedTicker({
+      dbPath,
+      ticker: "QQQ",
+      name: "Invesco QQQ Trust",
+      sector: "ETF",
+      industry: "Index Fund",
+      dates,
+      basePrice: 300,
+      drift: 0.0007,
+      phase: 6,
+    });
     seedMacroFactors({ dbPath, dates });
 
     const first = computeThemeResearch({
@@ -380,6 +391,9 @@ describe("theme and sector research", () => {
     });
     expect(first.metrics.constituentCount).toBe(2);
     expect(first.themeVersion).toBeGreaterThanOrEqual(1);
+    expect(first.benchmarkTicker).toBe("QQQ");
+    expect(first.benchmarkRelative?.benchmarkTicker).toBe("QQQ");
+    expect(first.factorAttribution?.benchmarkTicker).toBe("QQQ");
 
     const second = computeThemeResearch({
       theme: "ai-infrastructure",
@@ -389,5 +403,6 @@ describe("theme and sector research", () => {
     });
     expect(second.usedThemeRegistry).toBe(true);
     expect(second.metrics.constituentCount).toBeGreaterThanOrEqual(2);
+    expect(second.benchmarkTicker).toBe("QQQ");
   });
 });

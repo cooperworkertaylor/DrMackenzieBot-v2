@@ -115,6 +115,7 @@ export type ThemeResearchResult = {
   themeVersion?: number;
   usedThemeRegistry: boolean;
   membershipMinScore?: number;
+  benchmarkTicker?: string;
   benchmarkRelative?: ThemeBenchmarkRelativeMetrics;
   factorAttribution?: CrossSectionFactorAttribution;
   tickers: string[];
@@ -1701,6 +1702,65 @@ const THEME_TERM_EXPANSIONS: Record<string, string[]> = {
   biotech: ["biotech", "pharma", "therapeutics", "genomics", "drug"],
 };
 
+const THEME_BENCHMARK_HINTS: Array<{ benchmark: string; keywords: string[] }> = [
+  {
+    benchmark: "QQQ",
+    keywords: [
+      "ai",
+      "artificial intelligence",
+      "infrastructure",
+      "cloud",
+      "software",
+      "cybersecurity",
+      "internet",
+      "platform",
+      "datacenter",
+      "networking",
+      "semiconductor",
+      "chip",
+      "foundry",
+      "gpu",
+      "accelerator",
+    ],
+  },
+  {
+    benchmark: "XLE",
+    keywords: ["energy", "oil", "gas", "renewable", "power", "utility", "battery", "climate"],
+  },
+  {
+    benchmark: "XLF",
+    keywords: ["fintech", "bank", "banking", "payments", "insurance", "financial", "credit"],
+  },
+  {
+    benchmark: "XLV",
+    keywords: ["healthcare", "biotech", "pharma", "therapeutics", "medical", "drug"],
+  },
+  {
+    benchmark: "XLI",
+    keywords: ["industrial", "automation", "transport", "logistics", "manufacturing", "defense"],
+  },
+  {
+    benchmark: "XLY",
+    keywords: ["consumer", "retail", "ecommerce", "travel", "hospitality", "leisure"],
+  },
+  {
+    benchmark: "XLC",
+    keywords: ["media", "communication", "advertising", "social", "streaming"],
+  },
+  {
+    benchmark: "XLU",
+    keywords: ["utilities", "grid"],
+  },
+  {
+    benchmark: "XLB",
+    keywords: ["materials", "metals", "mining", "chemicals"],
+  },
+  {
+    benchmark: "XLRE",
+    keywords: ["real estate", "reit", "property", "housing"],
+  },
+];
+
 const humanizeThemeLabel = (theme: string): string =>
   theme
     .trim()
@@ -1743,6 +1803,45 @@ const deriveThemeBootstrapTerms = (theme: string): string[] => {
     }
   }
   return Array.from(out);
+};
+
+const inferThemeBenchmarkTicker = (params: { theme: string; tickers?: string[] }): string => {
+  const normalizedTheme = params.theme
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const tokenSet = new Set(
+    normalizedTheme
+      .split(" ")
+      .map((token) => token.trim())
+      .filter(Boolean),
+  );
+  const matchesKeyword = (keyword: string): boolean => {
+    const normalizedKeyword = keyword
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!normalizedKeyword) return false;
+    if (normalizedTheme.includes(normalizedKeyword)) return true;
+    return tokenSet.has(normalizedKeyword);
+  };
+  for (const hint of THEME_BENCHMARK_HINTS) {
+    if (hint.keywords.some((keyword) => matchesKeyword(keyword))) {
+      return hint.benchmark;
+    }
+  }
+  const tickerSet = new Set((params.tickers ?? []).map(normalizeTicker).filter(Boolean));
+  const techBasket = ["NVDA", "MSFT", "AMZN", "GOOGL", "META", "AAPL", "AVGO", "TSM", "ASML"];
+  if (techBasket.filter((ticker) => tickerSet.has(ticker)).length >= 2) return "QQQ";
+  const financeBasket = ["JPM", "BAC", "WFC", "GS", "MS", "SCHW", "PYPL", "SQ", "NU"];
+  if (financeBasket.filter((ticker) => tickerSet.has(ticker)).length >= 2) return "XLF";
+  const energyBasket = ["XOM", "CVX", "COP", "SLB", "EOG", "OXY", "MPC"];
+  if (energyBasket.filter((ticker) => tickerSet.has(ticker)).length >= 2) return "XLE";
+  return "SPY";
 };
 
 const deriveThemeBootstrapTickers = (params: {
@@ -1847,6 +1946,10 @@ const bootstrapThemeMembership = (params: {
       theme: params.theme,
       displayName: humanizeThemeLabel(params.theme),
       description: `Auto-generated on first theme report run (${new Date().toISOString()}).`,
+      benchmark: inferThemeBenchmarkTicker({
+        theme: params.theme,
+        tickers: bootstrapTickers,
+      }),
       rules: {
         includeKeywords,
         tickerAllowlist: bootstrapTickers,
@@ -1897,6 +2000,11 @@ const ensureThemeRegistryFromTickers = (params: {
     fallbackVersion: params.fallbackVersion,
     dbPath: params.dbPath,
   });
+  const inferredBenchmark = inferThemeBenchmarkTicker({
+    theme: params.theme,
+    tickers: normalizedTickers,
+  });
+  const existingBenchmark = normalizeTicker(existing?.benchmark ?? "");
   const fallbackIncludeKeywords = deriveThemeBootstrapTerms(params.theme)
     .filter((term) => term.length >= 3)
     .slice(0, 12);
@@ -1918,7 +2026,7 @@ const ensureThemeRegistryFromTickers = (params: {
       existing?.description ||
       `Auto-generated from first report ticker universe (${new Date().toISOString()}).`,
     parentTheme: existing?.parentThemeKey || undefined,
-    benchmark: existing?.benchmark || undefined,
+    benchmark: existingBenchmark || inferredBenchmark || undefined,
     rules: {
       includeKeywords:
         existing?.rules.includeKeywords.length && existing.rules.includeKeywords.length > 0
@@ -2262,9 +2370,12 @@ export const computeThemeResearch = (params: {
   if (typeof resolvedThemeVersion !== "number" && resolvedThemeDefinition) {
     resolvedThemeVersion = resolvedThemeDefinition.version;
   }
-  const benchmarkTicker = resolvedThemeDefinition?.benchmark
-    ? normalizeTicker(resolvedThemeDefinition.benchmark)
-    : "";
+  const benchmarkTicker =
+    normalizeTicker(resolvedThemeDefinition?.benchmark ?? "") ||
+    inferThemeBenchmarkTicker({
+      theme,
+      tickers: normalizedTickers,
+    });
   const lookbackDays = Math.max(90, Math.round(params.lookbackDays ?? 365));
   const topN = Math.max(1, Math.round(params.topN ?? 5));
   const rows = deriveConstituentSet({
@@ -2373,6 +2484,7 @@ export const computeThemeResearch = (params: {
     themeVersion: resolvedThemeVersion,
     usedThemeRegistry,
     membershipMinScore: params.minMembershipScore,
+    benchmarkTicker: benchmarkTicker || undefined,
     benchmarkRelative,
     factorAttribution,
     tickers: rows.map((row) => row.ticker),
