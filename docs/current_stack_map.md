@@ -25,6 +25,41 @@ flowchart TD
   PDF --> ART
 ```
 
+## v2 Overlay Flow (Feature-Flagged)
+
+v2 runs alongside the existing pipeline and is gated behind `RESEARCH_PIPELINE=v2` in `src/cli/research-cli.ts`.
+
+```mermaid
+flowchart TD
+  U["User / Operator"] -->|CLI| OC["openclaw.mjs -> dist/entry.js"]
+  OC --> CLI["CLI Program (commander)"]
+  CLI --> RS["registerResearchCli()"]
+
+  RS -->|RESEARCH_PIPELINE!=v2| V1["Existing pipeline (v1/v3)"]
+  RS -->|RESEARCH_PIPELINE=v2| V2["v2 pipeline (contracted)"]
+
+  subgraph V1["Existing pipeline (v1/v3)"]
+    ING["Ingest/Sync (prices/filings/transcripts/newsletters)"] --> DB["Research SQLite DB (research.db)"]
+    DB --> RET["Retrieval (searchResearch / agent-research-context)"]
+    RET --> ANA["Analyzers (variant/valuation/portfolio/graph)"]
+    ANA --> OUT["Markdown Output"]
+    OUT --> GATE["Quality Gates (rule-based)"]
+    GATE --> ART["Artifact Manifest(s)"]
+    OUT -->|optional| PDF["render-pdf (Playwright+Chrome)"]
+    PDF --> ART
+  end
+
+  subgraph V2["v2 pipeline (contracted)"]
+    P0["PASS 0: Intake + Plan\\nResearchPlan.json"] --> P1["PASS 1: Evidence Collection\\nEvidenceLibrary.json + ClaimBacklog.json\\n(reuses existing wrappers/DB)"]
+    P1 --> P2["PASS 2: Specialist Analyzers\\n(structured JSON only)"]
+    P2 --> P3["PASS 3: Skeptical Risk Officer\\n(JSON)"]
+    P3 --> P4["PASS 4: Memo Compiler\\nFinalReport.json -> FinalReport.md"]
+    P4 --> Q2["v2 Quality Gate\\n(schemas + validators; fail-closed; bounded repair)"]
+    Q2 --> RUNS["runs/<run_id>/\\n(all v2 artifacts)"]
+    P4 -->|optional| PDF2["render-pdf (Playwright+Chrome)\\n(macmini-only)"]
+  end
+```
+
 ## Entrypoints
 
 ### CLI
@@ -204,4 +239,3 @@ The lowest-risk insertion points are the CLI command handlers (not the lower-lev
 3. Add v2 “contract layer” + “evidence library” as wrappers around existing outputs:
    - Validate and fail-closed *before* rendering/delivery.
    - Keep the existing v3 gate intact; v2 can run alongside it.
-
