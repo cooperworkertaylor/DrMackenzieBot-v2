@@ -703,6 +703,14 @@ describe("v2 quality gate", () => {
     expect(res.issues.some((i) => i.code === "numeric_in_prose")).toBe(true);
   });
 
+  it("allows time horizons in prose without numeric provenance", () => {
+    const report = demoCompanyReport();
+    report.sections[0].blocks[1].text =
+      "Catalysts are likely to show up over 0-6 months, with validation in FY2026.";
+    const res = runV2QualityGate({ kind: "company", report });
+    expect(res.issues.some((i) => i.code === "numeric_in_prose")).toBe(false);
+  });
+
   it("passes a minimal valid theme report", () => {
     const res = runV2QualityGate({ kind: "theme", report: demoThemeReport() });
     expect(res.passed).toBe(true);

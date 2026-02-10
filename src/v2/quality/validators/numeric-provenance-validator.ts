@@ -18,6 +18,25 @@ const stripIsoDates = (text: string): string =>
     // YYYY/MM/DD
     .replaceAll(/\b\d{4}\/\d{2}\/\d{2}\b/g, "DATE");
 
+// Allow lightweight "structuring numbers" in prose (time horizons, quarters, fiscal years).
+// These are not the kind of "investment numbers" we want to force into numeric_facts.
+const stripAllowedProseDigits = (text: string): string => {
+  return (
+    text
+      // ISO dates (often appear in audit trails).
+      .replaceAll(/\b\d{4}-\d{2}-\d{2}\b/g, "DATE")
+      .replaceAll(/\b\d{4}\/\d{2}\/\d{2}\b/g, "DATE")
+      // Common time horizons: "0-6 months", "6–18 months", "12 months", "2 years".
+      .replaceAll(/\b\d+\s*[-–]\s*\d+\s*(months?|mos?|years?|yrs?)\b/gi, "TIMERANGE")
+      .replaceAll(/\b\d+\s*(months?|mos?|years?|yrs?)\b/gi, "TIME")
+      // Quarters / fiscal year labels: "Q1", "Q2 2026", "FY2026", "FY 2026".
+      .replaceAll(/\bQ[1-4]\b/gi, "QX")
+      .replaceAll(/\bFY\s*\d{2,4}\b/gi, "FYX")
+      // Years in isolation are usually framing, not a sourced metric.
+      .replaceAll(/\b(19|20)\d{2}\b/g, "YEAR")
+  );
+};
+
 // v2 convention: numbers should not appear directly in prose blocks. Instead, embed a placeholder
 // token like "{{N12}}" and include "N12" in numeric_refs. The renderer will substitute/footnote.
 const extractNumericPlaceholders = (text: string): string[] => {
@@ -102,7 +121,7 @@ export function validateNumericProvenance(report: unknown): QualityIssue[] {
     blocks.forEach((block, blockIndex) => {
       const text = asString(block.text);
       const placeholderIds = extractNumericPlaceholders(text);
-      const sanitized = stripNumericPlaceholders(text);
+      const sanitized = stripAllowedProseDigits(stripNumericPlaceholders(text));
       if (hasDigits(sanitized)) {
         issues.push({
           severity: "error",

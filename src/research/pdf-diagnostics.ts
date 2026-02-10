@@ -127,10 +127,25 @@ export async function extractPdfTextFromBuffer(params: {
   buffer: Uint8Array;
   maxPages: number;
 }): Promise<{ pages: number; scannedPages: number; text: string }> {
+  const path = await import("node:path");
+  const { createRequire } = await import("node:module");
   const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const require = createRequire(import.meta.url);
+  // Provide standard fonts so pdf.js can properly decode text runs.
+  // Without this, extraction can degrade into mojibake (e.g. hyphens becoming "n").
+  let standardFontDataUrl: string | undefined;
+  try {
+    const pkg = require.resolve("pdfjs-dist/package.json");
+    const dir = path.join(path.dirname(pkg), "standard_fonts") + path.sep;
+    // In Node, pdf.js expects a filesystem path, not a file:// URL.
+    standardFontDataUrl = dir;
+  } catch {
+    standardFontDataUrl = undefined;
+  }
   const pdf = await getDocument({
     data: params.buffer,
     disableWorker: true,
+    ...(standardFontDataUrl ? { standardFontDataUrl } : {}),
   }).promise;
   const scannedPages = Math.min(pdf.numPages, Math.max(1, params.maxPages));
 

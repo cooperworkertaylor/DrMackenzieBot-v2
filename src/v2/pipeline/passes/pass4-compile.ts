@@ -805,6 +805,22 @@ export type CompileResultV2 = {
   gate: QualityGateResult;
 };
 
+const parseBoolean = (raw: string | undefined): boolean | undefined => {
+  if (typeof raw !== "string") return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return undefined;
+};
+
+const v2WriterLlmEnabled = (): boolean =>
+  parseBoolean(process.env.OPENCLAW_RESEARCH_V2_LLM_WRITER) ??
+  (String(process.env.OPENCLAW_HOST_ROLE ?? "")
+    .trim()
+    .toLowerCase() === "macmini" &&
+    parseBoolean(process.env.OPENCLAW_RESEARCH_V2_LLM) !== false);
+
 export async function pass4CompileReportV2(params: {
   kind: ReportKindV2;
   runId: string;
@@ -822,6 +838,208 @@ export async function pass4CompileReportV2(params: {
   repairModel?: V2RepairModel;
 }): Promise<CompileResultV2> {
   const generatedAt = nowIso();
+
+  if (v2WriterLlmEnabled()) {
+    const { completeJsonWithResearchV2Model } = await import("../../llm/complete-json.js");
+    const mkPrompt = (mode: "write" | "repair", current?: unknown, issues?: unknown) => {
+      const schemaHint =
+        params.kind === "company"
+          ? {
+              version: 2,
+              kind: "company",
+              subject: { ticker: params.subject.ticker ?? "UNKNOWN", company_name: "optional" },
+              plan: params.plan,
+              sources: params.evidence.map((s) => ({
+                id: s.id,
+                title: s.title,
+                publisher: s.publisher,
+                date_published: s.date_published,
+                accessed_at: s.accessed_at,
+                url: s.url,
+                reliability_tier: s.reliability_tier,
+              })),
+              numeric_facts: [],
+              sections: [
+                {
+                  key: "executive_summary",
+                  title: "Executive Summary",
+                  blocks: [
+                    { tag: "FACT", text: "…", source_ids: ["S1"], numeric_refs: [] },
+                    { tag: "INTERPRETATION", text: "…", source_ids: ["S1"], numeric_refs: [] },
+                    { tag: "ASSUMPTION", text: "…", source_ids: [], numeric_refs: [] },
+                  ],
+                },
+              ],
+              exhibits: [
+                {
+                  id: "Exhibit 1",
+                  title: "…",
+                  question: "…",
+                  data_summary: [],
+                  takeaway: "…",
+                  source_ids: ["S1"],
+                },
+              ],
+              appendix: {
+                evidence_table: [{ claim: "…", evidence_ids: ["S1"], source_ids: ["S1"] }],
+                whats_missing: ["…"],
+              },
+            }
+          : {
+              version: 2,
+              kind: "theme",
+              subject: {
+                theme_name: params.subject.themeName ?? "UNKNOWN",
+                universe: params.subject.universe ?? [],
+                universe_entities: params.subject.universeEntities ?? [],
+              },
+              plan: params.plan,
+              sources: params.evidence.map((s) => ({
+                id: s.id,
+                title: s.title,
+                publisher: s.publisher,
+                date_published: s.date_published,
+                accessed_at: s.accessed_at,
+                url: s.url,
+                reliability_tier: s.reliability_tier,
+              })),
+              numeric_facts: [],
+              sections: [
+                {
+                  key: "executive_summary",
+                  title: "Executive Summary",
+                  blocks: [
+                    { tag: "FACT", text: "…", source_ids: ["S1"], numeric_refs: [] },
+                    { tag: "INTERPRETATION", text: "…", source_ids: ["S1"], numeric_refs: [] },
+                    { tag: "ASSUMPTION", text: "…", source_ids: [], numeric_refs: [] },
+                  ],
+                },
+              ],
+              exhibits: [
+                {
+                  id: "Exhibit 1",
+                  title: "…",
+                  question: "…",
+                  data_summary: [],
+                  takeaway: "…",
+                  source_ids: ["S1"],
+                },
+              ],
+              appendix: {
+                evidence_table: [{ claim: "…", evidence_ids: ["S1"], source_ids: ["S1"] }],
+                whats_missing: ["…"],
+              },
+            };
+
+      const requiredSectionKeys =
+        params.kind === "company"
+          ? [
+              "executive_summary",
+              "variant_perception",
+              "thesis",
+              "business_overview",
+              "moat_competition",
+              "financial_quality",
+              "valuation_scenarios",
+              "catalysts",
+              "risks_premortem",
+              "change_mind_triggers",
+            ]
+          : [
+              "executive_summary",
+              "what_it_is_isnt_why_now",
+              "value_chain",
+              "capture_ledger",
+              "beneficiaries_vs_left_behind",
+              "catalysts_timeline",
+              "risks_falsifiers",
+              "portfolio_posture",
+            ];
+
+      return [
+        "You are an institutional research memo writer. Your output is consumed by a strict JSON schema validator and hard quality gate.",
+        "",
+        "Hard rules:",
+        "- Output JSON only (no markdown fences).",
+        "- Use ONLY the provided sources (S#) for FACT blocks. Every FACT block must include source_ids with valid S# ids.",
+        "- Keep required sections in EXACT order. Required section keys:",
+        JSON.stringify(requiredSectionKeys),
+        "- Avoid vague filler. Be skeptical: include bear case + falsifiers.",
+        "- Do not invent numbers. If you must include a numeric value, put it in numeric_facts (with provenance) and reference via numeric_refs + {{N#}} placeholders in text.",
+        '- Exhibits: include at least one Exhibit with id like "Exhibit 1" and cite sources.',
+        "",
+        `Mode: ${mode}`,
+        mode === "repair"
+          ? "Repair objective: fix the listed validation errors by adding citations, removing/rewriting unsupported claims, adding missing sections (as N/A with na_reason), and fixing numeric provenance. Return a full corrected report JSON."
+          : "Write objective: produce a decision-useful memo (low fluff) grounded in evidence and analyzers, suitable for a long-only institutional audience.",
+        "",
+        "Inputs:",
+        JSON.stringify(
+          {
+            kind: params.kind,
+            run_id: params.runId,
+            generated_at: generatedAt,
+            subject: params.subject,
+            plan: params.plan,
+            evidence: params.evidence.map((s) => ({
+              id: s.id,
+              title: s.title,
+              publisher: s.publisher,
+              date_published: s.date_published,
+              accessed_at: s.accessed_at,
+              url: s.url,
+              reliability_tier: s.reliability_tier,
+              key_points: (s.excerpt_or_key_points ?? []).slice(0, 10),
+              tags: (s.tags ?? []).slice(0, 16),
+            })),
+            analyzers: params.analyzers,
+            risk_officer: params.risk,
+          },
+          null,
+          2,
+        ),
+        mode === "repair"
+          ? `\nCurrent report JSON:\n${JSON.stringify(current ?? {}, null, 2)}`
+          : null,
+        mode === "repair" ? `\nValidation issues:\n${JSON.stringify(issues ?? [], null, 2)}` : null,
+        "",
+        "Schema hint (shape only, do not copy literals blindly):",
+        JSON.stringify(schemaHint, null, 2),
+      ]
+        .filter(Boolean)
+        .join("\n");
+    };
+
+    const draft = await completeJsonWithResearchV2Model({
+      purpose: "writer",
+      prompt: mkPrompt("write"),
+      maxTokens: 3600,
+      temperature: 0.2,
+      profileId: process.env.OPENCLAW_RESEARCH_V2_PROFILE?.trim() || undefined,
+    });
+
+    const repairModel: V2RepairModel = {
+      repair: async ({ issues, report }) => {
+        return await completeJsonWithResearchV2Model({
+          purpose: "writer",
+          prompt: mkPrompt("repair", report, issues),
+          maxTokens: 3600,
+          temperature: 0.2,
+          profileId: process.env.OPENCLAW_RESEARCH_V2_PROFILE?.trim() || undefined,
+        });
+      },
+    };
+
+    const repaired = await runV2QualityGateWithRepair({
+      kind: params.kind,
+      report: draft,
+      repairModel,
+      maxAttempts: 2,
+    });
+    const reportMarkdown = renderV2ReportMarkdown({ kind: params.kind, report: repaired.report });
+    return { reportJson: repaired.report, reportMarkdown, gate: repaired.gate };
+  }
+
   const reportJson =
     params.kind === "company"
       ? buildCompanyReportV2({
