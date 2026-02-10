@@ -331,7 +331,31 @@ export async function sendMessageTelegram(
   };
 
   if (mediaUrl) {
-    const media = await loadWebMedia(mediaUrl, opts.maxBytes);
+    let media: Awaited<ReturnType<typeof loadWebMedia>>;
+    try {
+      media = await loadWebMedia(mediaUrl, opts.maxBytes);
+    } catch (err) {
+      const errText = formatErrorMessage(err);
+      const refusal = [
+        "❌ Failed to load attachment before sending to Telegram.",
+        `url=${mediaUrl}`,
+        `error=${errText}`,
+      ].join("\n");
+      const textParams =
+        hasThreadParams || replyMarkup
+          ? {
+              ...threadParams,
+              ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+            }
+          : undefined;
+      const res = await sendTelegramText(refusal, textParams, refusal).catch((err2) => {
+        throw wrapChatNotFound(err2);
+      });
+      return {
+        messageId: String(res?.message_id ?? "unknown"),
+        chatId: String(res?.chat?.id ?? chatId),
+      };
+    }
     const kind = mediaKindFromMime(media.contentType ?? undefined);
     const isGif = isGifMedia({
       contentType: media.contentType,
