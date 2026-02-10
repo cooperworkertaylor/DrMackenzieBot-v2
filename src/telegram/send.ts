@@ -71,6 +71,13 @@ type TelegramReactionOpts = {
 const PARSE_ERR_RE = /can't parse entities|parse entities|find end of the entity/i;
 const diagLogger = createSubsystemLogger("telegram/diagnostic");
 
+const isPdfDocument = (p: { fileName?: string | null; contentType?: string | null }): boolean => {
+  const fileName = (p.fileName ?? "").trim().toLowerCase();
+  if (fileName.endsWith(".pdf")) return true;
+  const contentType = (p.contentType ?? "").trim().toLowerCase();
+  return contentType === "application/pdf" || contentType.startsWith("application/pdf;");
+};
+
 function createTelegramHttpLogger(cfg: ReturnType<typeof loadConfig>) {
   const enabled = isDiagnosticFlagEnabled("telegram.http", cfg);
   if (!enabled) {
@@ -329,6 +336,32 @@ export async function sendMessageTelegram(
       fileName: media.fileName,
     });
     const fileName = media.fileName ?? (isGif ? "animation.gif" : inferFilename(kind)) ?? "file";
+
+    if (kind === "document" && isPdfDocument({ fileName, contentType: media.contentType })) {
+      const { diagnosePdfBuffer } = await import("../research/pdf-diagnostics.js");
+      const diag = await diagnosePdfBuffer({ buffer: media.buffer, maxPages: 50, strict: true });
+      if (diag.errors.length) {
+        const topErrors = diag.errors.slice(0, 8).join("; ");
+        const refusal = [
+          "Refused to send PDF: failed strict pre-send diagnostics.",
+          `errors=${topErrors || "unknown"}`,
+          `metrics=urlCount=${diag.metrics.urlCount} citationKeyCount=${diag.metrics.citationKeyCount} exhibitTokenCount=${diag.metrics.exhibitTokenCount} sourcesHeadingPresent=${diag.metrics.sourcesHeadingPresent ? 1 : 0} placeholderTokenCount=${diag.metrics.placeholderTokenCount} dashMojibakeDateCount=${diag.metrics.dashMojibakeDateCount} dashMojibakeStandaloneNCount=${diag.metrics.dashMojibakeStandaloneNCount}`,
+        ].join("\n");
+        const textParams =
+          hasThreadParams || replyMarkup
+            ? {
+                ...threadParams,
+                ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+              }
+            : undefined;
+        const res = await sendTelegramText(refusal, textParams, refusal);
+        return {
+          messageId: String(res?.message_id ?? "unknown"),
+          chatId: String(res?.chat?.id ?? chatId),
+        };
+      }
+    }
+
     const file = new InputFile(media.buffer, fileName);
     const { caption, followUpText } = splitTelegramCaption(text);
     const htmlCaption = caption ? renderHtmlText(caption) : undefined;
