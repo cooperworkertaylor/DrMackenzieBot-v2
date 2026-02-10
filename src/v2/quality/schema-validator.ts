@@ -1,9 +1,10 @@
+import type { ErrorObject } from "ajv";
 import Ajv from "ajv/dist/2020.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { ReportKindV2 } from "./types.js";
 
-type ValidateFn = ReturnType<Ajv["compile"]>;
+type ValidateFn = ((value: unknown) => boolean) & { errors?: ErrorObject[] | null };
 
 const schemaRoot = (): string => path.resolve(process.cwd(), "schemas");
 
@@ -13,7 +14,7 @@ const readJson = (filePath: string): unknown => {
 };
 
 type SchemaBundle = {
-  ajv: Ajv;
+  ajv: unknown;
   validateCompany: ValidateFn;
   validateTheme: ValidateFn;
 };
@@ -22,7 +23,17 @@ let bundle: SchemaBundle | null = null;
 
 function loadSchemasOnce(): SchemaBundle {
   if (bundle) return bundle;
-  const ajv = new Ajv({
+  // Ajv's ESM dist entrypoint typings can be awkward under NodeNext; treat the ctor as opaque.
+  const AjvCtor = Ajv as unknown as new (opts: {
+    allErrors: boolean;
+    strict: boolean;
+    allowUnionTypes: boolean;
+  }) => {
+    addSchema(schema: unknown, key?: string): void;
+    getSchema(key: string): ValidateFn | undefined;
+  };
+
+  const ajv = new AjvCtor({
     allErrors: true,
     strict: true,
     allowUnionTypes: false,
@@ -65,7 +76,7 @@ export function validateReportJsonSchema(params: { kind: ReportKindV2; report: u
   const validate = params.kind === "company" ? validateCompany : validateTheme;
   const ok = Boolean(validate(params.report));
   const errors =
-    validate.errors?.map((err) => {
+    validate.errors?.map((err: ErrorObject) => {
       const where = err.instancePath || err.schemaPath || "";
       const msg = err.message || "schema validation error";
       return where ? `${where}: ${msg}` : msg;

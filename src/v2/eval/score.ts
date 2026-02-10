@@ -56,14 +56,14 @@ export function scoreV2Report(params: { kind: ReportKindV2; report: unknown }): 
   // Clarity (10)
   const clarity = hasAnyCode(codes, ["style_"]) ? 0 : 10;
 
-  const subscores = {
+  const subscores: Record<V2EvalSubscoreKey, number> = {
     structure,
     sourcing,
     numeric_provenance,
     consistency,
     risk_falsifiers,
     clarity,
-  } as const;
+  };
 
   const total = Object.values(subscores).reduce((sum, v) => sum + v, 0);
 

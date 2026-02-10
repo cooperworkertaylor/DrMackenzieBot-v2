@@ -96,7 +96,7 @@ export function buildPlanThemeV2(params: {
       ...universe.map((ticker) => ({
         tool: "sec",
         query: `${ticker} latest filing`,
-        priority: "secondary",
+        priority: "secondary" as const,
       })),
     ],
   };

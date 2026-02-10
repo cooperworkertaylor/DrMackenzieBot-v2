@@ -1,7 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { openResearchDb } from "../../../research/db.js";
-import { EvidenceStore, type EvidenceItem } from "../../evidence/evidence-store.js";
+import {
+  EvidenceStore,
+  type EvidenceInsert,
+  type EvidenceItem,
+} from "../../evidence/evidence-store.js";
 
 const toYmd = (date: Date): string => date.toISOString().slice(0, 10);
 
@@ -109,7 +113,7 @@ const collectDbEvidenceForTicker = async (params: {
         (row.subject ?? "").trim() ||
         `External research (${publisher})`;
 
-      const baseInsert = {
+      const baseInsert: EvidenceInsert = {
         title,
         publisher,
         date_published: published,
@@ -129,7 +133,7 @@ const collectDbEvidenceForTicker = async (params: {
           row.source_type ? `source_type:${row.source_type}` : "",
           row.provider ? `provider:${row.provider}` : "",
         ].filter(Boolean),
-      } as const;
+      };
 
       const evidence = params.store.add(baseInsert);
       if ((row.content ?? "").trim()) {
@@ -297,7 +301,7 @@ export async function pass1EvidenceCompanyV2(params: {
     ticker: params.ticker,
   });
   if (fixturePath) {
-    const baseInsert = {
+    const baseInsert: EvidenceInsert = {
       title: `SEC XBRL time-series (${params.ticker.toUpperCase()})`,
       publisher: "SEC",
       date_published: toYmd(now),
@@ -308,7 +312,7 @@ export async function pass1EvidenceCompanyV2(params: {
         "Fixture: time-series extract representing SEC XBRL submissions (for offline demo).",
       ],
       tags: [`company:${params.ticker.toUpperCase()}`, "source:sec", "fixture:sec-xbrl-timeseries"],
-    } as const;
+    };
     const evidence = store.add(baseInsert);
     const rawRef = await copySourceIntoRun({
       runDir: params.runDir,
@@ -376,7 +380,7 @@ export async function pass1EvidenceThemeV2(params: {
     });
     const fixturePath = await findCompanyFixture({ fixtureDir: params.fixtureDir, ticker });
     if (!fixturePath) continue;
-    const baseInsert = {
+    const baseInsert: EvidenceInsert = {
       title: `SEC XBRL time-series (${ticker.toUpperCase()})`,
       publisher: "SEC",
       date_published: toYmd(now),
@@ -387,7 +391,7 @@ export async function pass1EvidenceThemeV2(params: {
         "Fixture: time-series extract representing SEC XBRL submissions (for offline demo).",
       ],
       tags: [`company:${ticker.toUpperCase()}`, "source:sec", "fixture:sec-xbrl-timeseries"],
-    } as const;
+    };
     const evidence = store.add(baseInsert);
     const rawRef = await copySourceIntoRun({
       runDir: params.runDir,
