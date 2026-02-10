@@ -125,6 +125,7 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   const { chromium } = await import("playwright-core");
   const { diagnosePdfBuffer } = await import("../../research/pdf-diagnostics.js");
   const { computeThemeResearch } = await import("../../research/theme-sector.js");
+  const { inferThemeUniverseFromDb } = await import("../../research/theme-universe-infer.js");
   const { runCompanyPipelineV2, runThemePipelineV2 } =
     await import("../../v2/pipeline/v2-pipeline.js");
 
@@ -306,10 +307,29 @@ async function maybeHandleQuickResearchPdfRequest(params: {
       };
     }
 
-    const themeRes = computeThemeResearch({
-      theme: req.theme,
-    });
-    const universe = themeRes.tickers.slice(0, 25);
+    let inferredUniverse: {
+      scanned_docs: number;
+      inferred_tickers: string[];
+      inferred_domains: string[];
+    } | null = null;
+    let themeRes: { tickers: string[] } | undefined;
+    try {
+      themeRes = computeThemeResearch({
+        theme: req.theme,
+      });
+    } catch {
+      // No membership yet: infer an initial universe from the evidence DB and register it.
+      const inferred = inferThemeUniverseFromDb({ theme: req.theme });
+      inferredUniverse = inferred;
+      if (inferred.inferred_tickers.length) {
+        themeRes = computeThemeResearch({
+          theme: req.theme,
+          tickers: inferred.inferred_tickers,
+        });
+      }
+    }
+
+    const universe = (themeRes?.tickers ?? []).slice(0, 25);
     if (!universe.length) {
       params.typing.cleanup();
       return {
@@ -376,7 +396,19 @@ async function maybeHandleQuickResearchPdfRequest(params: {
     return {
       kind: "reply",
       reply: {
-        text: `v2 theme memo ready\nrun_id=${result.runId}\nUniverse: ${universe.join(", ")}\nBuilt: ${builtAtEt}\nsha256=${sha256}\nbytes=${pdfBuffer.length}`,
+        text: [
+          "v2 theme memo ready",
+          `run_id=${result.runId}`,
+          `Universe: ${universe.join(", ")}`,
+          inferredUniverse
+            ? `Universe bootstrap: scanned_docs=${inferredUniverse.scanned_docs} inferred_domains=${inferredUniverse.inferred_domains.slice(0, 10).join(", ")}`
+            : null,
+          `Built: ${builtAtEt}`,
+          `sha256=${sha256}`,
+          `bytes=${pdfBuffer.length}`,
+        ]
+          .filter(Boolean)
+          .join("\n"),
         mediaUrl: pdfPath,
       },
     };
