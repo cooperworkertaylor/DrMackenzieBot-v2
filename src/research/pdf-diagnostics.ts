@@ -42,8 +42,10 @@ export type PdfDiagnosticsResult = {
   errors: string[];
 };
 
+// Shipping reports with "we'll attach this later" language is a hard failure.
+// Keep this list intentionally biased towards false positives over false negatives.
 const PLACEHOLDER_RE =
-  /\b(to appear|appendix pass|provided in appendix|placeholder|tbd|todo|coming soon)\b/gi;
+  /\b(to appear|appendix pass|provided in appendix|full appendix|appendix available|csv\/queries|queries\/csv|pinned query|query ids?|ready for live|swap(?:ped)? for live|can be swapped|available on request|on request|placeholder|tbd|todo|coming soon)\b/gi;
 
 export function computePdfDiagnostics(text: string): PdfDiagnosticsMetrics {
   const citationKeysBracketed = (text.match(/\[(?:S|C)\d+\]/gi) ?? []).length;
@@ -55,7 +57,8 @@ export function computePdfDiagnostics(text: string): PdfDiagnosticsMetrics {
     markdownFenceTokens: (text.match(/```/g) ?? []).length,
     urlCount: (text.match(/https?:\/\/\S+/gi) ?? []).length,
     citationKeyCount,
-    exhibitTokenCount: (text.match(/\bExhibit\s+\d+/gi) ?? []).length,
+    // Accept "Exhibit 1" and "Exhibit L2-1" style ids.
+    exhibitTokenCount: (text.match(/\bExhibit\s+[A-Za-z0-9][A-Za-z0-9_-]*\b/gi) ?? []).length,
     sourcesHeadingPresent: /Source List\b|Sources\b/i.test(text),
     dashMojibakeDateCount: (text.match(/\b\d{4}\s+n\s+\d{2}\s+n\s+\d{2}\b/g) ?? []).length,
     dashMojibakeStandaloneNCount: (text.match(/\bn\b/g) ?? []).length,

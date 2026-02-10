@@ -6,6 +6,7 @@ describe("pdf-diagnostics", () => {
     const text = [
       "Agentic Commerce - Updated Report (2026 n 02 n 10)",
       "Exhibits (pre n labels; CSV/queries provided in appendix pass)",
+      "Charts available on request.",
       "Sources (to appear with CSV/queries in appendix)",
       "Risks: regulatory pressure on stablecoin rails.",
     ].join("\n");

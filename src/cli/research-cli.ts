@@ -3543,7 +3543,11 @@ export function registerResearchCli(program: Command) {
     .requiredOption("--in <path>", "Input markdown path")
     .requiredOption("--out <path>", "Expected output PDF path")
     .option("--write <path>", "Write preflight JSON (default: <out-dir>/artifact.preflight.json)")
-    .option("--strict", "Fail-closed when unicode dashes or sources are missing", false)
+    .option(
+      "--strict",
+      "Fail-closed when unicode dashes, placeholders, exhibits, or sources are missing/invalid",
+      false,
+    )
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const kind = parseArtifactKind(opts.kind as string);
@@ -3561,14 +3565,14 @@ export function registerResearchCli(program: Command) {
         await fs.writeFile(writePath, `${JSON.stringify(preflight, null, 2)}\n`, "utf8");
         defaultRuntime.log(`Preflight written to ${writePath}`);
         defaultRuntime.log(
-          `expected exhibits=${preflight.metrics.exhibitCount} footnotes=${preflight.metrics.footnoteCount} sources=${preflight.metrics.sourcesCount} unicode_dashes=${preflight.metrics.unicodeDashCount}`,
+          `expected exhibits=${preflight.metrics.exhibitCount} footnotes=${preflight.metrics.footnoteCount} sources=${preflight.metrics.sourcesCount} unicode_dashes=${preflight.metrics.unicodeDashCount} placeholders=${preflight.metrics.placeholderTokenCount}`,
         );
         const assetCount = preflight.exhibits.reduce(
           (sum, exhibit) => sum + exhibit.assets.length,
           0,
         );
         defaultRuntime.log(
-          `exhibit_assets=${assetCount} sources_parsed=${preflight.sources.length}`,
+          `exhibit_assets=${assetCount} sources_parsed=${preflight.sources.length} sources_with_url=${preflight.metrics.sourcesWithUrlCount} sources_with_key=${preflight.metrics.sourcesWithKeyCount}`,
         );
 
         if (Boolean(opts.strict)) {
@@ -3577,9 +3581,29 @@ export function registerResearchCli(program: Command) {
               `Unicode dash characters detected in markdown (count=${preflight.metrics.unicodeDashCount}). Replace with ASCII hyphens before delivery.`,
             );
           }
+          if (preflight.metrics.placeholderTokenCount > 0) {
+            throw new Error(
+              `Placeholder language detected in markdown (count=${preflight.metrics.placeholderTokenCount}). Remove "on request"/"to appear"/"appendix pass" style text before delivery.`,
+            );
+          }
+          if (preflight.metrics.exhibitCount <= 0) {
+            throw new Error(
+              `Exhibits missing or unnumbered (exhibitCount=${preflight.metrics.exhibitCount}). Refusing to proceed.`,
+            );
+          }
           if (preflight.metrics.sourcesCount <= 0) {
             throw new Error(
               `Sources appendix missing or empty (sourcesCount=${preflight.metrics.sourcesCount}). Refusing to proceed.`,
+            );
+          }
+          if (preflight.metrics.sourcesWithUrlCount <= 0) {
+            throw new Error(
+              `Sources list has no parseable URLs (sourcesWithUrlCount=${preflight.metrics.sourcesWithUrlCount}). Refusing to proceed.`,
+            );
+          }
+          if (preflight.metrics.sourcesWithKeyCount <= 0) {
+            throw new Error(
+              `Sources list has no parseable source keys (e.g., C1:) (sourcesWithKeyCount=${preflight.metrics.sourcesWithKeyCount}). Refusing to proceed.`,
             );
           }
         }

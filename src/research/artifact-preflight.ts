@@ -5,6 +5,8 @@ import path from "node:path";
 import type { ArtifactKind } from "./artifact-manifest.js";
 
 const BAD_DASHES = /[\u2010\u2011\u2012\u2013\u2014\u2212]/g;
+const PLACEHOLDER_RE =
+  /\b(to appear|appendix pass|provided in appendix|full appendix|appendix available|csv\/queries|queries\/csv|pinned query|query ids?|ready for live|swap(?:ped)? for live|can be swapped|available on request|on request|placeholder|tbd|todo|coming soon)\b/gi;
 
 export type ArtifactPreflightSource = {
   key?: string;
@@ -47,6 +49,9 @@ export type ArtifactPreflight = {
     footnoteCount: number;
     sourcesCount: number;
     unicodeDashCount: number;
+    sourcesWithUrlCount: number;
+    sourcesWithKeyCount: number;
+    placeholderTokenCount: number;
   };
   exhibits: ArtifactPreflightExhibit[];
   sources: ArtifactPreflightSource[];
@@ -91,6 +96,8 @@ const countSources = (markdown: string): number => {
 };
 
 const countUnicodeDashes = (markdown: string): number => (markdown.match(BAD_DASHES) ?? []).length;
+const countPlaceholderTokens = (markdown: string): number =>
+  (markdown.match(PLACEHOLDER_RE) ?? []).length;
 
 const formatBuiltAtEt = (date: Date): string => {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -263,6 +270,12 @@ export const buildArtifactPreflight = async (params: {
     baseDir: path.dirname(inPath),
   });
   const markdownBytes = Buffer.byteLength(markdown, "utf8");
+  const sourcesWithUrlCount = sources.filter(
+    (s) => typeof s.url === "string" && s.url.trim(),
+  ).length;
+  const sourcesWithKeyCount = sources.filter(
+    (s) => typeof s.key === "string" && s.key.trim(),
+  ).length;
 
   return {
     version: 1,
@@ -279,6 +292,9 @@ export const buildArtifactPreflight = async (params: {
       footnoteCount: countFootnotes(markdown),
       sourcesCount: countSources(markdown),
       unicodeDashCount: countUnicodeDashes(markdown),
+      sourcesWithUrlCount,
+      sourcesWithKeyCount,
+      placeholderTokenCount: countPlaceholderTokens(markdown),
     },
     exhibits,
     sources,

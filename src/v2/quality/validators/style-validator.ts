@@ -23,6 +23,9 @@ const BANNED_PHRASES = [
   "can't miss",
 ];
 
+const PLACEHOLDER_PHRASES_RE =
+  /\b(to appear|appendix pass|provided in appendix|full appendix|appendix available|csv\/queries|queries\/csv|pinned query|query ids?|ready for live|swap(?:ped)? for live|can be swapped|available on request|on request|tbd|todo|coming soon)\b/i;
+
 const collectText = (report: unknown): Array<{ path: string; text: string }> => {
   const out: Array<{ path: string; text: string }> = [];
   const root = asObject(report);
@@ -71,6 +74,20 @@ const collectText = (report: unknown): Array<{ path: string; text: string }> => 
 export function validateStyle(report: unknown): QualityIssue[] {
   const issues: QualityIssue[] = [];
   const texts = collectText(report);
+
+  // Ban placeholder language ("we'll attach later").
+  for (const { path, text } of texts) {
+    if (PLACEHOLDER_PHRASES_RE.test(text)) {
+      issues.push({
+        severity: "error",
+        code: "style_placeholder_language",
+        path,
+        message:
+          "Placeholder language detected (e.g., 'on request', 'to appear', 'appendix pass').",
+        fix: "Replace placeholders with actual exhibits/sources, or mark the claim as unknown and add it to whats_missing.",
+      });
+    }
+  }
 
   // Ban fluff.
   for (const { path, text } of texts) {

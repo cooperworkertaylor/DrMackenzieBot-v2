@@ -324,6 +324,20 @@ const demoCompanyReport = () => ({
   },
 });
 
+describe("v2 quality gate", () => {
+  it("rejects placeholder language", () => {
+    const report = demoCompanyReport();
+    report.sections[0].blocks.push({
+      tag: "INTERPRETATION",
+      text: "Exhibits and CSV/queries are available on request.",
+    });
+
+    const res = runV2QualityGate({ kind: "company", report });
+    expect(res.passed).toBe(false);
+    expect(res.issues.map((i) => i.code)).toContain("style_placeholder_language");
+  });
+});
+
 const demoThemeReport = () => ({
   version: 2,
   kind: "theme",
