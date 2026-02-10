@@ -100,22 +100,23 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   typing: TypingController;
   agentId: string;
 }): Promise<InlineActionResult | null> {
+  const req = parseQuickResearchRequest(params.cleanedBody);
+  if (!req) return null;
+
   const channel =
     resolveGatewayMessageChannel(params.ctx.Surface) ??
     resolveGatewayMessageChannel(params.ctx.Provider) ??
     undefined;
   if (channel !== "telegram") return null;
-  if (params.isGroup) return null;
-  if (!params.command.isAuthorizedSender) return null;
-
-  const req = parseQuickResearchRequest(params.cleanedBody);
-  if (!req) return null;
-
-  // Single accept message (no status spam).
-  if (params.opts?.onBlockReply) {
-    await params.opts.onBlockReply({
-      text: `Run accepted: ${req.kind} v2 (${req.minutes} min target). Will deliver a PDF if (and only if) it passes strict quality + strict PDF diagnostics.`,
-    });
+  if (!params.command.isAuthorizedSender) {
+    params.typing.cleanup();
+    return {
+      kind: "reply",
+      reply: {
+        text: "❌ Refusing: quick research PDF runs require an authorized sender.",
+        isError: true,
+      },
+    };
   }
 
   const fs = await import("node:fs/promises");
@@ -124,6 +125,8 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   const { pathToFileURL } = await import("node:url");
   const { chromium } = await import("playwright-core");
   const { diagnosePdfBuffer } = await import("../../research/pdf-diagnostics.js");
+  const { writeFileArtifactManifest } = await import("../../research/artifact-manifest.js");
+  const { resolveStateDir } = await import("../../config/paths.js");
   const { computeThemeResearch } = await import("../../research/theme-sector.js");
   const { inferThemeUniverseFromDb } = await import("../../research/theme-universe-infer.js");
   const { runCompanyPipelineV2, runThemePipelineV2 } =
@@ -153,6 +156,15 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         isError: true,
       },
     };
+  }
+
+  // Single accept message (no status spam). Only after hard gates pass.
+  if (params.opts?.onBlockReply) {
+    const { resolveCommitHash } = await import("../../infra/git-commit.js");
+    const commit = resolveCommitHash({ cwd: process.cwd(), env: process.env }) ?? "unknown";
+    await params.opts.onBlockReply({
+      text: `Run accepted: ${req.kind} v2 (${req.minutes} min target). Will deliver a PDF if (and only if) it passes strict quality + strict PDF diagnostics.\nagent_commit=${commit}`,
+    });
   }
 
   const now = new Date();
@@ -296,7 +308,42 @@ async function maybeHandleQuickResearchPdfRequest(params: {
           },
         };
       }
-      const sha256 = crypto.createHash("sha256").update(pdfBuffer).digest("hex");
+
+      const os = await import("node:os");
+      const stateDir = resolveStateDir(process.env, os.homedir);
+      const seriesKey = `quickrun_company_${slugify(req.ticker)}`;
+      const seriesManifestPath = path.join(
+        stateDir,
+        "research",
+        "quickrun",
+        `${seriesKey}.artifact.json`,
+      );
+      await fs.mkdir(path.dirname(seriesManifestPath), { recursive: true, mode: 0o700 });
+      const manifestRes = await writeFileArtifactManifest({
+        kind: "memo",
+        outPath: pdfPath,
+        seriesKey,
+        seriesManifestPath,
+        markdownForMetrics: await fs.readFile(result.reportMarkdownPath, "utf8"),
+        metrics: {
+          run_id: result.runId,
+          built_at_et: builtAtEt,
+          kind: "company",
+        },
+      });
+      if (manifestRes.manifest.unchangedFromPrevious) {
+        params.typing.cleanup();
+        return {
+          kind: "reply",
+          reply: {
+            text: `❌ Refusing to send: unchanged PDF artifact detected\nrun_id=${result.runId}\nsha256=${manifestRes.manifest.sha256}\nIf this is unexpected, render to a new versioned path and regenerate.`,
+            isError: true,
+          },
+        };
+      }
+
+      const sha256 =
+        manifestRes.manifest.sha256 || crypto.createHash("sha256").update(pdfBuffer).digest("hex");
       params.typing.cleanup();
       return {
         kind: "reply",
@@ -402,7 +449,42 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         },
       };
     }
-    const sha256 = crypto.createHash("sha256").update(pdfBuffer).digest("hex");
+
+    const os = await import("node:os");
+    const stateDir = resolveStateDir(process.env, os.homedir);
+    const seriesKey = `quickrun_theme_${slugify(req.theme)}`;
+    const seriesManifestPath = path.join(
+      stateDir,
+      "research",
+      "quickrun",
+      `${seriesKey}.artifact.json`,
+    );
+    await fs.mkdir(path.dirname(seriesManifestPath), { recursive: true, mode: 0o700 });
+    const manifestRes = await writeFileArtifactManifest({
+      kind: "theme_report",
+      outPath: pdfPath,
+      seriesKey,
+      seriesManifestPath,
+      markdownForMetrics: await fs.readFile(result.reportMarkdownPath, "utf8"),
+      metrics: {
+        run_id: result.runId,
+        built_at_et: builtAtEt,
+        kind: "theme",
+      },
+    });
+    if (manifestRes.manifest.unchangedFromPrevious) {
+      params.typing.cleanup();
+      return {
+        kind: "reply",
+        reply: {
+          text: `❌ Refusing to send: unchanged PDF artifact detected\nrun_id=${result.runId}\nsha256=${manifestRes.manifest.sha256}\nIf this is unexpected, render to a new versioned path and regenerate.`,
+          isError: true,
+        },
+      };
+    }
+
+    const sha256 =
+      manifestRes.manifest.sha256 || crypto.createHash("sha256").update(pdfBuffer).digest("hex");
     params.typing.cleanup();
     return {
       kind: "reply",

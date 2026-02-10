@@ -1,4 +1,5 @@
 import { type Bot, GrammyError, InputFile } from "grammy";
+import crypto from "node:crypto";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import type { ReplyToMode } from "../../config/config.js";
 import type { MarkdownTableMode } from "../../config/types.base.js";
@@ -19,6 +20,7 @@ import {
   markdownToTelegramHtml,
   renderTelegramHtmlText,
 } from "../format.js";
+import { readTelegramLastSentPdf, writeTelegramLastSentPdf } from "../last-sent-pdf-store.js";
 import { buildInlineKeyboard } from "../send.js";
 import { cacheSticker, getCachedSticker } from "../sticker-cache.js";
 import { resolveTelegramVoiceSend } from "../voice.js";
@@ -259,6 +261,7 @@ export async function deliverReplies(params: {
           markDelivered();
         }
       } else {
+        let pdfSha256: string | null = null;
         if (kind === "document" && isPdfDocument({ fileName, contentType: media.contentType })) {
           const { diagnosePdfBuffer } = await import("../../research/pdf-diagnostics.js");
           const diag = await diagnosePdfBuffer({
@@ -287,6 +290,34 @@ export async function deliverReplies(params: {
             }
             continue;
           }
+
+          pdfSha256 = crypto.createHash("sha256").update(media.buffer).digest("hex");
+          const last = await readTelegramLastSentPdf({ chatId });
+          if (last?.sha256 === pdfSha256) {
+            const refusal = [
+              "Refused to send PDF: identical to the last PDF sent in this chat.",
+              `sha256=${pdfSha256}`,
+              `fileName=${fileName}`,
+              `bytes=${media.buffer.length}`,
+              last.sentAt ? `lastSentAt=${last.sentAt}` : null,
+              "This usually means the agent re-attached a stale artifact path. Render to a new versioned path and regenerate.",
+            ]
+              .filter(Boolean)
+              .join("\n");
+            await sendTelegramText(bot, chatId, refusal, runtime, {
+              replyToMessageId,
+              replyQuoteText,
+              thread,
+              linkPreview,
+              replyMarkup: isFirstMedia ? replyMarkup : undefined,
+              plainText: refusal,
+            });
+            markDelivered();
+            if (replyToId && !hasReplied) {
+              hasReplied = true;
+            }
+            continue;
+          }
         }
         try {
           await withTelegramApiErrorLogging({
@@ -295,6 +326,14 @@ export async function deliverReplies(params: {
             fn: () => bot.api.sendDocument(chatId, file, { ...mediaParams }),
           });
           markDelivered();
+          if (pdfSha256) {
+            await writeTelegramLastSentPdf({
+              chatId,
+              sha256: pdfSha256,
+              bytes: media.buffer.length,
+              fileName,
+            });
+          }
         } catch (err) {
           const errText = formatErrorMessage(err);
           const refusal = [

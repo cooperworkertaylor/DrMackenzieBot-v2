@@ -5,6 +5,7 @@ import type {
   ReactionTypeEmoji,
 } from "@grammyjs/types";
 import { type ApiClientOptions, Bot, HttpError, InputFile } from "grammy";
+import crypto from "node:crypto";
 import type { RetryConfig } from "../infra/retry.js";
 import { loadConfig } from "../config/config.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
@@ -24,6 +25,7 @@ import { buildTelegramThreadParams } from "./bot/helpers.js";
 import { splitTelegramCaption } from "./caption.js";
 import { resolveTelegramFetch } from "./fetch.js";
 import { renderTelegramHtmlText } from "./format.js";
+import { readTelegramLastSentPdf, writeTelegramLastSentPdf } from "./last-sent-pdf-store.js";
 import { isRecoverableTelegramNetworkError } from "./network-errors.js";
 import { makeProxyFetch } from "./proxy.js";
 import { recordSentMessage } from "./sent-message-cache.js";
@@ -336,8 +338,42 @@ export async function sendMessageTelegram(
       fileName: media.fileName,
     });
     const fileName = media.fileName ?? (isGif ? "animation.gif" : inferFilename(kind)) ?? "file";
+    const isPdf =
+      kind === "document" && isPdfDocument({ fileName, contentType: media.contentType });
+    const pdfSha256 = isPdf ? crypto.createHash("sha256").update(media.buffer).digest("hex") : null;
 
-    if (kind === "document" && isPdfDocument({ fileName, contentType: media.contentType })) {
+    if (isPdf && pdfSha256) {
+      const last = await readTelegramLastSentPdf({
+        accountId: account.accountId,
+        chatId,
+      });
+      if (last?.sha256 === pdfSha256) {
+        const refusal = [
+          "Refused to send PDF: identical to the last PDF sent in this chat.",
+          `sha256=${pdfSha256}`,
+          `fileName=${fileName}`,
+          `bytes=${media.buffer.length}`,
+          last.sentAt ? `lastSentAt=${last.sentAt}` : null,
+          "This usually means the agent re-attached a stale artifact path. Render to a new versioned path and regenerate.",
+        ]
+          .filter(Boolean)
+          .join("\n");
+        const textParams =
+          hasThreadParams || replyMarkup
+            ? {
+                ...threadParams,
+                ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+              }
+            : undefined;
+        const res = await sendTelegramText(refusal, textParams, refusal);
+        return {
+          messageId: String(res?.message_id ?? "unknown"),
+          chatId: String(res?.chat?.id ?? chatId),
+        };
+      }
+    }
+
+    if (isPdf) {
       const { diagnosePdfBuffer } = await import("../research/pdf-diagnostics.js");
       const diag = await diagnosePdfBuffer({ buffer: media.buffer, maxPages: 50, strict: true });
       if (diag.errors.length) {
@@ -464,6 +500,15 @@ export async function sendMessageTelegram(
     const resolvedChatId = String(result?.chat?.id ?? chatId);
     if (result?.message_id) {
       recordSentMessage(chatId, result.message_id);
+    }
+    if (isPdf && pdfSha256 && kind === "document") {
+      await writeTelegramLastSentPdf({
+        accountId: account.accountId,
+        chatId,
+        sha256: pdfSha256,
+        bytes: media.buffer.length,
+        fileName,
+      });
     }
     recordChannelActivity({
       channel: "telegram",
