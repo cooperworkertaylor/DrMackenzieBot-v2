@@ -105,3 +105,20 @@ The v2 gate supports a bounded repair loop:
 
 If the report still fails after all attempts, the pipeline must output a **FAILED QUALITY GATE** artifact that includes the final issues.
 
+## PDF Pre-Send Diagnostics (v1 + v2)
+
+Even if markdown gates pass, the final artifact can still fail institutional standards at the PDF layer (e.g., encoding mojibake, missing URLs/citations, placeholder language).
+
+Use:
+
+```bash
+node openclaw.mjs research pdf-diagnostics --in <path-to.pdf> --strict --dump-text tmp/pdfs/<name>.txt
+```
+
+`--strict` fails closed with an actionable error list when the PDF violates minimal pre-send requirements:
+- no raw markdown tokens (e.g., `###`, ```),
+- Sources present + at least one URL,
+- at least one structured citation key (`[S#]` or `C#:`),
+- at least one `Exhibit N`,
+- no dash mojibake (e.g., `2026 n 02 n 10`),
+- no placeholder language (e.g., “appendix pass”, “to appear”).
