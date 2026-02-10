@@ -128,6 +128,20 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   const { runCompanyPipelineV2, runThemePipelineV2 } =
     await import("../../v2/pipeline/v2-pipeline.js");
 
+  const hostRole = String(process.env.OPENCLAW_HOST_ROLE ?? "")
+    .trim()
+    .toLowerCase();
+  if (hostRole !== "macmini") {
+    params.typing.cleanup();
+    return {
+      kind: "reply",
+      reply: {
+        text: `❌ Refusing to run research+PDF outside macmini (OPENCLAW_HOST_ROLE=${hostRole || "unset"}).`,
+        isError: true,
+      },
+    };
+  }
+
   const chromePath = (process.env.OPENCLAW_CHROME_PATH ?? "").trim();
   if (!chromePath) {
     params.typing.cleanup();
