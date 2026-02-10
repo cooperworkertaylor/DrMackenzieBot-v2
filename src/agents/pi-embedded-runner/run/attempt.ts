@@ -10,6 +10,7 @@ import { resolveChannelCapabilities } from "../../../config/channel-capabilities
 import { getMachineDisplayName } from "../../../infra/machine-name.js";
 import { MAX_IMAGE_BYTES } from "../../../media/constants.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
+import { buildAgentResearchContext } from "../../../research/agent-research-context.js";
 import { isSubagentSessionKey } from "../../../routing/session-key.js";
 import { resolveSignalReactionLevel } from "../../../signal/reaction-level.js";
 import { resolveTelegramInlineButtonsScope } from "../../../telegram/inline-buttons.js";
@@ -725,6 +726,20 @@ export async function runEmbeddedAttempt(
           } catch (hookErr) {
             log.warn(`before_agent_start hook failed: ${String(hookErr)}`);
           }
+        }
+
+        // Inject local research DB context for investment-style prompts mentioning tickers.
+        // This is *not* a tool call: it just prepends a bounded evidence block to the prompt.
+        try {
+          const researchContext = await buildAgentResearchContext({ prompt: params.prompt });
+          if (researchContext?.context) {
+            effectivePrompt = `${researchContext.context}\n\n${effectivePrompt}`;
+            log.debug(
+              `research: injected db context (${researchContext.hits.length} hits, ${researchContext.context.length} chars)`,
+            );
+          }
+        } catch (err) {
+          log.warn(`research context injection failed: ${String(err)}`);
         }
 
         log.debug(`embedded run prompt start: runId=${params.runId} sessionId=${params.sessionId}`);
