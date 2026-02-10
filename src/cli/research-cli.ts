@@ -1,6 +1,8 @@
 import type { Command } from "commander";
+import * as fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   DEFAULT_CONCEPTS,
   buildTimeSeriesExhibit,
@@ -9,7 +11,8 @@ import {
   timeSeriesToCsv,
   timeSeriesToMarkdown,
 } from "../agents/sec-xbrl-timeseries.js";
-import { writeArtifactManifest } from "../research/artifact-manifest.js";
+import { writeArtifactManifest, writeFileArtifactManifest } from "../research/artifact-manifest.js";
+import { buildArtifactPreflight } from "../research/artifact-preflight.js";
 import {
   applyBenchmarkGovernance,
   benchmarkReport,
@@ -136,6 +139,103 @@ const parseCsvListOption = (value: string): string[] =>
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+
+const deriveArtifactSeriesKey = (outPath: string): string => {
+  const parsed = path.parse(outPath);
+  return parsed.name.replace(/\.v\d+$/i, "");
+};
+
+const deriveSeriesManifestPath = (outPath: string): string =>
+  path.join(path.dirname(outPath), "artifact.json");
+
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const escapeHtml = (value: string): string =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
+const formatBuiltAtEt = (date: Date): string => {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  const yyyy = get("year");
+  const mm = get("month");
+  const dd = get("day");
+  const hh = get("hour");
+  const min = get("minute");
+  return `${yyyy}-${mm}-${dd} ${hh}:${min} ET`;
+};
+
+const resolveChromeExecutablePath = (explicit?: string): string | undefined => {
+  const candidate = (explicit ?? "").trim();
+  if (candidate && fsSync.existsSync(candidate)) return candidate;
+  const env = (process.env.OPENCLAW_CHROME_PATH ?? process.env.CHROME_PATH ?? "").trim();
+  if (env && fsSync.existsSync(env)) return env;
+  if (process.platform === "darwin") {
+    const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    if (fsSync.existsSync(macChrome)) return macChrome;
+    const macCanary = "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary";
+    if (fsSync.existsSync(macCanary)) return macCanary;
+  }
+  return undefined;
+};
+
+const assertMacminiBrowserAllowed = (feature: string): void => {
+  const hostRole =
+    process.env.OPENCLAW_HOST_ROLE ??
+    process.env.OPENCLAW_AGENT_ROLE ??
+    process.env.OPENCLAW_AGENT ??
+    "";
+  const allow =
+    process.env.OPENCLAW_ALLOW_BROWSER ??
+    process.env.OPENCLAW_ALLOW_CHROME ??
+    process.env.OPENCLAW_RENDER_PDF_ALLOWED ??
+    "";
+  const normalizedRole = hostRole.trim().toLowerCase();
+  const normalizedAllow = allow.trim();
+  if (normalizedRole === "macmini" && normalizedAllow === "1") return;
+  throw new Error(
+    `${feature} uses a local browser (Chrome/Playwright) and is restricted to the macmini agent. Refusing to run here. Set OPENCLAW_HOST_ROLE=macmini and OPENCLAW_ALLOW_BROWSER=1 to proceed (on macmini only).`,
+  );
+};
+
+const BAD_DASHES = /[\u2010\u2011\u2012\u2013\u2014\u2212]/g;
+
+const resolveNextVersionedArtifactPath = async (params: {
+  dir: string;
+  base: string;
+  ext: string;
+}): Promise<{ outPath: string; version: number }> => {
+  const dir = path.resolve(params.dir);
+  const base = params.base.trim();
+  const ext = params.ext.replace(/^\./, "").trim() || "pdf";
+  let maxVersion = 0;
+  try {
+    const entries = await fs.readdir(dir);
+    const re = new RegExp(`^${escapeRegExp(base)}\\.v(\\d+)\\.${escapeRegExp(ext)}$`, "i");
+    for (const entry of entries) {
+      const match = re.exec(entry);
+      if (!match) continue;
+      const version = Number.parseInt(match[1] ?? "", 10);
+      if (Number.isFinite(version) && version > maxVersion) maxVersion = version;
+    }
+  } catch {
+    // directory may not exist yet; treat as v0
+  }
+  const version = maxVersion + 1;
+  return { outPath: path.join(dir, `${base}.v${version}.${ext}`), version };
+};
 
 const parseSourceTypeOption = (value?: string) => {
   const normalized = (value ?? "").trim().toLowerCase();
@@ -364,6 +464,21 @@ const parseQualityGateArtifactType = (value?: string): QualityGateArtifactType |
     return normalized;
   }
   throw new Error(`Invalid artifact type: ${value}`);
+};
+
+const parseArtifactKind = (value?: string): "memo" | "sector_report" | "theme_report" => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "memo" || normalized === "sector_report" || normalized === "theme_report") {
+    return normalized;
+  }
+  throw new Error(`Invalid artifact kind: ${value}`);
+};
+
+const parsePdfFormat = (value?: string): "Letter" | "A4" => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized || normalized === "letter" || normalized === "us-letter") return "Letter";
+  if (normalized === "a4") return "A4";
+  throw new Error(`Invalid PDF format: ${value} (expected: letter|a4)`);
 };
 
 export function registerResearchCli(program: Command) {
@@ -1763,6 +1878,8 @@ export function registerResearchCli(program: Command) {
             kind: "sector_report",
             outPath,
             markdown: final.report.markdown,
+            seriesKey: deriveArtifactSeriesKey(outPath),
+            seriesManifestPath: deriveSeriesManifestPath(outPath),
             metrics: {
               sector: String(opts.sector),
               tickers: final.result.tickers.length,
@@ -1775,8 +1892,26 @@ export function registerResearchCli(program: Command) {
           });
           defaultRuntime.log(`Report written to ${outPath}`);
           defaultRuntime.log(`Manifest written to ${manifestRes.manifestPath}`);
+          if (manifestRes.seriesManifestPath) {
+            defaultRuntime.log(`Series manifest written to ${manifestRes.seriesManifestPath}`);
+          }
+          const unicodeDashCount = Number(manifestRes.manifest.metrics.unicodeDashCount ?? 0);
+          if (Number.isFinite(unicodeDashCount) && unicodeDashCount > 0) {
+            throw new Error(
+              `Unicode dash characters detected (count=${unicodeDashCount}). Replace with ASCII hyphens before delivery.`,
+            );
+          }
+          const sourcesCount = Number(manifestRes.manifest.metrics.sourcesCount ?? 0);
+          if (!Number.isFinite(sourcesCount) || sourcesCount <= 0) {
+            throw new Error(
+              `Sources appendix missing or empty (sourcesCount=${sourcesCount}). Refusing to proceed.`,
+            );
+          }
           if (manifestRes.manifest.unchangedFromPrevious) {
             defaultRuntime.error(`artifact_unchanged=1 sha256=${manifestRes.manifest.sha256}`);
+            throw new Error(
+              `Artifact unchanged (sha256=${manifestRes.manifest.sha256}). Refusing to proceed.`,
+            );
           }
         } else {
           defaultRuntime.log(final.report.markdown);
@@ -2032,6 +2167,8 @@ export function registerResearchCli(program: Command) {
             kind: "theme_report",
             outPath,
             markdown: final.report.markdown,
+            seriesKey: deriveArtifactSeriesKey(outPath),
+            seriesManifestPath: deriveSeriesManifestPath(outPath),
             metrics: {
               theme: String(opts.theme),
               tickers: final.result.tickers.length,
@@ -2045,8 +2182,26 @@ export function registerResearchCli(program: Command) {
           });
           defaultRuntime.log(`Report written to ${outPath}`);
           defaultRuntime.log(`Manifest written to ${manifestRes.manifestPath}`);
+          if (manifestRes.seriesManifestPath) {
+            defaultRuntime.log(`Series manifest written to ${manifestRes.seriesManifestPath}`);
+          }
+          const unicodeDashCount = Number(manifestRes.manifest.metrics.unicodeDashCount ?? 0);
+          if (Number.isFinite(unicodeDashCount) && unicodeDashCount > 0) {
+            throw new Error(
+              `Unicode dash characters detected (count=${unicodeDashCount}). Replace with ASCII hyphens before delivery.`,
+            );
+          }
+          const sourcesCount = Number(manifestRes.manifest.metrics.sourcesCount ?? 0);
+          if (!Number.isFinite(sourcesCount) || sourcesCount <= 0) {
+            throw new Error(
+              `Sources appendix missing or empty (sourcesCount=${sourcesCount}). Refusing to proceed.`,
+            );
+          }
           if (manifestRes.manifest.unchangedFromPrevious) {
             defaultRuntime.error(`artifact_unchanged=1 sha256=${manifestRes.manifest.sha256}`);
+            throw new Error(
+              `Artifact unchanged (sha256=${manifestRes.manifest.sha256}). Refusing to proceed.`,
+            );
           }
         } else {
           defaultRuntime.log(final.report.markdown);
@@ -3224,6 +3379,8 @@ export function registerResearchCli(program: Command) {
             kind: "memo",
             outPath,
             markdown: result.memo,
+            seriesKey: deriveArtifactSeriesKey(outPath),
+            seriesManifestPath: deriveSeriesManifestPath(outPath),
             metrics: {
               claims: result.claims,
               citations: result.citations,
@@ -3238,8 +3395,26 @@ export function registerResearchCli(program: Command) {
           });
           defaultRuntime.log(`Memo written to ${outPath}`);
           defaultRuntime.log(`Manifest written to ${manifestRes.manifestPath}`);
+          if (manifestRes.seriesManifestPath) {
+            defaultRuntime.log(`Series manifest written to ${manifestRes.seriesManifestPath}`);
+          }
+          const unicodeDashCount = Number(manifestRes.manifest.metrics.unicodeDashCount ?? 0);
+          if (Number.isFinite(unicodeDashCount) && unicodeDashCount > 0) {
+            throw new Error(
+              `Unicode dash characters detected (count=${unicodeDashCount}). Replace with ASCII hyphens before delivery.`,
+            );
+          }
+          const sourcesCount = Number(manifestRes.manifest.metrics.sourcesCount ?? 0);
+          if (!Number.isFinite(sourcesCount) || sourcesCount <= 0) {
+            throw new Error(
+              `Sources appendix missing or empty (sourcesCount=${sourcesCount}). Refusing to proceed.`,
+            );
+          }
           if (manifestRes.manifest.unchangedFromPrevious) {
             defaultRuntime.error(`artifact_unchanged=1 sha256=${manifestRes.manifest.sha256}`);
+            throw new Error(
+              `Artifact unchanged (sha256=${manifestRes.manifest.sha256}). Refusing to proceed.`,
+            );
           }
         } else {
           // By default, print only the memo body (clean deliverable). Metrics belong in the DB/manifest.
@@ -3271,6 +3446,505 @@ export function registerResearchCli(program: Command) {
               `institutional_gate_required_failures=${result.qualityGate.requiredFailures.join(",")}`,
             );
           }
+        }
+      });
+    });
+
+  research
+    .command("preflight")
+    .description(
+      "Generate a manifest-first preflight bundle (expected counts, exhibits, sources) for a markdown -> PDF artifact",
+    )
+    .requiredOption("--kind <kind>", "memo|sector_report|theme_report")
+    .requiredOption("--in <path>", "Input markdown path")
+    .requiredOption("--out <path>", "Expected output PDF path")
+    .option("--write <path>", "Write preflight JSON (default: <out-dir>/artifact.preflight.json)")
+    .option("--strict", "Fail-closed when unicode dashes or sources are missing", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const kind = parseArtifactKind(opts.kind as string);
+        const inPath = path.resolve(opts.in as string);
+        const outPath = path.resolve(opts.out as string);
+        const outDir = path.dirname(outPath);
+        await fs.mkdir(outDir, { recursive: true });
+
+        const preflight = await buildArtifactPreflight({ kind, inPath, outPath });
+        const writePath =
+          typeof opts.write === "string" && opts.write.trim()
+            ? path.resolve(opts.write as string)
+            : path.join(outDir, "artifact.preflight.json");
+
+        await fs.writeFile(writePath, `${JSON.stringify(preflight, null, 2)}\n`, "utf8");
+        defaultRuntime.log(`Preflight written to ${writePath}`);
+        defaultRuntime.log(
+          `expected exhibits=${preflight.metrics.exhibitCount} footnotes=${preflight.metrics.footnoteCount} sources=${preflight.metrics.sourcesCount} unicode_dashes=${preflight.metrics.unicodeDashCount}`,
+        );
+        const assetCount = preflight.exhibits.reduce(
+          (sum, exhibit) => sum + exhibit.assets.length,
+          0,
+        );
+        defaultRuntime.log(
+          `exhibit_assets=${assetCount} sources_parsed=${preflight.sources.length}`,
+        );
+
+        if (Boolean(opts.strict)) {
+          if (preflight.metrics.unicodeDashCount > 0) {
+            throw new Error(
+              `Unicode dash characters detected in markdown (count=${preflight.metrics.unicodeDashCount}). Replace with ASCII hyphens before delivery.`,
+            );
+          }
+          if (preflight.metrics.sourcesCount <= 0) {
+            throw new Error(
+              `Sources appendix missing or empty (sourcesCount=${preflight.metrics.sourcesCount}). Refusing to proceed.`,
+            );
+          }
+        }
+      });
+    });
+
+  research
+    .command("pdf-diagnostics")
+    .description(
+      "Inspect a PDF for common pre-send failures (markdown tokens, missing sources, dash encoding issues)",
+    )
+    .requiredOption("--in <path>", "Input PDF path")
+    .option("--max-pages <n>", "Max pages to scan for text extraction", "12")
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const inPath = path.resolve(opts.in as string);
+        const maxPages = Math.max(1, parseOptionalNumber(opts["maxPages"]) ?? 12);
+        const buffer = await fs.readFile(inPath);
+        const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+        const pdf = await getDocument({
+          data: new Uint8Array(buffer),
+          disableWorker: true,
+        }).promise;
+        const scannedPages = Math.min(pdf.numPages, maxPages);
+        const parts: string[] = [];
+        for (let pageNum = 1; pageNum <= scannedPages; pageNum += 1) {
+          const page = await pdf.getPage(pageNum);
+          const textContent = await page.getTextContent();
+          const pageText = textContent.items
+            .map((item) => ("str" in item ? String(item.str) : ""))
+            .filter(Boolean)
+            .join(" ");
+          if (pageText) parts.push(pageText);
+        }
+        const text = parts.join("\n");
+
+        const metrics = {
+          markdownHeadingTokens: (text.match(/###\s+/g) ?? []).length,
+          markdownFenceTokens: (text.match(/```/g) ?? []).length,
+          urlCount: (text.match(/https?:\/\/\S+/gi) ?? []).length,
+          citationKeyCount: (text.match(/\bC\d+:/gi) ?? []).length,
+          exhibitTokenCount: (text.match(/\bExhibit\s+\d+/gi) ?? []).length,
+          sourcesHeadingPresent: /Source List\b|Sources\b/i.test(text),
+          dashMojibakeDateCount: (text.match(/\b\d{4}\s+n\s+\d{2}\s+n\s+\d{2}\b/g) ?? []).length,
+          extractedChars: text.length,
+        };
+
+        defaultRuntime.log(
+          `${JSON.stringify(
+            {
+              inPath,
+              pages: pdf.numPages,
+              scannedPages,
+              byteSize: buffer.byteLength,
+              metrics,
+            },
+            null,
+            2,
+          )}\n`,
+        );
+      });
+    });
+
+  research
+    .command("render-pdf")
+    .description("Render markdown to a styled PDF and write an artifact manifest (fail-closed)")
+    .requiredOption("--kind <kind>", "memo|sector_report|theme_report")
+    .requiredOption("--in <path>", "Input markdown path")
+    .requiredOption("--out <path>", "Output PDF path")
+    .option("--title <text>", "Header title override")
+    .option("--format <fmt>", "letter|a4", "letter")
+    .option("--chrome <path>", "Chrome executable path (defaults to OPENCLAW_CHROME_PATH)")
+    .option("--series-key <key>", "Optional stable series key (defaults to basename without .vN)")
+    .option(
+      "--series-manifest <path>",
+      "Optional series manifest path (default: <out-dir>/artifact.json)",
+    )
+    .option("--allow-no-sources", "Allow rendering without a non-empty Sources appendix", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        assertMacminiBrowserAllowed("research render-pdf");
+        const kind = parseArtifactKind(opts.kind as string);
+        const inPath = path.resolve(opts.in as string);
+        const outPath = path.resolve(opts.out as string);
+        const pdfFormat = parsePdfFormat(opts.format as string | undefined);
+        const titleOverride = (opts.title as string | undefined)?.trim();
+        const chromePath = resolveChromeExecutablePath(opts.chrome as string | undefined);
+        if (!chromePath) {
+          throw new Error(
+            "Chrome executable not found. Set OPENCLAW_CHROME_PATH (or pass --chrome).",
+          );
+        }
+
+        await fs.mkdir(path.dirname(outPath), { recursive: true });
+
+        const markdown = await fs.readFile(inPath, "utf8");
+        const unicodeDashCount = (markdown.match(BAD_DASHES) ?? []).length;
+        if (unicodeDashCount > 0) {
+          throw new Error(
+            `Unicode dash characters detected in markdown (count=${unicodeDashCount}). Replace with ASCII hyphens before rendering.`,
+          );
+        }
+
+        const builtAtEt = formatBuiltAtEt(new Date());
+
+        const { default: MarkdownIt } = await import("markdown-it");
+        const md = new MarkdownIt({
+          html: true,
+          linkify: true,
+          breaks: false,
+          typographer: false,
+        });
+        const bodyHtml = md.render(markdown);
+        const baseHref = pathToFileURL(path.dirname(inPath) + path.sep).href;
+        const title =
+          titleOverride ||
+          markdown
+            .split(/\r?\n/)
+            .find((line) => line.startsWith("# "))
+            ?.replace(/^#\s+/, "")
+            .trim() ||
+          path.basename(inPath);
+
+        const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <base href="${escapeHtml(baseHref)}" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      :root {
+        --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+        --font-serif: ui-serif, "Iowan Old Style", "Palatino", "Georgia", serif;
+        --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        --text: #111827;
+        --muted: #6b7280;
+        --rule: #e5e7eb;
+        --accent: #0b3d91;
+        --bg: #ffffff;
+      }
+
+      html {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+        background: var(--bg);
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        color: var(--text);
+        background: var(--bg);
+        font-family: var(--font-serif);
+        font-size: 11.5pt;
+        line-height: 1.38;
+      }
+
+      .doc {
+        max-width: 7.2in;
+        margin: 0 auto;
+        padding: 0.15in 0;
+      }
+
+      h1, h2, h3, h4 {
+        font-family: var(--font-sans);
+        letter-spacing: -0.01em;
+        margin: 0;
+      }
+      h1 {
+        font-size: 22pt;
+        line-height: 1.15;
+        margin-bottom: 0.18in;
+      }
+      h2 {
+        font-size: 14pt;
+        margin-top: 0.26in;
+        padding-top: 0.16in;
+        border-top: 1px solid var(--rule);
+        margin-bottom: 0.1in;
+      }
+      h3 {
+        font-size: 11.75pt;
+        margin-top: 0.16in;
+        margin-bottom: 0.06in;
+      }
+
+      p {
+        margin: 0 0 0.12in 0;
+      }
+
+      ul, ol {
+        margin: 0 0 0.12in 0.22in;
+        padding: 0;
+      }
+      li {
+        margin: 0.04in 0;
+      }
+
+      blockquote {
+        margin: 0.12in 0;
+        padding: 0.12in 0.16in;
+        border-left: 3px solid var(--rule);
+        background: #fafafa;
+        color: #111827;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 0.14in 0;
+        font-family: var(--font-sans);
+        font-size: 10pt;
+      }
+      th, td {
+        border-bottom: 1px solid var(--rule);
+        padding: 0.06in 0.08in;
+        vertical-align: top;
+      }
+      th {
+        text-align: left;
+        color: #111827;
+        font-weight: 600;
+      }
+
+      code {
+        font-family: var(--font-mono);
+        font-size: 0.95em;
+        background: #f3f4f6;
+        padding: 0.03em 0.2em;
+        border-radius: 4px;
+      }
+      pre {
+        background: #0b1020;
+        color: #e5e7eb;
+        padding: 0.14in;
+        border-radius: 8px;
+        overflow-x: auto;
+        margin: 0.14in 0;
+      }
+      pre code {
+        background: transparent;
+        padding: 0;
+        border-radius: 0;
+        font-size: 9.5pt;
+      }
+
+      hr {
+        border: none;
+        border-top: 1px solid var(--rule);
+        margin: 0.2in 0;
+      }
+
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+
+      /* Pagination hints */
+      h2, h3, h4 { break-after: avoid-page; }
+      table, blockquote, pre { break-inside: avoid; }
+    </style>
+  </head>
+  <body>
+    <main class="doc">
+      ${bodyHtml}
+    </main>
+  </body>
+</html>`;
+
+        const { chromium } = await import("playwright-core");
+        const browser = await chromium.launch({
+          headless: true,
+          executablePath: chromePath,
+        });
+        try {
+          const page = await browser.newPage();
+          await page.setContent(html, { waitUntil: "load" });
+          await page.emulateMedia({ media: "print" });
+
+          const headerTemplate = `<div style=\"font-size:8px;padding:0 24px;width:100%;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',Helvetica,Arial,sans-serif;color:#6b7280;display:flex;align-items:center;justify-content:space-between;\"><span>${escapeHtml(
+            title,
+          )}</span><span></span></div>`;
+          const footerTemplate = `<div style=\"font-size:8px;padding:0 24px;width:100%;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',Helvetica,Arial,sans-serif;color:#6b7280;display:flex;align-items:center;justify-content:space-between;\"><span>FOR DISCUSSION PURPOSES ONLY; NOT INVESTMENT ADVICE.</span><span>Built: ${escapeHtml(
+            builtAtEt,
+          )}</span><span>Page <span class=\"pageNumber\"></span> / <span class=\"totalPages\"></span></span></div>`;
+
+          await page.pdf({
+            path: outPath,
+            format: pdfFormat,
+            printBackground: true,
+            displayHeaderFooter: true,
+            headerTemplate,
+            footerTemplate,
+            margin: {
+              top: "0.9in",
+              bottom: "0.9in",
+              left: "0.9in",
+              right: "0.9in",
+            },
+          });
+        } finally {
+          await browser.close();
+        }
+
+        const seriesKey =
+          typeof opts.seriesKey === "string" && opts.seriesKey.trim()
+            ? opts.seriesKey.trim()
+            : deriveArtifactSeriesKey(outPath);
+        const seriesManifestPath =
+          typeof opts.seriesManifest === "string" && opts.seriesManifest.trim()
+            ? path.resolve(opts.seriesManifest as string)
+            : deriveSeriesManifestPath(outPath);
+
+        const manifestRes = await writeFileArtifactManifest({
+          kind,
+          outPath,
+          seriesKey,
+          seriesManifestPath,
+          markdownForMetrics: markdown,
+        });
+        defaultRuntime.log(`PDF written to ${outPath}`);
+        defaultRuntime.log(`Manifest written to ${manifestRes.manifestPath}`);
+        if (manifestRes.seriesManifestPath) {
+          defaultRuntime.log(`Series manifest written to ${manifestRes.seriesManifestPath}`);
+        }
+        defaultRuntime.log(
+          `artifact sha256=${manifestRes.manifest.sha256} bytes=${manifestRes.manifest.byteSize}`,
+        );
+
+        const pdfDashCount = Number(manifestRes.manifest.metrics.unicodeDashCount ?? 0);
+        if (Number.isFinite(pdfDashCount) && pdfDashCount > 0) {
+          throw new Error(
+            `Unicode dash characters detected (count=${pdfDashCount}). Replace with ASCII hyphens before delivery.`,
+          );
+        }
+
+        if (!Boolean(opts["allowNoSources"])) {
+          const sourcesCount = Number(manifestRes.manifest.metrics.sourcesCount ?? 0);
+          if (!Number.isFinite(sourcesCount) || sourcesCount <= 0) {
+            throw new Error(
+              `Sources appendix missing or empty (sourcesCount=${sourcesCount}). Refusing to proceed.`,
+            );
+          }
+        }
+
+        if (manifestRes.manifest.unchangedFromPrevious) {
+          defaultRuntime.error(`artifact_unchanged=1 sha256=${manifestRes.manifest.sha256}`);
+          throw new Error(
+            `Artifact unchanged (sha256=${manifestRes.manifest.sha256}). Refusing to proceed.`,
+          );
+        }
+      });
+    });
+
+  research
+    .command("artifact-path")
+    .description("Compute the next versioned artifact path (base.vN.ext) inside a directory")
+    .requiredOption("--dir <path>", "Output directory")
+    .requiredOption("--base <name>", "Base filename (no version, no extension)")
+    .option("--ext <ext>", "File extension", "pdf")
+    .option("--mkdir", "Create the directory if missing", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const dir = path.resolve(opts.dir as string);
+        if (Boolean(opts.mkdir)) {
+          await fs.mkdir(dir, { recursive: true });
+        }
+        const res = await resolveNextVersionedArtifactPath({
+          dir,
+          base: opts.base as string,
+          ext: opts.ext as string,
+        });
+        defaultRuntime.log(res.outPath);
+        defaultRuntime.log(`artifact_version=v${res.version}`);
+        defaultRuntime.log(`series_manifest=${deriveSeriesManifestPath(res.outPath)}`);
+      });
+    });
+
+  research
+    .command("manifest-file")
+    .description("Write artifact manifest for an existing file (e.g., a PDF)")
+    .requiredOption("--kind <kind>", "memo|sector_report|theme_report")
+    .requiredOption("--out <path>", "Artifact file path (e.g., /path/to/report.pdf)")
+    .option("--markdown <path>", "Optional markdown to compute exhibit/source/footnote counts")
+    .option("--series-key <key>", "Optional stable series key (defaults to basename without .vN)")
+    .option(
+      "--series-manifest <path>",
+      "Optional series manifest path (default: <out-dir>/artifact.json)",
+    )
+    .option("--metrics <json>", "Optional JSON object merged into manifest.metrics")
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const kind = parseArtifactKind(opts.kind as string);
+        const outPath = path.resolve(opts.out as string);
+        const seriesKey =
+          typeof opts.seriesKey === "string" && opts.seriesKey.trim()
+            ? opts.seriesKey.trim()
+            : deriveArtifactSeriesKey(outPath);
+        const seriesManifestPath =
+          typeof opts.seriesManifest === "string" && opts.seriesManifest.trim()
+            ? path.resolve(opts.seriesManifest as string)
+            : deriveSeriesManifestPath(outPath);
+
+        const markdownForMetrics =
+          typeof opts.markdown === "string" && opts.markdown.trim()
+            ? await fs.readFile(path.resolve(opts.markdown as string), "utf8")
+            : undefined;
+        const extraMetrics = parseOptionalJsonObject(opts.metrics) ?? undefined;
+
+        const manifestRes = await writeFileArtifactManifest({
+          kind,
+          outPath,
+          seriesKey,
+          seriesManifestPath,
+          markdownForMetrics,
+          metrics: extraMetrics as Record<string, number | string | boolean | null> | undefined,
+        });
+
+        defaultRuntime.log(`Manifest written to ${manifestRes.manifestPath}`);
+        if (manifestRes.seriesManifestPath) {
+          defaultRuntime.log(`Series manifest written to ${manifestRes.seriesManifestPath}`);
+        }
+        defaultRuntime.log(
+          `artifact sha256=${manifestRes.manifest.sha256} bytes=${manifestRes.manifest.byteSize}`,
+        );
+        const unicodeDashCount = Number(manifestRes.manifest.metrics.unicodeDashCount ?? 0);
+        if (Number.isFinite(unicodeDashCount) && unicodeDashCount > 0) {
+          throw new Error(
+            `Unicode dash characters detected (count=${unicodeDashCount}). Replace with ASCII hyphens before delivery.`,
+          );
+        }
+        const rawSourcesCount = manifestRes.manifest.metrics.sourcesCount;
+        if (rawSourcesCount !== null && rawSourcesCount !== undefined) {
+          const sourcesCount = Number(rawSourcesCount);
+          if (!Number.isFinite(sourcesCount) || sourcesCount <= 0) {
+            throw new Error(
+              `Sources appendix missing or empty (sourcesCount=${sourcesCount}). Refusing to proceed.`,
+            );
+          }
+        }
+        if (manifestRes.manifest.unchangedFromPrevious) {
+          defaultRuntime.error(`artifact_unchanged=1 sha256=${manifestRes.manifest.sha256}`);
+          throw new Error(
+            `Artifact unchanged (sha256=${manifestRes.manifest.sha256}). Refusing to proceed.`,
+          );
         }
       });
     });
