@@ -94,14 +94,37 @@ const collectDbEvidenceForTicker = async (params: {
 }): Promise<void> => {
   const ticker = params.ticker.trim().toUpperCase();
   const db = openResearchDb(params.dbPath);
+  const localFallbackUrl = (kind: "external_documents" | "filings" | "transcripts", id: number) =>
+    `https://local.openclaw.ai/${kind}/${id}`;
   const collectExternalDocuments = async (): Promise<void> => {
-    const docs = db
+    const rowsA = db
       .prepare(
         `SELECT id, source_type, provider, sender, title, subject, url, published_at, received_at, content, fetched_at
          FROM external_documents
-         WHERE upper(ticker)=?
+         WHERE upper(ticker)=? AND source_type IN ('email_research','newsletter')
          ORDER BY received_at DESC, fetched_at DESC
-         LIMIT 12`,
+         LIMIT 10`,
+      )
+      .all(ticker) as Array<{
+      id: number;
+      source_type?: string;
+      provider?: string;
+      sender?: string;
+      title?: string;
+      subject?: string;
+      url?: string;
+      published_at?: string;
+      received_at?: string;
+      content?: string;
+      fetched_at: number;
+    }>;
+    const rowsB = db
+      .prepare(
+        `SELECT id, source_type, provider, sender, title, subject, url, published_at, received_at, content, fetched_at
+         FROM external_documents
+         WHERE upper(ticker)=? AND source_type NOT IN ('email_research','newsletter')
+         ORDER BY received_at DESC, fetched_at DESC
+         LIMIT 10`,
       )
       .all(ticker) as Array<{
       id: number;
@@ -117,6 +140,10 @@ const collectDbEvidenceForTicker = async (params: {
       fetched_at: number;
     }>;
 
+    const docs = Array.from(
+      new Map<number, (typeof rowsA)[number]>([...rowsA, ...rowsB].map((r) => [r.id, r])).values(),
+    ).slice(0, 16);
+
     for (const row of docs) {
       const fetchedAt =
         typeof row.fetched_at === "number" ? row.fetched_at : Math.floor(Date.now() / 1000);
@@ -124,8 +151,7 @@ const collectDbEvidenceForTicker = async (params: {
         (row.published_at ?? row.received_at ?? "").slice(0, 10) ||
         toYmd(new Date(fetchedAt * 1000));
       const accessedAt = new Date(fetchedAt * 1000).toISOString();
-      const url =
-        (row.url ?? "").trim() || `https://local.openclaw.ai/external_documents/${row.id}`;
+      const url = (row.url ?? "").trim() || localFallbackUrl("external_documents", row.id);
       const publisher = (row.provider ?? "").trim() || "External";
       const title =
         (row.title ?? "").trim() ||
@@ -138,7 +164,9 @@ const collectDbEvidenceForTicker = async (params: {
         date_published: published,
         accessed_at: accessedAt,
         url,
-        reliability_tier: 4,
+        // Intentionally leave tier inference to EvidenceStore when URL is meaningful;
+        // local fallbacks will remain Tier 4.
+        reliability_tier: undefined,
         excerpt_or_key_points: [
           `source_type=${(row.source_type ?? "").trim() || "unknown"}`,
           (row.sender ?? "").trim() ? `sender=${(row.sender ?? "").trim()}` : "sender=unknown",
@@ -176,14 +204,17 @@ const collectDbEvidenceForTicker = async (params: {
 
   const filings = db
     .prepare(
-      `SELECT form, filed, period_end, title, url, source_url, text, fetched_at
+      `SELECT id, accession, form, is_amendment, filed, period_end, title, url, source_url, text, fetched_at
        FROM filings
        WHERE instrument_id=?
        ORDER BY filed DESC
-       LIMIT 6`,
+       LIMIT 40`,
     )
     .all(instrumentId) as Array<{
+    id: number;
+    accession?: string;
     form?: string;
+    is_amendment?: number;
     filed?: string;
     period_end?: string;
     title?: string;
@@ -193,12 +224,46 @@ const collectDbEvidenceForTicker = async (params: {
     fetched_at: number;
   }>;
 
-  for (const row of filings) {
+  // Pick a small, high-signal filing set rather than "any 6" (Lane 1: evidence depth).
+  const pickByForms = (forms: string[], limit: number) => {
+    const wanted = new Set(forms.map((f) => f.toUpperCase()));
+    return filings
+      .filter((f) =>
+        wanted.has(
+          String(f.form ?? "")
+            .trim()
+            .toUpperCase(),
+        ),
+      )
+      .sort((a, b) => String(b.filed ?? "").localeCompare(String(a.filed ?? "")))
+      .slice(0, limit);
+  };
+  const pickLatest = (limit: number) =>
+    [...filings]
+      .sort((a, b) => String(b.filed ?? "").localeCompare(String(a.filed ?? "")))
+      .slice(0, limit);
+
+  const pickedFilings = Array.from(
+    new Map<number, (typeof filings)[number]>(
+      [
+        ...pickByForms(["10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"], 2),
+        ...pickByForms(["10-Q", "10-Q/A"], 4),
+        ...pickByForms(["8-K", "8-K/A"], 6),
+        ...pickByForms(["DEF 14A", "DEFA14A"], 2),
+        ...pickLatest(4),
+      ].map((r) => [r.id, r]),
+    ).values(),
+  ).slice(0, 14);
+
+  for (const row of pickedFilings) {
     const fetchedAt =
       typeof row.fetched_at === "number" ? row.fetched_at : Math.floor(Date.now() / 1000);
     const filed = (row.filed ?? "").slice(0, 10) || toYmd(new Date(fetchedAt * 1000));
     const accessedAt = new Date(fetchedAt * 1000).toISOString();
-    const url = (row.url ?? row.source_url ?? "").trim() || "https://www.sec.gov/edgar/search/";
+    const url =
+      (row.url ?? row.source_url ?? "").trim() ||
+      (typeof row.id === "number" ? localFallbackUrl("filings", row.id) : "") ||
+      "https://www.sec.gov/edgar/search/";
     const title =
       (row.title ?? "").trim() || `SEC filing ${(row.form ?? "").trim()}`.trim() || "SEC filing";
 
@@ -211,6 +276,8 @@ const collectDbEvidenceForTicker = async (params: {
       reliability_tier: 1,
       excerpt_or_key_points: [
         `form=${(row.form ?? "").trim() || "unknown"}`,
+        `amendment=${Number(row.is_amendment ?? 0) ? "1" : "0"}`,
+        (row.accession ?? "").trim() ? `accession=${String(row.accession).trim()}` : "accession=?",
         row.period_end ? `period_end=${String(row.period_end).slice(0, 10)}` : "period_end=unknown",
       ],
       tags: [`company:${ticker}`, "source:sec", "type:filing"],
@@ -238,13 +305,14 @@ const collectDbEvidenceForTicker = async (params: {
 
   const transcripts = db
     .prepare(
-      `SELECT event_date, event_type, source, url, title, content, fetched_at
+      `SELECT id, event_date, event_type, source, url, title, content, fetched_at
        FROM transcripts
        WHERE instrument_id=?
        ORDER BY event_date DESC
-       LIMIT 6`,
+       LIMIT 10`,
     )
     .all(instrumentId) as Array<{
+    id: number;
     event_date?: string;
     event_type?: string;
     source?: string;
@@ -259,7 +327,10 @@ const collectDbEvidenceForTicker = async (params: {
       typeof row.fetched_at === "number" ? row.fetched_at : Math.floor(Date.now() / 1000);
     const published = (row.event_date ?? "").slice(0, 10) || toYmd(new Date(fetchedAt * 1000));
     const accessedAt = new Date(fetchedAt * 1000).toISOString();
-    const url = (row.url ?? "").trim() || "https://example.com/transcript";
+    const url =
+      (row.url ?? "").trim() ||
+      (typeof row.id === "number" ? localFallbackUrl("transcripts", row.id) : "") ||
+      "https://example.com/transcript";
     const title = (row.title ?? "").trim() || `${ticker} transcript`.trim();
     const publisher = (row.source ?? "").trim() || "Transcript";
 
