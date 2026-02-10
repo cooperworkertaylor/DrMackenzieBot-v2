@@ -106,6 +106,7 @@ export async function runCompanyPipelineV2(params: {
   question: string;
   fixtureDir?: string;
   runId?: string;
+  timeboxMinutes?: number;
   dbPath?: string;
 }): Promise<PipelineRunResultV2> {
   const ticker = params.ticker.trim().toUpperCase();
@@ -119,7 +120,12 @@ export async function runCompanyPipelineV2(params: {
     value: { enabled: v2HydrateEnabled(), notes: hydration },
   });
 
-  const plan = buildPlanCompanyV2({ runId, ticker, question: params.question });
+  const plan = buildPlanCompanyV2({
+    runId,
+    ticker,
+    question: params.question,
+    timeboxMinutes: params.timeboxMinutes,
+  });
   await writeRunJson({ runDir, filename: "ResearchPlan.json", value: plan });
 
   const evidencePass = await pass1EvidenceCompanyV2({
@@ -233,6 +239,7 @@ export async function runThemePipelineV2(params: {
   universe: string[];
   fixtureDir?: string;
   runId?: string;
+  timeboxMinutes?: number;
   dbPath?: string;
 }): Promise<PipelineRunResultV2> {
   const themeName = params.themeName.trim();
@@ -249,7 +256,12 @@ export async function runThemePipelineV2(params: {
     value: { enabled: v2HydrateEnabled(), notes: hydration },
   });
 
-  const plan = buildPlanThemeV2({ runId, themeName, universe });
+  const plan = buildPlanThemeV2({
+    runId,
+    themeName,
+    universe,
+    timeboxMinutes: params.timeboxMinutes,
+  });
   await writeRunJson({ runDir, filename: "ResearchPlan.json", value: plan });
 
   const evidencePass = await pass1EvidenceThemeV2({

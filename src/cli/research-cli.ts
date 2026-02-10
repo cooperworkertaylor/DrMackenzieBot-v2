@@ -1979,13 +1979,24 @@ export function registerResearchCli(program: Command) {
         assertMacminiAgentOnly("research theme-research");
         const pipeline = (process.env.RESEARCH_PIPELINE ?? "").trim().toLowerCase();
         if (pipeline === "v2") {
-          const tickers =
+          const tickersOverride =
             typeof opts.tickers === "string" && opts.tickers.trim()
               ? parseTickersOption(opts.tickers as string)
               : [];
+          const themeUniverse = computeThemeResearch({
+            theme: opts.theme as string,
+            tickers: tickersOverride.length ? tickersOverride : undefined,
+            themeVersion: parseOptionalNumber(opts["themeVersion"]),
+            minMembershipScore: parseOptionalNumber(opts["minMembershipScore"]),
+            maxConstituents: parseOptionalNumber(opts["maxConstituents"]),
+            lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 365,
+            topN: parseOptionalNumber(opts.top) ?? 5,
+            dbPath: opts.db as string,
+          });
+          const tickers = themeUniverse.tickers;
           if (!tickers.length) {
             throw new Error(
-              "v2 theme memo requires --tickers (CSV) until theme registry evidence collection is wired for v2.",
+              "v2 theme memo: resolved universe is empty (pass --tickers to override)",
             );
           }
           const result = await runThemePipelineV2({
