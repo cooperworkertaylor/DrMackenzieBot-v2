@@ -19,6 +19,9 @@ const companySectionTemplate = (params: {
   numericFacts: NumericFact[];
   filingKeywordSummary?: { business: string[]; risks: string[]; sourceIds: string[] };
   transcriptKeywordSummary?: { keywords: string[]; sourceIds: string[] };
+  filingRiskBuckets?: Array<{ bucket: string; source_ids: string[] }>;
+  accountingFlags?: Array<{ flag: string; source_ids: string[] }>;
+  catalystCandidates?: Array<{ label: string; source_ids: string[] }>;
   risk: RiskOfficerOutputV2;
 }): Array<{ key: string; title: string; blocks: any[] }> => {
   const sid = firstSourceId(params.evidence);
@@ -38,6 +41,42 @@ const companySectionTemplate = (params: {
       ? {
           keywords: params.transcriptKeywordSummary.keywords.slice(0, 12).join(", "),
           source_ids: params.transcriptKeywordSummary.sourceIds,
+        }
+      : null;
+  const bucketFacts =
+    params.filingRiskBuckets && params.filingRiskBuckets.length
+      ? {
+          buckets: params.filingRiskBuckets
+            .map((b) => b.bucket)
+            .slice(0, 8)
+            .join("; "),
+          source_ids: Array.from(
+            new Set(params.filingRiskBuckets.flatMap((b) => b.source_ids).filter(Boolean)),
+          ),
+        }
+      : null;
+  const accountingFacts =
+    params.accountingFlags && params.accountingFlags.length
+      ? {
+          flags: params.accountingFlags
+            .map((f) => f.flag)
+            .slice(0, 8)
+            .join("; "),
+          source_ids: Array.from(
+            new Set(params.accountingFlags.flatMap((f) => f.source_ids).filter(Boolean)),
+          ),
+        }
+      : null;
+  const catalystFacts =
+    params.catalystCandidates && params.catalystCandidates.length
+      ? {
+          labels: params.catalystCandidates
+            .map((c) => c.label)
+            .slice(0, 6)
+            .join("; "),
+          source_ids: Array.from(
+            new Set(params.catalystCandidates.flatMap((c) => c.source_ids).filter(Boolean)),
+          ),
         }
       : null;
 
@@ -154,8 +193,10 @@ const companySectionTemplate = (params: {
       blocks: [
         {
           tag: "FACT",
-          text: "Numeric facts are structured with value, unit, period, source, and accessed timestamp to enable auditability.",
-          source_ids: [sid],
+          text: accountingFacts
+            ? `Filing-derived accounting flags present: ${accountingFacts.flags}.`
+            : "Numeric facts are structured with value, unit, period, source, and accessed timestamp to enable auditability.",
+          source_ids: accountingFacts ? accountingFacts.source_ids : [sid],
         },
         {
           tag: "INTERPRETATION",
@@ -192,8 +233,10 @@ const companySectionTemplate = (params: {
       blocks: [
         {
           tag: "FACT",
-          text: "Catalyst identification requires dated, source-backed events (filings, press releases, or transcripts). If absent, treat catalysts as unknown.",
-          source_ids: [sid],
+          text: catalystFacts
+            ? `Candidate catalyst categories found in primary sources: ${catalystFacts.labels}.`
+            : "Catalyst identification requires dated, source-backed events (filings, press releases, or transcripts). If absent, treat catalysts as unknown.",
+          source_ids: catalystFacts ? catalystFacts.source_ids : [sid],
         },
         {
           tag: "INTERPRETATION",
@@ -211,8 +254,10 @@ const companySectionTemplate = (params: {
       blocks: [
         {
           tag: "FACT",
-          text: "The risk officer pass enumerates disconfirming evidence to seek and falsifiers tied to measurable triggers.",
-          source_ids: [sid],
+          text: bucketFacts
+            ? `Filing-derived risk buckets: ${bucketFacts.buckets}.`
+            : "The risk officer pass enumerates disconfirming evidence to seek and falsifiers tied to measurable triggers.",
+          source_ids: bucketFacts ? bucketFacts.source_ids : [sid],
         },
         {
           tag: "INTERPRETATION",
@@ -299,6 +344,9 @@ const buildCompanyReportV2 = (params: {
     numericFacts: params.analyzers.numeric_facts,
     filingKeywordSummary,
     transcriptKeywordSummary,
+    filingRiskBuckets: (params.analyzers as any).risk_factor_buckets,
+    accountingFlags: (params.analyzers as any).accounting_flags,
+    catalystCandidates: (params.analyzers as any).catalyst_candidates,
     risk: params.risk,
   });
 

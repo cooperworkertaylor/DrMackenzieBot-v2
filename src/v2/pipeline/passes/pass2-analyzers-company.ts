@@ -27,6 +27,21 @@ export type CompanyAnalyzerOutputV2 = {
       };
     }>;
   };
+  risk_factor_buckets: Array<{
+    bucket: string;
+    keywords: string[];
+    source_ids: string[];
+  }>;
+  accounting_flags: Array<{
+    flag: string;
+    evidence: string;
+    source_ids: string[];
+  }>;
+  catalyst_candidates: Array<{
+    label: string;
+    rationale: string;
+    source_ids: string[];
+  }>;
   numeric_facts: Array<{
     id: string;
     value: number;
@@ -109,6 +124,154 @@ const topKeywords = (text: string, max: number): string[] => {
     .map(([t]) => t);
 };
 
+const anyIncludes = (keywords: string[], needles: string[]): boolean => {
+  const set = new Set(keywords.map((k) => k.toLowerCase()));
+  return needles.some((n) => set.has(n.toLowerCase()));
+};
+
+const summarizeRiskBuckets = (params: {
+  filingExtracts: Array<{
+    source_id: string;
+    extracted: { risk_keywords: string[] };
+  }>;
+}): CompanyAnalyzerOutputV2["risk_factor_buckets"] => {
+  const allKeywords = params.filingExtracts.flatMap((f) => f.extracted.risk_keywords);
+  const uniq = Array.from(new Set(allKeywords)).filter(Boolean);
+  const buckets: Array<{ bucket: string; needles: string[] }> = [
+    {
+      bucket: "Regulatory / legal",
+      needles: ["regulatory", "regulation", "compliance", "legal", "litigation", "privacy"],
+    },
+    {
+      bucket: "Macro / rates",
+      needles: ["inflation", "recession", "macroeconomic", "rates", "interest", "currency"],
+    },
+    {
+      bucket: "Competition / pricing",
+      needles: ["competition", "competitors", "pricing", "price", "substitute", "commoditization"],
+    },
+    {
+      bucket: "Security / reliability",
+      needles: ["security", "cybersecurity", "breach", "outage", "reliability", "vulnerability"],
+    },
+    {
+      bucket: "Customer / demand",
+      needles: ["customer", "demand", "retention", "churn", "pipeline", "backlog"],
+    },
+    {
+      bucket: "Execution / product",
+      needles: ["execution", "launch", "product", "quality", "integration", "implementation"],
+    },
+    {
+      bucket: "Supply chain / vendors",
+      needles: ["supply", "supplier", "manufacturing", "inventory", "vendor", "third-party"],
+    },
+    { bucket: "Talent", needles: ["talent", "hiring", "retention", "employees", "labor"] },
+    {
+      bucket: "Capital allocation / dilution",
+      needles: ["dilution", "stock-based", "sbc", "share", "repurchase", "buyback"],
+    },
+  ];
+
+  const sourceIds = Array.from(new Set(params.filingExtracts.map((f) => f.source_id)));
+  return buckets
+    .filter((b) => anyIncludes(uniq, b.needles))
+    .map((b) => ({
+      bucket: b.bucket,
+      keywords: uniq
+        .filter((k) => b.needles.some((n) => k.toLowerCase() === n.toLowerCase()))
+        .slice(0, 10),
+      source_ids: sourceIds,
+    }));
+};
+
+const detectAccountingFlags = (params: {
+  filingTexts: Array<{ source_id: string; text: string }>;
+}): CompanyAnalyzerOutputV2["accounting_flags"] => {
+  const flags: Array<{ flag: string; re: RegExp; evidence: string }> = [
+    {
+      flag: "Stock-based compensation",
+      re: /\bstock[-\s]*based compensation\b/i,
+      evidence: "Mentions stock-based compensation in filing text.",
+    },
+    {
+      flag: "Non-GAAP emphasis",
+      re: /\bnon[-\s]*gaap\b/i,
+      evidence: "Mentions non-GAAP measures in filing text.",
+    },
+    {
+      flag: "Goodwill / impairment",
+      re: /\bgoodwill\b|\bimpairment\b/i,
+      evidence: "Mentions goodwill or impairment in filing text.",
+    },
+    {
+      flag: "Deferred revenue / RPO",
+      re: /\bdeferred revenue\b|\bremaining performance obligations?\b|\brpo\b/i,
+      evidence: "Mentions deferred revenue or remaining performance obligations.",
+    },
+    {
+      flag: "Customer concentration",
+      re: /\bcustomer concentration\b|\bmaterial customer\b/i,
+      evidence: "Mentions customer concentration.",
+    },
+    { flag: "Restructuring", re: /\brestructuring\b/i, evidence: "Mentions restructuring." },
+  ];
+  const out: CompanyAnalyzerOutputV2["accounting_flags"] = [];
+  for (const f of flags) {
+    const matchedSources = params.filingTexts
+      .filter((t) => f.re.test(t.text))
+      .map((t) => t.source_id);
+    if (!matchedSources.length) continue;
+    out.push({
+      flag: f.flag,
+      evidence: f.evidence,
+      source_ids: Array.from(new Set(matchedSources)),
+    });
+  }
+  return out;
+};
+
+const buildCatalystCandidates = (params: {
+  filingMeta: Array<{ source_id: string; title: string; formHint?: string }>;
+  transcriptMeta: Array<{ source_id: string; title: string }>;
+}): CompanyAnalyzerOutputV2["catalyst_candidates"] => {
+  const out: CompanyAnalyzerOutputV2["catalyst_candidates"] = [];
+  const filingSourceIds = Array.from(new Set(params.filingMeta.map((f) => f.source_id)));
+  const transcriptSourceIds = Array.from(new Set(params.transcriptMeta.map((t) => t.source_id)));
+
+  // Heuristic: if 8-K exists, likely contains event-driven updates.
+  const has8k = params.filingMeta.some(
+    (f) => /\b8-k\b/i.test(f.title) || /\b8-k\b/i.test(f.formHint ?? ""),
+  );
+  if (has8k) {
+    out.push({
+      label: "Event-driven disclosure (8-K)",
+      rationale:
+        "Recent 8-K filings may contain discrete events (contracts, guidance, governance changes) that can shift scenario weights.",
+      source_ids: filingSourceIds,
+    });
+  }
+  // Heuristic: if DEF 14A exists, governance/capital allocation items may be catalyst-relevant.
+  const hasProxy = params.filingMeta.some((f) => /\bdef\s*14a\b/i.test(f.title));
+  if (hasProxy) {
+    out.push({
+      label: "Governance / capital allocation updates (proxy)",
+      rationale:
+        "Proxy filings can surface governance proposals, compensation structure, and capital allocation posture.",
+      source_ids: filingSourceIds,
+    });
+  }
+  if (params.transcriptMeta.length) {
+    out.push({
+      label: "Next earnings cycle updates",
+      rationale:
+        "Transcripts indicate which operating levers management is emphasizing; subsequent earnings can confirm or falsify those claims.",
+      source_ids: transcriptSourceIds,
+    });
+  }
+  return out;
+};
+
 const extractSection = (text: string, startRe: RegExp, endRe: RegExp, maxChars: number): string => {
   const start = startRe.exec(text);
   if (!start || start.index < 0) return "";
@@ -183,6 +346,7 @@ export async function pass2CompanyAnalyzersV2(params: {
   const numeric_facts: CompanyAnalyzerOutputV2["numeric_facts"] = [];
   const kpi_table: CompanyAnalyzerOutputV2["kpi_table"] = [];
   const extracts: CompanyAnalyzerOutputV2["extracts"] = { filings: [], transcripts: [] };
+  const filingTextsForFlags: Array<{ source_id: string; text: string }> = [];
 
   // Qualitative extraction (no prose): derive keyword-level signal from filings/transcripts.
   const filings = params.evidence
@@ -197,6 +361,7 @@ export async function pass2CompanyAnalyzersV2(params: {
   for (const filing of filings) {
     try {
       const raw = await fs.readFile(filing.raw_text_ref ?? "", "utf8");
+      filingTextsForFlags.push({ source_id: filing.id, text: raw.slice(0, 120_000) });
       const business = extractSection(
         raw,
         /\bitem\s+1[\.\s:-]*business\b/i,
@@ -250,6 +415,18 @@ export async function pass2CompanyAnalyzersV2(params: {
     }
   }
 
+  const risk_factor_buckets = summarizeRiskBuckets({
+    filingExtracts: extracts.filings.map((f) => ({
+      source_id: f.source_id,
+      extracted: f.extracted,
+    })),
+  });
+  const accounting_flags = detectAccountingFlags({ filingTexts: filingTextsForFlags });
+  const catalyst_candidates = buildCatalystCandidates({
+    filingMeta: extracts.filings.map((f) => ({ source_id: f.source_id, title: f.title })),
+    transcriptMeta: extracts.transcripts.map((t) => ({ source_id: t.source_id, title: t.title })),
+  });
+
   const sec = pickSecFixture(params.evidence);
   if (!sec?.raw_text_ref) {
     notes.push("No SEC time-series fixture present; numeric_facts are empty.");
@@ -259,6 +436,9 @@ export async function pass2CompanyAnalyzersV2(params: {
       ticker,
       notes,
       extracts,
+      risk_factor_buckets,
+      accounting_flags,
+      catalyst_candidates,
       numeric_facts,
       kpi_table,
     };
@@ -274,6 +454,9 @@ export async function pass2CompanyAnalyzersV2(params: {
       ticker,
       notes,
       extracts,
+      risk_factor_buckets,
+      accounting_flags,
+      catalyst_candidates,
       numeric_facts,
       kpi_table,
     };
@@ -341,6 +524,9 @@ export async function pass2CompanyAnalyzersV2(params: {
     ticker,
     notes,
     extracts,
+    risk_factor_buckets,
+    accounting_flags,
+    catalyst_candidates,
     numeric_facts,
     kpi_table,
   };
