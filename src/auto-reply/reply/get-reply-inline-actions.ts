@@ -383,7 +383,9 @@ async function maybeHandleQuickResearchPdfRequest(params: {
       }
     }
 
-    const universe = (themeRes?.tickers ?? []).slice(0, 25);
+    const maxUniverse =
+      req.minutes <= 10 ? 5 : req.minutes <= 30 ? 10 : req.minutes <= 60 ? 15 : 25;
+    const universe = (themeRes?.tickers ?? []).slice(0, maxUniverse);
     if (!universe.length) {
       params.typing.cleanup();
       return {
