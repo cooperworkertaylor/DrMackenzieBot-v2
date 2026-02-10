@@ -45,7 +45,7 @@ export type PdfDiagnosticsResult = {
 // Shipping reports with "we'll attach this later" language is a hard failure.
 // Keep this list intentionally biased towards false positives over false negatives.
 const PLACEHOLDER_RE =
-  /\b(to appear|appendix pass|provided in appendix|full appendix|appendix available|csv\/queries|queries\/csv|pinned query|query ids?|ready for live|swap(?:ped)? for live|can be swapped|available on request|on request|placeholder|tbd|todo|coming soon)\b/gi;
+  /\b(to appear|appendix pass|provided in appendix|full appendix|appendix available|appendix to follow|sources to follow|sources? pending|pending sources?|link(?:s)? to follow|csv\/queries|queries\/csv|pinned query|query ids?|ready for live|swap(?:ped)? for live|can be swapped|available (?:on|upon|by) request|(?:on|upon|by) request|provided (?:on|upon|by) request|placeholder|tbd|todo|coming soon|to be added|to be provided|to be attached|will (?:add|attach|provide)|tktk|tk|lorem ipsum)\b/gi;
 
 export function computePdfDiagnostics(text: string): PdfDiagnosticsMetrics {
   const citationKeysBracketed = (text.match(/\[(?:S|C)\d+\]/gi) ?? []).length;

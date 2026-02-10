@@ -6,7 +6,7 @@ import type { ArtifactKind } from "./artifact-manifest.js";
 
 const BAD_DASHES = /[\u2010\u2011\u2012\u2013\u2014\u2212]/g;
 const PLACEHOLDER_RE =
-  /\b(to appear|appendix pass|provided in appendix|full appendix|appendix available|csv\/queries|queries\/csv|pinned query|query ids?|ready for live|swap(?:ped)? for live|can be swapped|available on request|on request|placeholder|tbd|todo|coming soon)\b/gi;
+  /\b(to appear|appendix pass|provided in appendix|full appendix|appendix available|appendix to follow|sources to follow|sources? pending|pending sources?|link(?:s)? to follow|csv\/queries|queries\/csv|pinned query|query ids?|ready for live|swap(?:ped)? for live|can be swapped|available (?:on|upon|by) request|(?:on|upon|by) request|provided (?:on|upon|by) request|placeholder|tbd|todo|coming soon|to be added|to be provided|to be attached|will (?:add|attach|provide)|tktk|tk|lorem ipsum)\b/gi;
 
 export type ArtifactPreflightSource = {
   key?: string;

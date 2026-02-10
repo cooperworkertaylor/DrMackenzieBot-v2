@@ -291,7 +291,7 @@ const demoCompanyReport = () => ({
       title: "Scenario Drivers (Scenario driver)",
       question: "Which variables drive scenario outcomes?",
       data_summary: [
-        "Key drivers to quantify: mix, margins, cash conversion, and capital returns (sources pending).",
+        "Key drivers to quantify: mix, margins, cash conversion, and capital returns (requires additional time-series evidence).",
       ],
       takeaway: "Takeaway: Explicit drivers prevent narrative drift.",
       source_ids: ["S1"],
@@ -584,7 +584,7 @@ const demoThemeReport = () => ({
       title: "Catalyst Calendar (Catalyst calendar)",
       question: "What dated events can change scenario weights?",
       data_summary: [
-        "Earnings cycles, major product releases, and regulatory deadlines (sources pending).",
+        "Earnings cycles, major product releases, and regulatory deadlines (detailed sources should be included in the evidence library).",
       ],
       takeaway: "Takeaway: A calendar is only as good as its dated sources.",
       source_ids: ["S2"],
