@@ -708,4 +708,18 @@ describe("v2 quality gate", () => {
     expect(res.passed).toBe(true);
     expect(res.issues.filter((i) => i.severity === "error")).toEqual([]);
   });
+
+  it("allows ISO dates in exhibits without numeric provenance", () => {
+    const report = demoCompanyReport();
+    report.exhibits.push({
+      id: "X99",
+      title: "Catalyst Calendar (Test)",
+      question: "Does the numeric gate allow dates without forcing numeric_facts?",
+      data_summary: ["2026-02-10: Filing ingested (dated evidence)."],
+      takeaway: "Takeaway: Dates are allowed without numeric_facts.",
+      source_ids: ["S1"],
+    });
+    const res = runV2QualityGate({ kind: "company", report });
+    expect(res.issues.some((i) => i.code === "exhibit_numeric_missing_provenance")).toBe(false);
+  });
 });

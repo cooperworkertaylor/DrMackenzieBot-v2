@@ -9,6 +9,15 @@ const asObject = (value: unknown): Record<string, unknown> =>
 
 const hasDigits = (text: string): boolean => /\d/.test(text);
 
+// Allow ISO dates in exhibits without requiring numeric provenance. Dates are not investment
+// numbers and forcing them into numeric_facts would be counterproductive. Keep this narrow.
+const stripIsoDates = (text: string): string =>
+  text
+    // YYYY-MM-DD
+    .replaceAll(/\b\d{4}-\d{2}-\d{2}\b/g, "DATE")
+    // YYYY/MM/DD
+    .replaceAll(/\b\d{4}\/\d{2}\/\d{2}\b/g, "DATE");
+
 // v2 convention: numbers should not appear directly in prose blocks. Instead, embed a placeholder
 // token like "{{N12}}" and include "N12" in numeric_refs. The renderer will substitute/footnote.
 const extractNumericPlaceholders = (text: string): string[] => {
@@ -136,7 +145,8 @@ export function validateNumericProvenance(report: unknown): QualityIssue[] {
     const numericRefs = asArray(exhibit.numeric_refs).map(asString).filter(Boolean);
     const summary = asArray(exhibit.data_summary).map(asString).filter(Boolean);
     const takeaway = asString(exhibit.takeaway);
-    const containsDigits = summary.some((line) => hasDigits(line)) || hasDigits(takeaway);
+    const containsDigits =
+      summary.some((line) => hasDigits(stripIsoDates(line))) || hasDigits(stripIsoDates(takeaway));
     if (containsDigits && numericRefs.length === 0) {
       issues.push({
         severity: "error",

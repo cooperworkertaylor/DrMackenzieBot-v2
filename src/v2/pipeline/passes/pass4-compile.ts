@@ -79,6 +79,7 @@ const companySectionTemplate = (params: {
           ),
         }
       : null;
+  const calendarSourceIds = catalystFacts?.source_ids?.length ? catalystFacts.source_ids : [sid];
 
   return [
     {
@@ -358,6 +359,22 @@ const buildCompanyReportV2 = (params: {
   const n1 = kpiNumericIds[0] ?? params.analyzers.numeric_facts[0]?.id;
   const n1Text = n1 ? `{{${n1}}}` : "N/A";
 
+  const catalystCalendar = (params.analyzers as any).catalyst_calendar as
+    | Array<{ date?: unknown; label?: unknown; source_ids?: unknown }>
+    | undefined;
+  const calendarSourceIds =
+    catalystCalendar && catalystCalendar.length
+      ? Array.from(
+          new Set(
+            catalystCalendar
+              .flatMap((row) => (Array.isArray(row.source_ids) ? row.source_ids : []))
+              .map((v) => String(v))
+              .filter(Boolean),
+          ),
+        )
+      : [];
+  const calendarSourceIdsFinal = calendarSourceIds.length ? calendarSourceIds : [sid];
+
   const exhibits = [
     {
       id: "X1",
@@ -418,6 +435,17 @@ const buildCompanyReportV2 = (params: {
       data_summary: ["Sensitivity is N/A until valuation inputs and price tape are collected."],
       takeaway: "Takeaway: Sensitivity is how you separate conviction from leverage.",
       source_ids: [sid],
+    },
+    {
+      id: "X7",
+      title: "Catalyst Calendar (Catalyst calendar)",
+      question: "What dated events can change scenario weights?",
+      data_summary:
+        catalystCalendar && catalystCalendar.length
+          ? catalystCalendar.map((row: any) => `${String(row.date)}: ${String(row.label)}`.trim())
+          : ["N/A in this run (no dated filing/transcript events collected)."],
+      takeaway: "Takeaway: A calendar is only as good as its dated sources.",
+      source_ids: calendarSourceIdsFinal,
     },
   ];
 

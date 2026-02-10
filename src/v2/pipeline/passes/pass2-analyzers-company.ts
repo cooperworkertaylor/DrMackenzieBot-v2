@@ -42,6 +42,11 @@ export type CompanyAnalyzerOutputV2 = {
     rationale: string;
     source_ids: string[];
   }>;
+  catalyst_calendar: Array<{
+    date: string; // YYYY-MM-DD
+    label: string;
+    source_ids: string[];
+  }>;
   numeric_facts: Array<{
     id: string;
     value: number;
@@ -272,6 +277,43 @@ const buildCatalystCandidates = (params: {
   return out;
 };
 
+const sanitizeCatalystLabel = (raw: string): string => {
+  return raw
+    .replaceAll(/\b\d{1,2}\s*-\s*[kq]\b/gi, "filing")
+    .replaceAll(/\bdef\s*14a\b/gi, "proxy")
+    .replaceAll(/\bq\d\b/gi, "quarter")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+};
+
+const buildCatalystCalendar = (params: {
+  filings: Array<{ source_id: string; date_published: string; title: string }>;
+  transcripts: Array<{ source_id: string; date_published: string; title: string }>;
+}): CompanyAnalyzerOutputV2["catalyst_calendar"] => {
+  const rows: CompanyAnalyzerOutputV2["catalyst_calendar"] = [];
+  params.filings.slice(0, 6).forEach((f) => {
+    const date = String(f.date_published ?? "").slice(0, 10);
+    if (!date) return;
+    rows.push({
+      date,
+      label: sanitizeCatalystLabel(`SEC filing: ${f.title}`) || "SEC filing",
+      source_ids: [f.source_id],
+    });
+  });
+  params.transcripts.slice(0, 4).forEach((t) => {
+    const date = String(t.date_published ?? "").slice(0, 10);
+    if (!date) return;
+    rows.push({
+      date,
+      label: sanitizeCatalystLabel(`Earnings transcript: ${t.title}`) || "Earnings transcript",
+      source_ids: [t.source_id],
+    });
+  });
+  return Array.from(new Map(rows.map((r) => [`${r.date}|${r.label}`, r] as const)).values())
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    .slice(0, 10);
+};
+
 const extractSection = (text: string, startRe: RegExp, endRe: RegExp, maxChars: number): string => {
   const start = startRe.exec(text);
   if (!start || start.index < 0) return "";
@@ -426,6 +468,18 @@ export async function pass2CompanyAnalyzersV2(params: {
     filingMeta: extracts.filings.map((f) => ({ source_id: f.source_id, title: f.title })),
     transcriptMeta: extracts.transcripts.map((t) => ({ source_id: t.source_id, title: t.title })),
   });
+  const catalyst_calendar = buildCatalystCalendar({
+    filings: extracts.filings.map((f) => ({
+      source_id: f.source_id,
+      date_published: f.date_published,
+      title: f.title,
+    })),
+    transcripts: extracts.transcripts.map((t) => ({
+      source_id: t.source_id,
+      date_published: t.date_published,
+      title: t.title,
+    })),
+  });
 
   const sec = pickSecFixture(params.evidence);
   if (!sec?.raw_text_ref) {
@@ -439,6 +493,7 @@ export async function pass2CompanyAnalyzersV2(params: {
       risk_factor_buckets,
       accounting_flags,
       catalyst_candidates,
+      catalyst_calendar,
       numeric_facts,
       kpi_table,
     };
@@ -457,6 +512,7 @@ export async function pass2CompanyAnalyzersV2(params: {
       risk_factor_buckets,
       accounting_flags,
       catalyst_candidates,
+      catalyst_calendar,
       numeric_facts,
       kpi_table,
     };
@@ -527,6 +583,7 @@ export async function pass2CompanyAnalyzersV2(params: {
     risk_factor_buckets,
     accounting_flags,
     catalyst_candidates,
+    catalyst_calendar,
     numeric_facts,
     kpi_table,
   };
