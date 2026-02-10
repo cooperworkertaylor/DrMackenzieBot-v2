@@ -9,6 +9,7 @@ import {
 } from "../../research/ingest.js";
 import { ingestDefaultMacroFactors } from "../../research/macro-factors.js";
 import { syncEmbeddings } from "../../research/vector-search.js";
+import { evaluateEvidenceCoverage } from "../evidence/evidence-coverage.js";
 import { buildPlanCompanyV2, buildPlanThemeV2, type ResearchPlanV2 } from "./passes/pass0-plan.js";
 import { pass1EvidenceCompanyV2, pass1EvidenceThemeV2 } from "./passes/pass1-evidence.js";
 import { pass2CompanyAnalyzersV2 } from "./passes/pass2-analyzers-company.js";
@@ -129,6 +130,53 @@ export async function runCompanyPipelineV2(params: {
   });
   await writeRunJson({ runDir, filename: "EvidenceLibrary.json", value: evidencePass.evidence });
   await writeRunJson({ runDir, filename: "ClaimBacklog.json", value: evidencePass.claim_backlog });
+  await writeRunJson({ runDir, filename: "EvidenceCoverage.json", value: evidencePass.coverage });
+
+  const evidenceIssues = evaluateEvidenceCoverage({
+    kind: "company",
+    sources: evidencePass.evidence,
+    subject: { ticker },
+  });
+  if (evidenceIssues.some((i) => i.severity === "error")) {
+    await writeRunJson({
+      runDir,
+      filename: "FAILED_EVIDENCE.json",
+      value: { status: "FAILED_EVIDENCE", issues: evidenceIssues },
+    });
+    const reportJsonPath = await writeRunJson({
+      runDir,
+      filename: "FinalReport.json",
+      value: { status: "FAILED_EVIDENCE", issues: evidenceIssues },
+    });
+    const reportMarkdownPath = await writeRunText({
+      runDir,
+      filename: "FinalReport.md",
+      text: [
+        "# FAILED EVIDENCE GATE",
+        "",
+        `Ticker: ${ticker}`,
+        "",
+        "This run failed before synthesis because primary evidence coverage is insufficient.",
+        "",
+        ...evidenceIssues.map((i) => `- ${i.code}${i.path ? `@${i.path}` : ""}: ${i.message}`),
+      ].join("\n"),
+    });
+    await writeRunJson({
+      runDir,
+      filename: "QualityGate.json",
+      value: { passed: false, issues: evidenceIssues },
+    });
+    return {
+      runId,
+      runDir,
+      plan,
+      evidence: evidencePass.evidence,
+      reportJsonPath,
+      reportMarkdownPath,
+      passed: false,
+      issues: evidenceIssues,
+    };
+  }
 
   const analyzers = await pass2CompanyAnalyzersV2({ ticker, evidence: evidencePass.evidence });
   await writeRunJson({ runDir, filename: "Analyzers.company.json", value: analyzers });
@@ -213,6 +261,54 @@ export async function runThemePipelineV2(params: {
   });
   await writeRunJson({ runDir, filename: "EvidenceLibrary.json", value: evidencePass.evidence });
   await writeRunJson({ runDir, filename: "ClaimBacklog.json", value: evidencePass.claim_backlog });
+  await writeRunJson({ runDir, filename: "EvidenceCoverage.json", value: evidencePass.coverage });
+
+  const evidenceIssues = evaluateEvidenceCoverage({
+    kind: "theme",
+    sources: evidencePass.evidence,
+    subject: { universe },
+  });
+  if (evidenceIssues.some((i) => i.severity === "error")) {
+    await writeRunJson({
+      runDir,
+      filename: "FAILED_EVIDENCE.json",
+      value: { status: "FAILED_EVIDENCE", issues: evidenceIssues },
+    });
+    const reportJsonPath = await writeRunJson({
+      runDir,
+      filename: "FinalReport.json",
+      value: { status: "FAILED_EVIDENCE", issues: evidenceIssues },
+    });
+    const reportMarkdownPath = await writeRunText({
+      runDir,
+      filename: "FinalReport.md",
+      text: [
+        "# FAILED EVIDENCE GATE",
+        "",
+        `Theme: ${themeName}`,
+        universe.length ? `Universe: ${universe.join(", ")}` : "Universe: (empty)",
+        "",
+        "This run failed before synthesis because primary evidence coverage is insufficient.",
+        "",
+        ...evidenceIssues.map((i) => `- ${i.code}${i.path ? `@${i.path}` : ""}: ${i.message}`),
+      ].join("\n"),
+    });
+    await writeRunJson({
+      runDir,
+      filename: "QualityGate.json",
+      value: { passed: false, issues: evidenceIssues },
+    });
+    return {
+      runId,
+      runDir,
+      plan,
+      evidence: evidencePass.evidence,
+      reportJsonPath,
+      reportMarkdownPath,
+      passed: false,
+      issues: evidenceIssues,
+    };
+  }
 
   const analyzers = await pass2ThemeAnalyzersV2({
     themeName,

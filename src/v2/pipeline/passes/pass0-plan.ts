@@ -10,6 +10,18 @@ export type ResearchPlanV2 = {
   timebox_minutes: number;
   key_questions: string[];
   required_exhibits: string[];
+  evidence_plan: {
+    tier12_minimum: number;
+    tier1_minimum: number;
+    per_ticker: Array<{
+      ticker: string;
+      required: {
+        filings: { min_items: number; preferred_forms: string[] };
+        transcripts: { min_items: number };
+        external_documents: { min_items: number; preferred_source_types: string[] };
+      };
+    }>;
+  };
   tool_queries: Array<{
     tool: string;
     query: string;
@@ -49,6 +61,26 @@ export function buildPlanCompanyV2(params: {
       "scenario_drivers",
       "sensitivity",
     ],
+    evidence_plan: {
+      tier12_minimum: 2,
+      tier1_minimum: 1,
+      per_ticker: [
+        {
+          ticker,
+          required: {
+            filings: {
+              min_items: 4,
+              preferred_forms: ["10-K", "10-Q", "8-K", "DEF 14A"],
+            },
+            transcripts: { min_items: 1 },
+            external_documents: {
+              min_items: 0,
+              preferred_source_types: ["email_research", "newsletter"],
+            },
+          },
+        },
+      ],
+    },
     tool_queries: [
       { tool: "sec", query: `${ticker} latest annual filing`, priority: "primary" },
       { tool: "sec", query: `${ticker} latest quarterly filing`, priority: "primary" },
@@ -91,6 +123,21 @@ export function buildPlanThemeV2(params: {
       "catalyst_calendar",
       "risk_heatmap",
     ],
+    evidence_plan: {
+      tier12_minimum: 2,
+      tier1_minimum: 1,
+      per_ticker: universe.map((ticker) => ({
+        ticker,
+        required: {
+          filings: { min_items: 2, preferred_forms: ["10-K", "10-Q", "8-K"] },
+          transcripts: { min_items: 1 },
+          external_documents: {
+            min_items: 0,
+            preferred_source_types: ["newsletter", "email_research"],
+          },
+        },
+      })),
+    },
     tool_queries: [
       { tool: "corpus", query: `${themeName} definition taxonomy`, priority: "primary" },
       ...universe.map((ticker) => ({

@@ -65,6 +65,51 @@ const findCompanyFixture = async (params: {
 export type EvidencePassV2Result = {
   evidence: EvidenceItem[];
   claim_backlog: Array<{ id: string; claim: string; status: "open" | "dropped"; note?: string }>;
+  coverage: EvidenceCoverageV2;
+};
+
+export type EvidenceCoverageV2 = {
+  kind: "company" | "theme";
+  tickers: string[];
+  per_ticker: Array<{
+    ticker: string;
+    instrument_id?: number;
+    counts: {
+      filings_available: number;
+      filings_selected: number;
+      transcripts_available: number;
+      transcripts_selected: number;
+      external_documents_available: number;
+      external_documents_selected: number;
+    };
+    selected: {
+      filings: Array<{
+        id: number;
+        form?: string;
+        filed?: string;
+        period_end?: string;
+        accession?: string;
+        url?: string;
+      }>;
+      transcripts: Array<{
+        id: number;
+        event_date?: string;
+        event_type?: string;
+        source?: string;
+        url?: string;
+        title?: string;
+      }>;
+      external_documents: Array<{
+        id: number;
+        source_type?: string;
+        provider?: string;
+        received_at?: string;
+        published_at?: string;
+        url?: string;
+        title?: string;
+      }>;
+    };
+  }>;
 };
 
 const addDefaultTier2MacroEvidence = (params: {
@@ -91,11 +136,29 @@ const collectDbEvidenceForTicker = async (params: {
   ticker: string;
   dbPath?: string;
   store: EvidenceStore;
-}): Promise<void> => {
+}): Promise<{
+  ticker: string;
+  instrumentId?: number;
+  selected: EvidenceCoverageV2["per_ticker"][number]["selected"];
+  counts: EvidenceCoverageV2["per_ticker"][number]["counts"];
+}> => {
   const ticker = params.ticker.trim().toUpperCase();
   const db = openResearchDb(params.dbPath);
   const localFallbackUrl = (kind: "external_documents" | "filings" | "transcripts", id: number) =>
     `https://local.openclaw.ai/${kind}/${id}`;
+  const selected: EvidenceCoverageV2["per_ticker"][number]["selected"] = {
+    filings: [],
+    transcripts: [],
+    external_documents: [],
+  };
+  const counts: EvidenceCoverageV2["per_ticker"][number]["counts"] = {
+    filings_available: 0,
+    filings_selected: 0,
+    transcripts_available: 0,
+    transcripts_selected: 0,
+    external_documents_available: 0,
+    external_documents_selected: 0,
+  };
   const collectExternalDocuments = async (): Promise<void> => {
     const rowsA = db
       .prepare(
@@ -139,6 +202,7 @@ const collectDbEvidenceForTicker = async (params: {
       content?: string;
       fetched_at: number;
     }>;
+    counts.external_documents_available = rowsA.length + rowsB.length;
 
     const docs = Array.from(
       new Map<number, (typeof rowsA)[number]>([...rowsA, ...rowsB].map((r) => [r.id, r])).values(),
@@ -183,6 +247,15 @@ const collectDbEvidenceForTicker = async (params: {
       };
 
       const evidence = params.store.add(baseInsert);
+      selected.external_documents.push({
+        id: row.id,
+        source_type: row.source_type,
+        provider: row.provider,
+        received_at: row.received_at,
+        published_at: row.published_at,
+        url: evidence.url,
+        title,
+      });
       if ((row.content ?? "").trim()) {
         const rawRef = await writeTextIntoRun({
           runDir: params.runDir,
@@ -192,6 +265,7 @@ const collectDbEvidenceForTicker = async (params: {
         params.store.add({ ...baseInsert, raw_text_ref: rawRef });
       }
     }
+    counts.external_documents_selected = selected.external_documents.length;
   };
   const instrument = db.prepare("SELECT id FROM instruments WHERE ticker=?").get(ticker) as
     | { id?: number }
@@ -199,7 +273,7 @@ const collectDbEvidenceForTicker = async (params: {
   const instrumentId = instrument?.id;
   if (typeof instrumentId !== "number") {
     await collectExternalDocuments();
-    return;
+    return { ticker, selected, counts };
   }
 
   const filings = db
@@ -223,6 +297,7 @@ const collectDbEvidenceForTicker = async (params: {
     text?: string;
     fetched_at: number;
   }>;
+  counts.filings_available = filings.length;
 
   // Pick a small, high-signal filing set rather than "any 6" (Lane 1: evidence depth).
   const pickByForms = (forms: string[], limit: number) => {
@@ -282,6 +357,14 @@ const collectDbEvidenceForTicker = async (params: {
       ],
       tags: [`company:${ticker}`, "source:sec", "type:filing"],
     });
+    selected.filings.push({
+      id: row.id,
+      form: row.form,
+      filed,
+      period_end: row.period_end,
+      accession: row.accession,
+      url: evidence.url,
+    });
 
     if ((row.text ?? "").trim()) {
       const rawRef = await writeTextIntoRun({
@@ -302,6 +385,7 @@ const collectDbEvidenceForTicker = async (params: {
       });
     }
   }
+  counts.filings_selected = selected.filings.length;
 
   const transcripts = db
     .prepare(
@@ -321,6 +405,7 @@ const collectDbEvidenceForTicker = async (params: {
     content?: string;
     fetched_at: number;
   }>;
+  counts.transcripts_available = transcripts.length;
 
   for (const row of transcripts) {
     const fetchedAt =
@@ -346,6 +431,14 @@ const collectDbEvidenceForTicker = async (params: {
       ],
       tags: [`company:${ticker}`, "type:transcript"],
     });
+    selected.transcripts.push({
+      id: row.id,
+      event_date: row.event_date,
+      event_type: row.event_type,
+      source: row.source,
+      url: evidence.url,
+      title,
+    });
 
     if ((row.content ?? "").trim()) {
       const rawRef = await writeTextIntoRun({
@@ -366,8 +459,10 @@ const collectDbEvidenceForTicker = async (params: {
       });
     }
   }
+  counts.transcripts_selected = selected.transcripts.length;
 
   await collectExternalDocuments();
+  return { ticker, instrumentId, selected, counts };
 };
 
 export async function pass1EvidenceCompanyV2(params: {
@@ -378,15 +473,16 @@ export async function pass1EvidenceCompanyV2(params: {
 }): Promise<EvidencePassV2Result> {
   const store = new EvidenceStore();
   const now = new Date();
+  const ticker = params.ticker.trim().toUpperCase();
 
   // Even in offline fixture mode, require at least two Tier 1/2 sources to prevent one-source memos.
   addDefaultTier2MacroEvidence({
     store,
     now,
-    tags: [`company:${params.ticker.trim().toUpperCase()}`],
+    tags: [`company:${ticker}`],
   });
 
-  await collectDbEvidenceForTicker({
+  const dbCoverage = await collectDbEvidenceForTicker({
     runDir: params.runDir,
     ticker: params.ticker,
     dbPath: params.dbPath,
@@ -427,6 +523,18 @@ export async function pass1EvidenceCompanyV2(params: {
           status: "open",
         },
       ],
+      coverage: {
+        kind: "company",
+        tickers: [ticker],
+        per_ticker: [
+          {
+            ticker,
+            instrument_id: dbCoverage.instrumentId,
+            counts: dbCoverage.counts,
+            selected: dbCoverage.selected,
+          },
+        ],
+      },
     };
   }
 
@@ -441,6 +549,18 @@ export async function pass1EvidenceCompanyV2(params: {
         note: "Fail closed at compile if sources are missing.",
       },
     ],
+    coverage: {
+      kind: "company",
+      tickers: [ticker],
+      per_ticker: [
+        {
+          ticker,
+          instrument_id: dbCoverage.instrumentId,
+          counts: dbCoverage.counts,
+          selected: dbCoverage.selected,
+        },
+      ],
+    },
   };
 }
 
@@ -453,6 +573,7 @@ export async function pass1EvidenceThemeV2(params: {
 }): Promise<EvidencePassV2Result> {
   const store = new EvidenceStore();
   const now = new Date();
+  const universe = params.universe.map((t) => t.trim().toUpperCase()).filter(Boolean);
 
   addDefaultTier2MacroEvidence({ store, now, tags: [`theme:${params.themeName}`] });
 
@@ -470,12 +591,19 @@ export async function pass1EvidenceThemeV2(params: {
     tags: ["internal:spec", "v2:quality", `theme:${params.themeName}`],
   });
 
-  for (const ticker of params.universe) {
-    await collectDbEvidenceForTicker({
+  const perTicker: EvidenceCoverageV2["per_ticker"] = [];
+  for (const ticker of universe) {
+    const row = await collectDbEvidenceForTicker({
       runDir: params.runDir,
       ticker,
       dbPath: params.dbPath,
       store,
+    });
+    perTicker.push({
+      ticker,
+      instrument_id: row.instrumentId,
+      counts: row.counts,
+      selected: row.selected,
     });
     const fixturePath = await findCompanyFixture({ fixtureDir: params.fixtureDir, ticker });
     if (!fixturePath) continue;
@@ -511,5 +639,10 @@ export async function pass1EvidenceThemeV2(params: {
         status: "open",
       },
     ],
+    coverage: {
+      kind: "theme",
+      tickers: universe,
+      per_ticker: perTicker,
+    },
   };
 }
