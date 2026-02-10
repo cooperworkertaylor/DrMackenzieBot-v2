@@ -1977,7 +1977,13 @@ export function registerResearchCli(program: Command) {
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         assertMacminiAgentOnly("research theme-research");
-        const pipeline = (process.env.RESEARCH_PIPELINE ?? "").trim().toLowerCase();
+        const allowLegacy = process.env.OPENCLAW_ALLOW_LEGACY_RESEARCH === "1";
+        const pipeline = ((process.env.RESEARCH_PIPELINE ?? "") || "v2").trim().toLowerCase();
+        if (pipeline !== "v2" && !allowLegacy) {
+          throw new Error(
+            `Legacy research pipeline disabled. Set RESEARCH_PIPELINE=v2 (recommended) or set OPENCLAW_ALLOW_LEGACY_RESEARCH=1 to allow legacy runs.`,
+          );
+        }
         if (pipeline === "v2") {
           const tickersOverride =
             typeof opts.tickers === "string" && opts.tickers.trim()
@@ -3382,7 +3388,13 @@ export function registerResearchCli(program: Command) {
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         assertMacminiAgentOnly("research memo");
-        const pipeline = (process.env.RESEARCH_PIPELINE ?? "").trim().toLowerCase();
+        const allowLegacy = process.env.OPENCLAW_ALLOW_LEGACY_RESEARCH === "1";
+        const pipeline = ((process.env.RESEARCH_PIPELINE ?? "") || "v2").trim().toLowerCase();
+        if (pipeline !== "v2" && !allowLegacy) {
+          throw new Error(
+            `Legacy research pipeline disabled. Set RESEARCH_PIPELINE=v2 (recommended) or set OPENCLAW_ALLOW_LEGACY_RESEARCH=1 to allow legacy runs.`,
+          );
+        }
         if (pipeline === "v2") {
           const result = await runCompanyPipelineV2({
             ticker: opts.ticker as string,
