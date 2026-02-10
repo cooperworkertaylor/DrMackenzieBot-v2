@@ -1,0 +1,33 @@
+{
+  "status": "FAILED_QUALITY_GATE",
+  "issues": [
+    {
+      "severity": "error",
+      "code": "numeric_in_prose",
+      "path": "/sections/8/blocks/1/text",
+      "message": "Raw digits are not allowed in prose blocks in v2. Use numeric placeholders like {{N1}} and back them with numeric_facts + numeric_refs.",
+      "fix": "Move the number into numeric_facts (with value/unit/period/source/accessed_at). Replace the digits in text with {{N#}} and include N# in numeric_refs."
+    },
+    {
+      "severity": "warn",
+      "code": "numeric_unused",
+      "path": "/numeric_facts/1/id",
+      "message": "Numeric fact N2 is never referenced (numeric_refs).",
+      "fix": "Either reference it from a section/exhibit via numeric_refs or remove it."
+    },
+    {
+      "severity": "warn",
+      "code": "numeric_unused",
+      "path": "/numeric_facts/2/id",
+      "message": "Numeric fact N3 is never referenced (numeric_refs).",
+      "fix": "Either reference it from a section/exhibit via numeric_refs or remove it."
+    },
+    {
+      "severity": "warn",
+      "code": "numeric_unused",
+      "path": "/numeric_facts/3/id",
+      "message": "Numeric fact N4 is never referenced (numeric_refs).",
+      "fix": "Either reference it from a section/exhibit via numeric_refs or remove it."
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "generated_at": "2026-02-10T03:54:29.564Z",
+  "ticker": "AAPL",
+  "notes": [],
+  "numeric_facts": [
+    {
+      "id": "N1",
+      "value": 265595000000,
+      "unit": "USD",
+      "period": "FY2018 FY end=2018-09-29",
+      "currency": "USD",
+      "source_id": "S1",
+      "accessed_at": "2026-02-10T03:54:29.562Z",
+      "notes": "form=10-K"
+    },
+    {
+      "id": "N2",
+      "value": 133050000000,
+      "unit": "USD",
+      "period": "FY2025 FY end=2025-09-27",
+      "currency": "USD",
+      "source_id": "S1",
+      "accessed_at": "2026-02-10T03:54:29.562Z",
+      "notes": "form=10-K"
+    },
+    {
+      "id": "N3",
+      "value": 112010000000,
+      "unit": "USD",
+      "period": "FY2025 FY end=2025-09-27",
+      "currency": "USD",
+      "source_id": "S1",
+      "accessed_at": "2026-02-10T03:54:29.562Z",
+      "notes": "form=10-K"
+    },
+    {
+      "id": "N4",
+      "value": 111482000000,
+      "unit": "USD",
+      "period": "FY2025 FY end=2025-09-27",
+      "currency": "USD",
+      "source_id": "S1",
+      "accessed_at": "2026-02-10T03:54:29.562Z",
+      "notes": "form=10-K"
+    }
+  ],
+  "kpi_table": [
+    {
+      "metric": "Revenue (reported)",
+      "numeric_id": "N1",
+      "as_of": "2018-09-29",
+      "form": "10-K"
+    },
+    {
+      "metric": "Operating income (reported)",
+      "numeric_id": "N2",
+      "as_of": "2025-09-27",
+      "form": "10-K"
+    },
+    {
+      "metric": "Net income (reported)",
+      "numeric_id": "N3",
+      "as_of": "2025-09-27",
+      "form": "10-K"
+    },
+    {
+      "metric": "Cash from ops (reported)",
+      "numeric_id": "N4",
+      "as_of": "2025-09-27",
+      "form": "10-K"
+    }
+  ]
+}

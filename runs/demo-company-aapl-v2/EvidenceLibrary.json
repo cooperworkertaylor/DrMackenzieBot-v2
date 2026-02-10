@@ -1,0 +1,20 @@
+[
+  {
+    "id": "S1",
+    "title": "SEC XBRL time-series (AAPL)",
+    "publisher": "SEC",
+    "date_published": "2026-02-10",
+    "accessed_at": "2026-02-10T03:54:29.562Z",
+    "url": "https://sec.gov/edgar/search",
+    "reliability_tier": 1,
+    "excerpt_or_key_points": [
+      "Fixture: time-series extract representing SEC XBRL submissions (for offline demo)."
+    ],
+    "raw_text_ref": "/Users/cooptaylor1/Documents/DrMackenzie Vault/DrMackenzieBot-v2/runs/demo-company-aapl-v2/sources/S1.csv",
+    "tags": [
+      "company:AAPL",
+      "source:sec",
+      "fixture:sec-xbrl-timeseries"
+    ]
+  }
+]

@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "generated_at": "2026-02-10T03:52:58.539Z",
+  "theme_name": "Evidence-first underwriting",
+  "universe": [
+    "AAPL",
+    "PLTR"
+  ],
+  "notes": [],
+  "definition_taxonomy": {
+    "definition": "A research workflow that treats evidence as a reusable library and produces auditable investment theses via contracts.",
+    "what_it_is_not": [
+      "Not a narrative memo generator that blends facts and opinions without citations.",
+      "Not a single-pass essay; it is a multi-pass system with analyzers, skepticism, and validation."
+    ],
+    "key_terms": [
+      "evidence library",
+      "numeric provenance",
+      "falsifiers",
+      "fail closed"
+    ]
+  },
+  "value_chain": [
+    {
+      "layer": "Primary sources",
+      "value_driver": "reliability and provenance",
+      "proof_required": "Tier 1/2 evidence coverage by claim"
+    },
+    {
+      "layer": "Normalization",
+      "value_driver": "dedupe and tagging",
+      "proof_required": "stable source ids and canonical URLs"
+    },
+    {
+      "layer": "Analyzers",
+      "value_driver": "structured extraction",
+      "proof_required": "JSON artifacts for KPIs, risks, catalysts"
+    },
+    {
+      "layer": "Compiler",
+      "value_driver": "single-writer synthesis",
+      "proof_required": "schema-valid FinalReport.json"
+    },
+    {
+      "layer": "Quality gate",
+      "value_driver": "auditability",
+      "proof_required": "hard fails on missing citations and numeric provenance"
+    }
+  ],
+  "capture_mechanisms": [
+    {
+      "mechanism": "Distribution via reusable evidence",
+      "how_it_captures": "Compounds research effort by turning sources into indexed, re-usable primitives.",
+      "falsifier": "Evidence library is not reused across runs or has high duplication rate."
+    },
+    {
+      "mechanism": "Governance via contracts",
+      "how_it_captures": "Prevents low-signal memos from shipping by enforcing citations, structure, and numeric provenance.",
+      "falsifier": "Memos ship with uncited factual paragraphs or unaudited numbers."
+    }
+  ],
+  "beneficiaries_losers": {
+    "beneficiaries": [
+      {
+        "name": "AAPL",
+        "why": "Coverage depends on evidence availability; beneficiaries are the names with Tier 1/3 sources collected."
+      },
+      {
+        "name": "PLTR",
+        "why": "Coverage depends on evidence availability; beneficiaries are the names with Tier 1/3 sources collected."
+      }
+    ],
+    "left_behind": [
+      {
+        "name": "Any name without Tier 1/2 sources",
+        "why": "Fail-closed gates prevent shipping conclusions without primary evidence coverage."
+      }
+    ]
+  },
+  "adoption_signposts": [
+    {
+      "signpost": "Increased share of Tier 1/2 evidence vs Tier 4",
+      "source_needed": "EvidenceLibrary.json statistics"
+    },
+    {
+      "signpost": "Fewer contradictions flagged over time",
+      "source_needed": "Consistency validator outputs"
+    },
+    {
+      "signpost": "Higher eval score distribution",
+      "source_needed": "eval_runs or v2 eval harness"
+    }
+  ],
+  "numeric_facts": []
+}

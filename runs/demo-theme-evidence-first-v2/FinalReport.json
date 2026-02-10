@@ -1,0 +1,318 @@
+{
+  "version": 2,
+  "kind": "theme",
+  "run_id": "demo-theme-evidence-first-v2",
+  "generated_at": "2026-02-10T03:52:58.540Z",
+  "subject": {
+    "theme_name": "Evidence-first underwriting",
+    "universe": [
+      "AAPL",
+      "PLTR"
+    ]
+  },
+  "plan": {
+    "posture": "long-only",
+    "horizon": "12-36 months",
+    "timebox_minutes": 120,
+    "key_questions": [
+      "Define the theme precisely: Evidence-first underwriting",
+      "Where does value accrue (value chain) and what are the capture mechanisms?",
+      "Who benefits vs gets left behind, and what are falsifiers and adoption signposts?"
+    ],
+    "required_exhibits": [
+      "value_chain_map",
+      "capture_scorecard",
+      "adoption_dashboard",
+      "catalyst_calendar",
+      "risk_heatmap"
+    ]
+  },
+  "sources": [
+    {
+      "id": "S1",
+      "title": "Internal: v2 research contracts and quality gates",
+      "publisher": "Internal",
+      "date_published": "2026-02-10",
+      "accessed_at": "2026-02-10T03:52:58.539Z",
+      "url": "https://example.com/internal/v2-quality-gates",
+      "reliability_tier": 4,
+      "excerpt_or_key_points": [
+        "Defines contracts for citations, numeric provenance, structure, and repair loop behavior."
+      ],
+      "tags": [
+        "internal:spec",
+        "v2:quality",
+        "theme:Evidence-first underwriting"
+      ]
+    },
+    {
+      "id": "S2",
+      "title": "SEC XBRL time-series (AAPL)",
+      "publisher": "SEC",
+      "date_published": "2026-02-10",
+      "accessed_at": "2026-02-10T03:52:58.539Z",
+      "url": "https://sec.gov/edgar/search",
+      "reliability_tier": 1,
+      "excerpt_or_key_points": [
+        "Fixture: time-series extract representing SEC XBRL submissions (for offline demo)."
+      ],
+      "raw_text_ref": "/Users/cooptaylor1/Documents/DrMackenzie Vault/DrMackenzieBot-v2/runs/demo-theme-evidence-first-v2/sources/S2.csv",
+      "tags": [
+        "company:AAPL",
+        "source:sec",
+        "fixture:sec-xbrl-timeseries"
+      ]
+    }
+  ],
+  "numeric_facts": [],
+  "sections": [
+    {
+      "key": "executive_summary",
+      "title": "Executive Summary (Definition + Variant + Winners/Losers)",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "This theme memo is constrained to collected evidence; unsupported claims are marked as assumptions or omitted.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "A research workflow that treats evidence as a reusable library and produces auditable investment theses via contracts."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: the evidence library will expand to include Tier one filings and Tier three transcripts for all universe members."
+        }
+      ]
+    },
+    {
+      "key": "what_it_is_isnt_why_now",
+      "title": "What It Is / Isn't + Why Now",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "Contracts prevent generic prose from shipping by enforcing citations, numeric provenance, and section structure.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "Why now: agentic systems without governance drift; fail-closed gates make research reproducible and auditable."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: the incremental time cost of gates is offset by reduced downstream rework and higher trust."
+        }
+      ]
+    },
+    {
+      "key": "value_chain",
+      "title": "Where Value Accrues (Value Chain)",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "Value chain mapping should be tied to primary sources; missing sources are recorded in the appendix.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "Value accrues to systems that turn evidence into decisions with low contradiction and high auditability."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: buyer preference will shift toward auditable workflows as regulation and model risk management mature."
+        }
+      ]
+    },
+    {
+      "key": "capture_ledger",
+      "title": "Capture Ledger (Mechanisms + Scorecard)",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "Capture mechanisms must be tied to evidence; scorecards without sources are opinions.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "Mechanisms: distribution control, workflow embedding, governance, and switching costs."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: monetization consolidates around workflow layers rather than generalized capability providers."
+        }
+      ]
+    },
+    {
+      "key": "beneficiaries_vs_left_behind",
+      "title": "Beneficiaries vs Left Behind",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "Beneficiary claims require evidence per name; this run records missing coverage explicitly.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "Beneficiaries are names with primary evidence coverage and durable capture mechanisms; left behind lack either."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: procurement and compliance constraints will be a durable differentiator in adoption."
+        }
+      ]
+    },
+    {
+      "key": "catalysts_timeline",
+      "title": "Catalysts + Timeline",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "Catalyst calendars must be backed by dated sources; this run does not include those sources.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "Treat catalysts as information releases that update scenario weights."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: adoption milestones appear in filings and transcripts before they appear in price tape."
+        }
+      ]
+    },
+    {
+      "key": "risks_falsifiers",
+      "title": "Risks + Falsifiers (Ranked)",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "Falsifiers should be measurable and monitored via the evidence library.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "The bear case is that the perceived edge is not durable: economics compress, execution misses accumulate, and the market reprices the multiple to reflect lower confidence."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: a monitoring dashboard will track evidence freshness, contradictions, and KPI deltas per name."
+        }
+      ]
+    },
+    {
+      "key": "portfolio_posture",
+      "title": "Portfolio Posture (Expression + Monitoring)",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "The version two gates fail closed when sourcing or numeric provenance is missing.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "Expression: stage exposure (pilot/core) only after evidence coverage and falsifiers are defined."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: skipping low-evidence names improves risk-adjusted outcomes in a broad opportunity set."
+        }
+      ]
+    }
+  ],
+  "exhibits": [
+    {
+      "id": "X1",
+      "title": "Value Chain Map (Value chain)",
+      "question": "Where does value accrue along the workflow from evidence to decision?",
+      "data_summary": [
+        "Primary sources -> normalization -> analyzers -> skeptical review -> memo compiler -> portfolio decision."
+      ],
+      "takeaway": "Takeaway: Value accrues to systems that make evidence reusable and decisions auditable.",
+      "source_ids": [
+        "S1"
+      ]
+    },
+    {
+      "id": "X2",
+      "title": "Capture Scorecard (Capture scorecard)",
+      "question": "Which mechanisms drive capture and how do we score them?",
+      "data_summary": [
+        "Distribution, workflow embedding, governance, and switching cost are scored only when evidence exists."
+      ],
+      "takeaway": "Takeaway: Scorecards without evidence are opinions, not research.",
+      "source_ids": [
+        "S1"
+      ]
+    },
+    {
+      "id": "X3",
+      "title": "Adoption Dashboard (Adoption dashboard)",
+      "question": "What adoption signposts should we monitor?",
+      "data_summary": [
+        "Filings: KPI deltas and disclosure; transcripts: customer and pipeline signals; price: regime shifts."
+      ],
+      "takeaway": "Takeaway: Dashboards turn themes into monitorable systems.",
+      "source_ids": [
+        "S1"
+      ]
+    },
+    {
+      "id": "X4",
+      "title": "Catalyst Calendar (Catalyst calendar)",
+      "question": "What dated events can change scenario weights?",
+      "data_summary": [
+        "Earnings cycles, major product releases, and regulatory deadlines (sources pending)."
+      ],
+      "takeaway": "Takeaway: A calendar is only as good as its dated sources.",
+      "source_ids": [
+        "S1"
+      ]
+    },
+    {
+      "id": "X5",
+      "title": "Risk Heatmap (Risk heatmap)",
+      "question": "Where do the biggest failure modes sit across mechanism and time?",
+      "data_summary": [
+        "Execution risk, regulation risk, and commoditization risk require explicit falsifiers."
+      ],
+      "takeaway": "Takeaway: Heatmaps are useful only when paired with triggers that change posture.",
+      "source_ids": [
+        "S1"
+      ]
+    }
+  ],
+  "appendix": {
+    "evidence_table": [
+      {
+        "claim": "Contracts enforce fail-closed rules for citations, numeric provenance, and structure.",
+        "evidence_ids": [
+          "S1"
+        ],
+        "source_ids": [
+          "S1"
+        ]
+      }
+    ],
+    "whats_missing": [
+      "Theme-specific primary sources for every universe member (filings and transcripts).",
+      "Dated catalyst sources to populate the calendar with evidence-backed events.",
+      "Quantitative adoption dashboard once KPI sources are ingested for all names."
+    ]
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "run_id": "demo-theme-evidence-first-v2",
+  "kind": "theme",
+  "generated_at": "2026-02-10T03:52:58.538Z",
+  "posture": "long-only",
+  "horizon": "12-36 months",
+  "timebox_minutes": 120,
+  "key_questions": [
+    "Define the theme precisely: Evidence-first underwriting",
+    "Where does value accrue (value chain) and what are the capture mechanisms?",
+    "Who benefits vs gets left behind, and what are falsifiers and adoption signposts?"
+  ],
+  "required_exhibits": [
+    "value_chain_map",
+    "capture_scorecard",
+    "adoption_dashboard",
+    "catalyst_calendar",
+    "risk_heatmap"
+  ],
+  "tool_queries": [
+    {
+      "tool": "corpus",
+      "query": "Evidence-first underwriting definition taxonomy",
+      "priority": "primary"
+    },
+    {
+      "tool": "sec",
+      "query": "AAPL latest filing",
+      "priority": "secondary"
+    },
+    {
+      "tool": "sec",
+      "query": "PLTR latest filing",
+      "priority": "secondary"
+    }
+  ]
+}

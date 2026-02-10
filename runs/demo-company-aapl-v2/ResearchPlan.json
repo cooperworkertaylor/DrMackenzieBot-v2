@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "run_id": "demo-company-aapl-v2",
+  "kind": "company",
+  "generated_at": "2026-02-10T03:54:29.561Z",
+  "posture": "long-only",
+  "horizon": "12-36 months",
+  "timebox_minutes": 90,
+  "key_questions": [
+    "Can this company compound free cash flow with durable moats and disciplined capital returns?",
+    "What would falsify the thesis quickly (measurable triggers)?",
+    "What is the bear case and what evidence would support it?"
+  ],
+  "required_exhibits": [
+    "kpi_table",
+    "margins",
+    "fcf",
+    "sbc_dilution",
+    "scenario_drivers",
+    "sensitivity"
+  ],
+  "tool_queries": [
+    {
+      "tool": "sec",
+      "query": "AAPL latest annual filing",
+      "priority": "primary"
+    },
+    {
+      "tool": "sec",
+      "query": "AAPL latest quarterly filing",
+      "priority": "primary"
+    },
+    {
+      "tool": "transcript",
+      "query": "AAPL latest earnings call transcript",
+      "priority": "secondary"
+    },
+    {
+      "tool": "prices",
+      "query": "AAPL price history",
+      "priority": "secondary"
+    }
+  ]
+}
