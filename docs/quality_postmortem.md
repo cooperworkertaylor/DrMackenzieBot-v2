@@ -22,6 +22,15 @@ The following metrics come from `openclaw research pdf-diagnostics` (PDF text ex
   - `exhibitTokenCount=0`: missing exhibits entirely.
   - This artifact is too small (`bytes=7792`) to be a complete “deep research” deliverable.
 
+### 3) Agentic commerce update PDF (latest; 2026-02-10)
+- Path: `/Users/cooptaylor1/Downloads/agentic-commerce-update-2026-02-10.pdf`
+- Pages: 3
+- Key failures:
+  - `byteSize=7143`: this is not a complete research artifact.
+  - `urlCount=0`, `citationKeyCount=0`, `exhibitTokenCount=0`: no auditable sources, no claim-level citations, no exhibits.
+  - `dashMojibakeDateCount=4`: dash encoding issues show up in dates (e.g., `2026 n 02 n 10`).
+  - Content includes explicit placeholders like “CSV/queries provided in appendix pass” but the appendix is not present.
+
 ### (Comparison) Claude baseline PDF
 - Path: `/Users/cooptaylor1/Downloads/agentic_commerce_crypto_positioning_report.pdf`
 - Pages: 17 (scanned first 12 pages by diagnostics)

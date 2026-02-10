@@ -3593,53 +3593,52 @@ export function registerResearchCli(program: Command) {
     )
     .requiredOption("--in <path>", "Input PDF path")
     .option("--max-pages <n>", "Max pages to scan for text extraction", "12")
+    .option("--dump-text <path>", "Write extracted text to a file for inspection")
+    .option("--strict", "Fail-closed if PDF violates institutional pre-send checks", false)
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const inPath = path.resolve(opts.in as string);
         const maxPages = Math.max(1, parseOptionalNumber(opts["maxPages"]) ?? 12);
         const buffer = await fs.readFile(inPath);
-        const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
-        const pdf = await getDocument({
-          data: new Uint8Array(buffer),
-          disableWorker: true,
-        }).promise;
-        const scannedPages = Math.min(pdf.numPages, maxPages);
-        const parts: string[] = [];
-        for (let pageNum = 1; pageNum <= scannedPages; pageNum += 1) {
-          const page = await pdf.getPage(pageNum);
-          const textContent = await page.getTextContent();
-          const pageText = textContent.items
-            .map((item) => ("str" in item ? String(item.str) : ""))
-            .filter(Boolean)
-            .join(" ");
-          if (pageText) parts.push(pageText);
-        }
-        const text = parts.join("\n");
+        const { extractPdfTextFromBuffer, diagnosePdfBuffer } =
+          await import("../research/pdf-diagnostics.js");
+        const { pages, scannedPages, text } = await extractPdfTextFromBuffer({
+          buffer: new Uint8Array(buffer),
+          maxPages,
+        });
+        const strict = Boolean(opts.strict);
+        const { metrics, errors } = await diagnosePdfBuffer({
+          buffer: new Uint8Array(buffer),
+          maxPages,
+          strict,
+        });
 
-        const metrics = {
-          markdownHeadingTokens: (text.match(/###\s+/g) ?? []).length,
-          markdownFenceTokens: (text.match(/```/g) ?? []).length,
-          urlCount: (text.match(/https?:\/\/\S+/gi) ?? []).length,
-          citationKeyCount: (text.match(/\bC\d+:/gi) ?? []).length,
-          exhibitTokenCount: (text.match(/\bExhibit\s+\d+/gi) ?? []).length,
-          sourcesHeadingPresent: /Source List\b|Sources\b/i.test(text),
-          dashMojibakeDateCount: (text.match(/\b\d{4}\s+n\s+\d{2}\s+n\s+\d{2}\b/g) ?? []).length,
-          extractedChars: text.length,
-        };
+        const dumpPath = (opts["dumpText"] as string | undefined)?.trim();
+        if (dumpPath) {
+          const resolvedDumpPath = path.resolve(dumpPath);
+          await fs.mkdir(path.dirname(resolvedDumpPath), { recursive: true });
+          await fs.writeFile(resolvedDumpPath, `${text}\n`, "utf8");
+          defaultRuntime.log(`Extracted text written to ${resolvedDumpPath}`);
+        }
 
         defaultRuntime.log(
           `${JSON.stringify(
             {
               inPath,
-              pages: pdf.numPages,
+              pages,
               scannedPages,
               byteSize: buffer.byteLength,
               metrics,
+              ...(strict ? { errors } : {}),
             },
             null,
             2,
           )}\n`,
         );
+
+        if (strict && errors.length > 0) {
+          throw new Error(`PDF failed strict diagnostics:\n- ${errors.join("\n- ")}`);
+        }
       });
     });
 
