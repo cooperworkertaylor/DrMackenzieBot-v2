@@ -1970,6 +1970,7 @@ export function registerResearchCli(program: Command) {
             universe: tickers,
             fixtureDir: (opts.v2FixtureDir as string | undefined) ?? undefined,
             runId: (opts.runId as string | undefined) ?? undefined,
+            dbPath: opts.db as string,
           });
           if (!result.passed) {
             const reasons = result.issues
@@ -3353,6 +3354,7 @@ export function registerResearchCli(program: Command) {
             question: opts.question as string,
             fixtureDir: (opts.v2FixtureDir as string | undefined) ?? undefined,
             runId: (opts.runId as string | undefined) ?? undefined,
+            dbPath: opts.db as string,
           });
 
           if (!result.passed) {

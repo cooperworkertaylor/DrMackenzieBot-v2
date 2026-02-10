@@ -38,6 +38,7 @@ export async function runCompanyPipelineV2(params: {
   question: string;
   fixtureDir?: string;
   runId?: string;
+  dbPath?: string;
 }): Promise<PipelineRunResultV2> {
   const ticker = params.ticker.trim().toUpperCase();
   const runId = (params.runId ?? "").trim() || runIdDefault(`v2-company-${slugify(ticker)}`);
@@ -50,6 +51,7 @@ export async function runCompanyPipelineV2(params: {
     runDir,
     ticker,
     fixtureDir: params.fixtureDir,
+    dbPath: params.dbPath,
   });
   await writeRunJson({ runDir, filename: "EvidenceLibrary.json", value: evidencePass.evidence });
   await writeRunJson({ runDir, filename: "ClaimBacklog.json", value: evidencePass.claim_backlog });
@@ -109,6 +111,7 @@ export async function runThemePipelineV2(params: {
   universe: string[];
   fixtureDir?: string;
   runId?: string;
+  dbPath?: string;
 }): Promise<PipelineRunResultV2> {
   const themeName = params.themeName.trim();
   const universe = params.universe.map((t) => t.trim().toUpperCase()).filter(Boolean);
@@ -125,6 +128,7 @@ export async function runThemePipelineV2(params: {
     themeName,
     universe,
     fixtureDir: params.fixtureDir,
+    dbPath: params.dbPath,
   });
   await writeRunJson({ runDir, filename: "EvidenceLibrary.json", value: evidencePass.evidence });
   await writeRunJson({ runDir, filename: "ClaimBacklog.json", value: evidencePass.claim_backlog });
