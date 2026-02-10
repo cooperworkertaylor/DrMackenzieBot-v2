@@ -43,6 +43,19 @@ const demoCompanyReport = () => ({
       raw_text_ref: "examples/fixtures/sec-edgar/aapl/time-series.csv",
       tags: ["company:AAPL", "source:sec", "kpi:revenue"],
     },
+    {
+      id: "S2",
+      title: "FRED: Effective Federal Funds Rate (EFFR)",
+      publisher: "FRED",
+      date_published: "2026-02-06",
+      accessed_at: "2026-02-06T00:53:04.010Z",
+      url: "https://fred.stlouisfed.org/series/EFFR",
+      reliability_tier: 2,
+      excerpt_or_key_points: [
+        "Tier 2 macro context for discount-rate regime and valuation sensitivity.",
+      ],
+      tags: ["macro:rates", "source:fred"],
+    },
   ],
   numeric_facts: [
     {
@@ -391,6 +404,30 @@ const demoThemeReport = () => ({
       ],
       tags: ["theme:evidence-first", "internal:spec"],
     },
+    {
+      id: "S3",
+      title: "SEC filing (Palantir Technologies Inc.)",
+      publisher: "SEC",
+      date_published: "2026-02-06",
+      accessed_at: "2026-02-06T00:53:04.010Z",
+      url: "https://www.sec.gov/edgar/search/",
+      reliability_tier: 1,
+      excerpt_or_key_points: [
+        "Tier 1 primary source for PLTR disclosures (filing text ingested separately).",
+      ],
+      tags: ["company:PLTR", "theme:evidence-first", "source:sec", "type:filing"],
+    },
+    {
+      id: "S4",
+      title: "FRED: Effective Federal Funds Rate (EFFR)",
+      publisher: "FRED",
+      date_published: "2026-02-06",
+      accessed_at: "2026-02-06T00:53:04.010Z",
+      url: "https://fred.stlouisfed.org/series/EFFR",
+      reliability_tier: 2,
+      excerpt_or_key_points: ["Tier 2 macro context for cycle/discount-rate sensitivity."],
+      tags: ["macro:rates", "source:fred", "theme:evidence-first"],
+    },
   ],
   numeric_facts: [],
   sections: [
@@ -624,8 +661,30 @@ const demoThemeReport = () => ({
 describe("v2 quality gate", () => {
   it("passes a minimal valid company report", () => {
     const res = runV2QualityGate({ kind: "company", report: demoCompanyReport() });
-    expect(res.issues).toEqual([]);
     expect(res.passed).toBe(true);
+    expect(res.issues.filter((i) => i.severity === "error")).toEqual([]);
+  });
+
+  it("fails closed when Tier 1/2 evidence coverage is missing", () => {
+    const report = demoCompanyReport();
+    report.sources = [
+      {
+        id: "S9",
+        title: "Internal note",
+        publisher: "Internal",
+        date_published: "2026-02-10",
+        accessed_at: "2026-02-10T00:00:00Z",
+        url: "https://example.com/internal",
+        reliability_tier: 4,
+        excerpt_or_key_points: ["Internal-only note (should never be sufficient)."],
+        tags: ["internal:spec", `company:${report.subject.ticker}`],
+      },
+    ];
+    const res = runV2QualityGate({ kind: "company", report });
+    expect(res.passed).toBe(false);
+    expect(res.issues.some((i) => i.code === "evidence_missing_tier1")).toBe(true);
+    expect(res.issues.some((i) => i.code === "evidence_missing_tier12_minimum")).toBe(true);
+    expect(res.issues.some((i) => i.code === "evidence_only_internal")).toBe(true);
   });
 
   it("fails when a FACT block is missing citations", () => {
@@ -646,7 +705,7 @@ describe("v2 quality gate", () => {
 
   it("passes a minimal valid theme report", () => {
     const res = runV2QualityGate({ kind: "theme", report: demoThemeReport() });
-    expect(res.issues).toEqual([]);
     expect(res.passed).toBe(true);
+    expect(res.issues.filter((i) => i.severity === "error")).toEqual([]);
   });
 });

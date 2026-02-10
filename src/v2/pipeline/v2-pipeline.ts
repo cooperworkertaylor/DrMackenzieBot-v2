@@ -40,7 +40,10 @@ const parseBoolean = (raw: string | undefined): boolean | undefined => {
 };
 
 const v2HydrateEnabled = (): boolean =>
-  parseBoolean(process.env.OPENCLAW_RESEARCH_V2_HYDRATE) ?? false;
+  parseBoolean(process.env.OPENCLAW_RESEARCH_V2_HYDRATE) ??
+  String(process.env.OPENCLAW_HOST_ROLE ?? "")
+    .trim()
+    .toLowerCase() === "macmini";
 
 const hydrateTickersIfEnabled = async (params: {
   tickers: string[];

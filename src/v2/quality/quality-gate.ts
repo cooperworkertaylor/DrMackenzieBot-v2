@@ -2,6 +2,7 @@ import type { QualityGateResult, QualityIssue, ReportKindV2 } from "./types.js";
 import { validateReportJsonSchema } from "./schema-validator.js";
 import { validateCitationCoverage } from "./validators/citation-validator.js";
 import { validateConsistency } from "./validators/consistency-validator.js";
+import { validateEvidenceCoverage } from "./validators/evidence-coverage-validator.js";
 import { validateNumericProvenance } from "./validators/numeric-provenance-validator.js";
 import { validateSectionCompleteness } from "./validators/section-completeness-validator.js";
 import { validateStyle } from "./validators/style-validator.js";
@@ -27,6 +28,7 @@ export function runV2QualityGate(params: {
 
   issues.push(...validateSectionCompleteness({ kind: params.kind, report: params.report }));
   issues.push(...validateStyle(params.report));
+  issues.push(...validateEvidenceCoverage({ kind: params.kind, report: params.report }));
   issues.push(...validateCitationCoverage(params.report));
   issues.push(...validateNumericProvenance(params.report));
   issues.push(...validateConsistency({ kind: params.kind, report: params.report }));

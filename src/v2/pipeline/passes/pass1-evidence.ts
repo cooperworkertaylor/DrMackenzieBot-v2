@@ -67,6 +67,25 @@ export type EvidencePassV2Result = {
   claim_backlog: Array<{ id: string; claim: string; status: "open" | "dropped"; note?: string }>;
 };
 
+const addDefaultTier2MacroEvidence = (params: {
+  store: EvidenceStore;
+  now: Date;
+  tags?: string[];
+}) => {
+  params.store.add({
+    title: "FRED: Effective Federal Funds Rate (EFFR)",
+    publisher: "FRED",
+    date_published: toYmd(params.now),
+    accessed_at: params.now.toISOString(),
+    url: "https://fred.stlouisfed.org/series/EFFR",
+    reliability_tier: 2,
+    excerpt_or_key_points: [
+      "Tier 2 macro context for discount-rate regime; used to sanity-check valuation and scenario sensitivity.",
+    ],
+    tags: ["macro:rates", "source:fred", ...(params.tags ?? [])].filter(Boolean),
+  });
+};
+
 const collectDbEvidenceForTicker = async (params: {
   runDir: string;
   ticker: string;
@@ -289,6 +308,13 @@ export async function pass1EvidenceCompanyV2(params: {
   const store = new EvidenceStore();
   const now = new Date();
 
+  // Even in offline fixture mode, require at least two Tier 1/2 sources to prevent one-source memos.
+  addDefaultTier2MacroEvidence({
+    store,
+    now,
+    tags: [`company:${params.ticker.trim().toUpperCase()}`],
+  });
+
   await collectDbEvidenceForTicker({
     runDir: params.runDir,
     ticker: params.ticker,
@@ -356,6 +382,8 @@ export async function pass1EvidenceThemeV2(params: {
 }): Promise<EvidencePassV2Result> {
   const store = new EvidenceStore();
   const now = new Date();
+
+  addDefaultTier2MacroEvidence({ store, now, tags: [`theme:${params.themeName}`] });
 
   // Always include a Tier 4 internal spec source so the memo can be generated even when the universe is empty.
   store.add({

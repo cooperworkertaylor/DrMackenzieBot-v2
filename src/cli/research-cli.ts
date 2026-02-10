@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import * as fsSync from "node:fs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -208,6 +209,24 @@ const assertMacminiBrowserAllowed = (feature: string): void => {
   if (normalizedRole === "macmini" && normalizedAllow === "1") return;
   throw new Error(
     `${feature} uses a local browser (Chrome/Playwright) and is restricted to the macmini agent. Refusing to run here. Set OPENCLAW_HOST_ROLE=macmini and OPENCLAW_ALLOW_BROWSER=1 to proceed (on macmini only).`,
+  );
+};
+
+const assertMacminiAgentOnly = (feature: string): void => {
+  const hostRole =
+    process.env.OPENCLAW_HOST_ROLE ??
+    process.env.OPENCLAW_AGENT_ROLE ??
+    process.env.OPENCLAW_AGENT ??
+    "";
+  const normalizedRole = hostRole.trim().toLowerCase();
+  if (normalizedRole === "macmini") return;
+
+  // Secondary check to reduce misconfig pain on the macmini if env isn't set.
+  const hostname = os.hostname().trim().toLowerCase();
+  if (hostname.includes("coopers") && hostname.includes("mini")) return;
+
+  throw new Error(
+    `${feature} is restricted to the macmini agent. Refusing to run here. Set OPENCLAW_HOST_ROLE=macmini (and run the agent work on macmini only).`,
   );
 };
 
@@ -503,6 +522,7 @@ export function registerResearchCli(program: Command) {
     .option("--user-agent <value>", "SEC-compliant user agent (or use SEC_USER_AGENT env)")
     .action(async (opts: SecXbrlOptions) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
+        assertMacminiAgentOnly("research sec-xbrl");
         const ticker = opts.ticker?.trim();
         const cik = opts.cik?.trim();
         if (!ticker && !cik) {
@@ -1204,6 +1224,7 @@ export function registerResearchCli(program: Command) {
     .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
+        assertMacminiAgentOnly("research position-decision");
         const constraints: Partial<PortfolioDecisionConstraints> = {};
         const maxWeight = parseOptionalNumber(opts["maxWeight"]);
         const maxRiskBudget = parseOptionalNumber(opts["maxRiskBudget"]);
@@ -1717,6 +1738,7 @@ export function registerResearchCli(program: Command) {
     .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
+        assertMacminiAgentOnly("research sector-research");
         const overrideTickers =
           typeof opts.tickers === "string" && opts.tickers.trim()
             ? parseTickersOption(opts.tickers as string)
@@ -1954,6 +1976,7 @@ export function registerResearchCli(program: Command) {
     .option("--v2-fixture-dir <path>", "Optional fixture directory for v2 evidence collection")
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
+        assertMacminiAgentOnly("research theme-research");
         const pipeline = (process.env.RESEARCH_PIPELINE ?? "").trim().toLowerCase();
         if (pipeline === "v2") {
           const tickers =
@@ -3347,6 +3370,7 @@ export function registerResearchCli(program: Command) {
     .option("--quality-attempts <n>", "Quality refinement attempts before hard fail", "4")
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
+        assertMacminiAgentOnly("research memo");
         const pipeline = (process.env.RESEARCH_PIPELINE ?? "").trim().toLowerCase();
         if (pipeline === "v2") {
           const result = await runCompanyPipelineV2({

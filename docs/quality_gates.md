@@ -77,6 +77,15 @@ Required sections must exist exactly once and in the mandated order.
 
 Every `FACT` block must cite at least one `S#` source id, and all cited ids must exist in `sources[]`.
 
+### Evidence Coverage (Lane 1)
+
+The v2 gate fails closed when primary evidence coverage is missing:
+
+- At least **one Tier 1** source (SEC filings / audited reports / official releases).
+- At least **two Tier 1/2** sources total.
+- Company reports must include at least one **SEC** source tagged to `company:<TICKER>`.
+- Theme reports with a `subject.universe[]` must include at least one Tier 1/2 source tagged `company:<TICKER>` for **each** universe member.
+
 ### Numeric Provenance
 
 - Every `numeric_refs` must exist in `numeric_facts[]`.
