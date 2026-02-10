@@ -96,6 +96,7 @@ USER.md
 *.tgz
 .serena/
 bin/
+tmp/
 # Research outputs (do not commit)
 report_*.md
 report_*.pdf
@@ -104,3 +105,11 @@ sources.md
 sec-edgar-filings/
 data/
 *.db
+*.artifact.json
+# Gold-standard corpus raw content (keep out of git; metadata/prompts/rubrics are committed)
+research-corpus/sources/**
+!research-corpus/sources/**/
+!research-corpus/sources/**/.gitkeep
+research-corpus/snapshots/**
+!research-corpus/snapshots/**/
+!research-corpus/snapshots/**/.gitkeep

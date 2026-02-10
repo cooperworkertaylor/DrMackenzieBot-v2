@@ -1,0 +1,17 @@
+cik,entityName,seriesKey,label,taxonomy,concept,unit,end,filed,form,fy,fp,frame,value,accn
+0000320193,Apple Inc.,us-gaap:Assets,Assets,us-gaap,Assets,USD,2025-09-27,2026-01-30,10-Q,2026,Q1,CY2025Q3I,359241000000,0000320193-26-000006
+0000320193,Apple Inc.,us-gaap:Assets,Assets,us-gaap,Assets,USD,2025-12-27,2026-01-30,10-Q,2026,Q1,CY2025Q4I,379297000000,0000320193-26-000006
+0000320193,Apple Inc.,us-gaap:EarningsPerShareDiluted,"Earnings Per Share, Diluted",us-gaap,EarningsPerShareDiluted,USD/shares,2025-09-27,2025-10-31,10-K,2025,FY,CY2025,7.46,0000320193-25-000079
+0000320193,Apple Inc.,us-gaap:EarningsPerShareDiluted,"Earnings Per Share, Diluted",us-gaap,EarningsPerShareDiluted,USD/shares,2025-12-27,2026-01-30,10-Q,2026,Q1,CY2025Q4,2.84,0000320193-26-000006
+0000320193,Apple Inc.,us-gaap:Liabilities,Liabilities,us-gaap,Liabilities,USD,2025-09-27,2026-01-30,10-Q,2026,Q1,CY2025Q3I,285508000000,0000320193-26-000006
+0000320193,Apple Inc.,us-gaap:Liabilities,Liabilities,us-gaap,Liabilities,USD,2025-12-27,2026-01-30,10-Q,2026,Q1,CY2025Q4I,291107000000,0000320193-26-000006
+0000320193,Apple Inc.,us-gaap:NetCashProvidedByUsedInOperatingActivities,Net Cash Provided by (Used in) Operating Activities,us-gaap,NetCashProvidedByUsedInOperatingActivities,USD,2025-09-27,2025-10-31,10-K,2025,FY,CY2025,111482000000,0000320193-25-000079
+0000320193,Apple Inc.,us-gaap:NetCashProvidedByUsedInOperatingActivities,Net Cash Provided by (Used in) Operating Activities,us-gaap,NetCashProvidedByUsedInOperatingActivities,USD,2025-12-27,2026-01-30,10-Q,2026,Q1,CY2025Q4,53925000000,0000320193-26-000006
+0000320193,Apple Inc.,us-gaap:NetIncomeLoss,Net Income (Loss) Attributable to Parent,us-gaap,NetIncomeLoss,USD,2025-09-27,2025-10-31,10-K,2025,FY,CY2025,112010000000,0000320193-25-000079
+0000320193,Apple Inc.,us-gaap:NetIncomeLoss,Net Income (Loss) Attributable to Parent,us-gaap,NetIncomeLoss,USD,2025-12-27,2026-01-30,10-Q,2026,Q1,CY2025Q4,42097000000,0000320193-26-000006
+0000320193,Apple Inc.,us-gaap:OperatingIncomeLoss,Operating Income (Loss),us-gaap,OperatingIncomeLoss,USD,2025-09-27,2025-10-31,10-K,2025,FY,CY2025,133050000000,0000320193-25-000079
+0000320193,Apple Inc.,us-gaap:OperatingIncomeLoss,Operating Income (Loss),us-gaap,OperatingIncomeLoss,USD,2025-12-27,2026-01-30,10-Q,2026,Q1,CY2025Q4,50852000000,0000320193-26-000006
+0000320193,Apple Inc.,us-gaap:Revenues,Revenues,us-gaap,Revenues,USD,2018-09-29,2018-11-05,10-K,2018,FY,CY2018,265595000000,0000320193-18-000145
+0000320193,Apple Inc.,us-gaap:Revenues,Revenues,us-gaap,Revenues,USD,2018-09-29,2018-11-05,10-K,2018,FY,CY2018Q3,62900000000,0000320193-18-000145
+0000320193,Apple Inc.,us-gaap:StockholdersEquity,Stockholders' Equity Attributable to Parent,us-gaap,StockholdersEquity,USD,2025-09-27,2026-01-30,10-Q,2026,Q1,CY2025Q3I,73733000000,0000320193-26-000006
+0000320193,Apple Inc.,us-gaap:StockholdersEquity,Stockholders' Equity Attributable to Parent,us-gaap,StockholdersEquity,USD,2025-12-27,2026-01-30,10-Q,2026,Q1,CY2025Q4I,88190000000,0000320193-26-000006

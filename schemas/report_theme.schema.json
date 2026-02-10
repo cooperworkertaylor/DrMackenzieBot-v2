@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "report_theme.schema.json",
+  "title": "ThemeReportV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "kind",
+    "run_id",
+    "generated_at",
+    "subject",
+    "plan",
+    "sources",
+    "numeric_facts",
+    "sections",
+    "exhibits",
+    "appendix"
+  ],
+  "properties": {
+    "version": { "type": "integer", "const": 2 },
+    "kind": { "type": "string", "const": "theme" },
+    "run_id": { "type": "string", "minLength": 6 },
+    "generated_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["theme_name"],
+      "properties": {
+        "theme_name": { "type": "string", "minLength": 1 },
+        "universe": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["posture", "horizon", "timebox_minutes", "key_questions", "required_exhibits"],
+      "properties": {
+        "posture": { "type": "string", "enum": ["long-only"] },
+        "horizon": { "type": "string", "minLength": 1 },
+        "timebox_minutes": { "type": "integer", "minimum": 1, "maximum": 600 },
+        "key_questions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "required_exhibits": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "evidence_item.schema.json" }
+    },
+    "numeric_facts": { "$ref": "report_company.schema.json#/properties/numeric_facts" },
+    "sections": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "title", "blocks"],
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": [
+              "executive_summary",
+              "what_it_is_isnt_why_now",
+              "value_chain",
+              "capture_ledger",
+              "beneficiaries_vs_left_behind",
+              "catalysts_timeline",
+              "risks_falsifiers",
+              "portfolio_posture"
+            ]
+          },
+          "title": { "type": "string", "minLength": 1 },
+          "na_reason": { "type": "string" },
+          "blocks": { "$ref": "report_company.schema.json#/properties/sections/items/properties/blocks" }
+        }
+      }
+    },
+    "exhibits": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "exhibit.schema.json" }
+    },
+    "appendix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_table", "whats_missing"],
+      "properties": {
+        "evidence_table": { "$ref": "report_company.schema.json#/properties/appendix/properties/evidence_table" },
+        "whats_missing": { "$ref": "report_company.schema.json#/properties/appendix/properties/whats_missing" }
+      }
+    }
+  }
+}

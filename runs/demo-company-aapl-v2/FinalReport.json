@@ -1,0 +1,408 @@
+{
+  "version": 2,
+  "kind": "company",
+  "run_id": "demo-company-aapl-v2",
+  "generated_at": "2026-02-10T03:58:09.474Z",
+  "subject": {
+    "ticker": "AAPL"
+  },
+  "plan": {
+    "posture": "long-only",
+    "horizon": "12-36 months",
+    "timebox_minutes": 90,
+    "key_questions": [
+      "Can this company compound free cash flow with durable moats and disciplined capital returns?",
+      "What would falsify the thesis quickly (measurable triggers)?",
+      "What is the bear case and what evidence would support it?"
+    ],
+    "required_exhibits": [
+      "kpi_table",
+      "margins",
+      "fcf",
+      "sbc_dilution",
+      "scenario_drivers",
+      "sensitivity"
+    ]
+  },
+  "sources": [
+    {
+      "id": "S1",
+      "title": "SEC XBRL time-series (AAPL)",
+      "publisher": "SEC",
+      "date_published": "2026-02-10",
+      "accessed_at": "2026-02-10T03:58:09.472Z",
+      "url": "https://sec.gov/edgar/search",
+      "reliability_tier": 1,
+      "excerpt_or_key_points": [
+        "Fixture: time-series extract representing SEC XBRL submissions (for offline demo)."
+      ],
+      "raw_text_ref": "/Users/cooptaylor1/Documents/DrMackenzie Vault/DrMackenzieBot-v2/runs/demo-company-aapl-v2/sources/S1.csv",
+      "tags": [
+        "company:AAPL",
+        "source:sec",
+        "fixture:sec-xbrl-timeseries"
+      ]
+    }
+  ],
+  "numeric_facts": [
+    {
+      "id": "N1",
+      "value": 265595000000,
+      "unit": "USD",
+      "period": "FY2018 FY end=2018-09-29",
+      "currency": "USD",
+      "source_id": "S1",
+      "accessed_at": "2026-02-10T03:58:09.472Z",
+      "notes": "form=10-K"
+    },
+    {
+      "id": "N2",
+      "value": 133050000000,
+      "unit": "USD",
+      "period": "FY2025 FY end=2025-09-27",
+      "currency": "USD",
+      "source_id": "S1",
+      "accessed_at": "2026-02-10T03:58:09.472Z",
+      "notes": "form=10-K"
+    },
+    {
+      "id": "N3",
+      "value": 112010000000,
+      "unit": "USD",
+      "period": "FY2025 FY end=2025-09-27",
+      "currency": "USD",
+      "source_id": "S1",
+      "accessed_at": "2026-02-10T03:58:09.472Z",
+      "notes": "form=10-K"
+    },
+    {
+      "id": "N4",
+      "value": 111482000000,
+      "unit": "USD",
+      "period": "FY2025 FY end=2025-09-27",
+      "currency": "USD",
+      "source_id": "S1",
+      "accessed_at": "2026-02-10T03:58:09.472Z",
+      "notes": "form=10-K"
+    }
+  ],
+  "sections": [
+    {
+      "key": "executive_summary",
+      "title": "Executive Summary (Base/Bull/Bear)",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "Anchor KPI baseline: reported metric is {{N1}}.",
+          "source_ids": [
+            "S1"
+          ],
+          "numeric_refs": [
+            "N1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "Base case: the edge is durable only if reported KPIs continue to support the core drivers; size only after evidence coverage is broad."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: we will ingest primary filings and transcripts to expand Tier one and Tier three coverage before taking a meaningful position."
+        }
+      ]
+    },
+    {
+      "key": "variant_perception",
+      "title": "Variant Perception",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "This report is constrained to collected evidence; claims not supported by sources are marked as assumptions or omitted.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "Variant perception is the delta between what consensus must be underwriting and what our evidence can support today."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: incremental sources will reduce contradictions and make scenario work numerically stable."
+        }
+      ]
+    },
+    {
+      "key": "thesis",
+      "title": "Thesis (Three To Five Falsifiable Statements)",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "There exists a sourced KPI baseline ({{N1}}) in the evidence library. Falsifier: the baseline cannot be reproduced from Tier one sources.",
+          "source_ids": [
+            "S1"
+          ],
+          "numeric_refs": [
+            "N1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "The underwriting is that durable value drivers are visible in reported KPIs before they are visible in narrative. Falsifier: narrative claims persist without KPI confirmation across multiple periods."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: capture mechanisms remain durable through the cycle. Falsifier: sustained evidence of pricing pressure or commoditization from independent sources."
+        }
+      ]
+    },
+    {
+      "key": "business_overview",
+      "title": "Business Overview (Decision-Relevant Only)",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "Primary source coverage is captured in the evidence library, including publisher, timestamps, and raw text references when available.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "Decision-relevant overview should be limited to drivers we can verify and monitor, not generic company description."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: reported KPIs map to underwriting drivers without definition drift; reconcile definitions when full filings are ingested."
+        }
+      ]
+    },
+    {
+      "key": "moat_competition",
+      "title": "Moat + Competition",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "Competitor primary sources are not collected in this demo run; moat claims are intentionally limited.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "Moat assessment should separate durable switching costs and ecosystem gravity from transient product cycles."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: lock-in is durable; validate with churn proxies, attach trends, and competitive win-loss evidence."
+        }
+      ]
+    },
+    {
+      "key": "financial_quality",
+      "title": "Financial Quality (KPI Table)",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "Numeric facts are structured with value, unit, period, source, and accessed timestamp to enable auditability.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "Financial quality should be judged on cash conversion, margin durability, and dilution discipline, not single-quarter beats."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: KPI coverage is sufficient to compute margins and cash conversion; if not, add the missing concepts before inference."
+        }
+      ]
+    },
+    {
+      "key": "valuation_scenarios",
+      "title": "Valuation + Scenarios (Base/Bull/Bear)",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "This demo run does not ingest market price data; valuation numbers are intentionally omitted until price tape is collected.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "Scenario work should make drivers explicit and quantify what must be true for the current price to be rational."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: discount rate and terminal assumptions are within a reasonable band; verify via market data ingestion."
+        }
+      ]
+    },
+    {
+      "key": "catalysts",
+      "title": "Catalysts (Next Year)",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "No dated catalyst sources are included in this run; catalysts are treated as unknown until sourced.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "Catalysts should be framed as information releases that change scenario weights, not as calendar events alone."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: disclosure cadence will be consistent; validate via transcript ingestion and event tracking."
+        }
+      ]
+    },
+    {
+      "key": "risks_premortem",
+      "title": "Key Risks + Pre-mortem (Ranked)",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "The risk officer pass enumerates disconfirming evidence to seek and falsifiers tied to measurable triggers.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "Pre-mortem: We shipped a compelling story without sufficient Tier one and Tier two coverage, and the thesis failed on basic accounting or KPI reality."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: additional Tier one and Tier three sources will materially improve decision quality; proceed only after evidence gaps close."
+        }
+      ]
+    },
+    {
+      "key": "change_mind_triggers",
+      "title": "What Would Change Our Mind",
+      "blocks": [
+        {
+          "tag": "FACT",
+          "text": "Change-mind triggers must be measurable and tied to collected sources; otherwise they are not monitorable.",
+          "source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "tag": "INTERPRETATION",
+          "text": "We change our mind when disconfirming evidence persists across multiple independent sources and cannot be explained by timing."
+        },
+        {
+          "tag": "ASSUMPTION",
+          "text": "Assumption: monitoring will include filings, transcripts, and price tape; until then, posture should remain conservative."
+        }
+      ]
+    }
+  ],
+  "exhibits": [
+    {
+      "id": "X1",
+      "title": "KPI Table (KPI)",
+      "question": "What are the anchor KPIs and what is the reported baseline?",
+      "data_summary": [
+        "Revenue (reported): {{N1}}. as_of=2018-09-29 form=10-K",
+        "Operating income (reported): {{N2}}. as_of=2025-09-27 form=10-K",
+        "Net income (reported): {{N3}}. as_of=2025-09-27 form=10-K",
+        "Cash from ops (reported): {{N4}}. as_of=2025-09-27 form=10-K"
+      ],
+      "takeaway": "Takeaway: Establish a sourced KPI baseline before layering interpretation.",
+      "source_ids": [
+        "S1"
+      ],
+      "numeric_refs": [
+        "N1",
+        "N2",
+        "N3",
+        "N4"
+      ]
+    },
+    {
+      "id": "X2",
+      "title": "Margins (Margin)",
+      "question": "What is the operating leverage profile over time?",
+      "data_summary": [
+        "N/A in this run (margin series not yet collected)."
+      ],
+      "takeaway": "Takeaway: Do not assert margin trends without sourced series.",
+      "source_ids": [
+        "S1"
+      ]
+    },
+    {
+      "id": "X3",
+      "title": "FCF (FCF)",
+      "question": "Is free cash flow conversion durable across cycles?",
+      "data_summary": [
+        "N/A in this run (free cash flow series not yet collected)."
+      ],
+      "takeaway": "Takeaway: Cash conversion is the decision metric; collect it before sizing risk.",
+      "source_ids": [
+        "S1"
+      ]
+    },
+    {
+      "id": "X4",
+      "title": "SBC and Dilution (SBC / dilution)",
+      "question": "Is dilution controlled relative to cash generation?",
+      "data_summary": [
+        "N/A in this run (share count and SBC series not yet collected)."
+      ],
+      "takeaway": "Takeaway: Treat dilution as a recurring expense unless proven otherwise.",
+      "source_ids": [
+        "S1"
+      ]
+    },
+    {
+      "id": "X5",
+      "title": "Scenario Drivers (Scenario driver)",
+      "question": "Which variables drive scenario outcomes?",
+      "data_summary": [
+        "Key drivers to quantify: mix, margins, cash conversion, and capital returns (sources pending)."
+      ],
+      "takeaway": "Takeaway: Explicit drivers prevent narrative drift.",
+      "source_ids": [
+        "S1"
+      ]
+    },
+    {
+      "id": "X6",
+      "title": "Sensitivity (Sensitivity)",
+      "question": "How sensitive is the thesis to a small number of variables?",
+      "data_summary": [
+        "Sensitivity is N/A until valuation inputs and price tape are collected."
+      ],
+      "takeaway": "Takeaway: Sensitivity is how you separate conviction from leverage.",
+      "source_ids": [
+        "S1"
+      ]
+    }
+  ],
+  "appendix": {
+    "evidence_table": [
+      {
+        "claim": "Anchor KPI baseline exists ({{N1}}) and is reproducible from Tier one sources.",
+        "evidence_ids": [
+          "S1"
+        ],
+        "source_ids": [
+          "S1"
+        ]
+      }
+    ],
+    "whats_missing": [
+      "Primary filing text for narrative disclosures (risk factors, segment mix).",
+      "Price tape and valuation inputs to quantify scenarios and sensitivity.",
+      "Transcript sources to validate management commentary versus filings."
+    ]
+  }
+}

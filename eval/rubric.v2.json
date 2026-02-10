@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "name": "research_v2_rubric",
+  "thresholds": {
+    "min_total_score": 70
+  },
+  "weights": {
+    "structure": 20,
+    "sourcing": 20,
+    "numeric_provenance": 20,
+    "consistency": 15,
+    "risk_falsifiers": 15,
+    "clarity": 10
+  },
+  "notes": [
+    "This rubric is intentionally conservative. If the v2 quality gate fails, the total score should be treated as failing regardless of numeric total.",
+    "Sub-scores are derived from quality gate issue codes until deeper semantic eval is implemented."
+  ]
+}
+

@@ -1,6 +1,9 @@
 import type { Command } from "commander";
+import * as fsSync from "node:fs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   DEFAULT_CONCEPTS,
   buildTimeSeriesExhibit,
@@ -9,6 +12,8 @@ import {
   timeSeriesToCsv,
   timeSeriesToMarkdown,
 } from "../agents/sec-xbrl-timeseries.js";
+import { writeArtifactManifest, writeFileArtifactManifest } from "../research/artifact-manifest.js";
+import { buildArtifactPreflight } from "../research/artifact-preflight.js";
 import {
   applyBenchmarkGovernance,
   benchmarkReport,
@@ -112,6 +117,7 @@ import { searchResearch, syncEmbeddings, writeBackup } from "../research/vector-
 import { defaultRuntime } from "../runtime.js";
 import { formatDocsLink } from "../terminal/links.js";
 import { theme } from "../terminal/theme.js";
+import { runCompanyPipelineV2, runThemePipelineV2 } from "../v2/pipeline/v2-pipeline.js";
 import { runCommandWithRuntime } from "./cli-utils.js";
 
 type SecXbrlOptions = {
@@ -135,6 +141,121 @@ const parseCsvListOption = (value: string): string[] =>
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+
+const deriveArtifactSeriesKey = (outPath: string): string => {
+  const parsed = path.parse(outPath);
+  return parsed.name.replace(/\.v\d+$/i, "");
+};
+
+const deriveSeriesManifestPath = (outPath: string): string =>
+  path.join(path.dirname(outPath), "artifact.json");
+
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const escapeHtml = (value: string): string =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
+const formatBuiltAtEt = (date: Date): string => {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  const yyyy = get("year");
+  const mm = get("month");
+  const dd = get("day");
+  const hh = get("hour");
+  const min = get("minute");
+  return `${yyyy}-${mm}-${dd} ${hh}:${min} ET`;
+};
+
+const resolveChromeExecutablePath = (explicit?: string): string | undefined => {
+  const candidate = (explicit ?? "").trim();
+  if (candidate && fsSync.existsSync(candidate)) return candidate;
+  const env = (process.env.OPENCLAW_CHROME_PATH ?? process.env.CHROME_PATH ?? "").trim();
+  if (env && fsSync.existsSync(env)) return env;
+  if (process.platform === "darwin") {
+    const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    if (fsSync.existsSync(macChrome)) return macChrome;
+    const macCanary = "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary";
+    if (fsSync.existsSync(macCanary)) return macCanary;
+  }
+  return undefined;
+};
+
+const assertMacminiBrowserAllowed = (feature: string): void => {
+  const hostRole =
+    process.env.OPENCLAW_HOST_ROLE ??
+    process.env.OPENCLAW_AGENT_ROLE ??
+    process.env.OPENCLAW_AGENT ??
+    "";
+  const allow =
+    process.env.OPENCLAW_ALLOW_BROWSER ??
+    process.env.OPENCLAW_ALLOW_CHROME ??
+    process.env.OPENCLAW_RENDER_PDF_ALLOWED ??
+    "";
+  const normalizedRole = hostRole.trim().toLowerCase();
+  const normalizedAllow = allow.trim();
+  if (normalizedRole === "macmini" && normalizedAllow === "1") return;
+  throw new Error(
+    `${feature} uses a local browser (Chrome/Playwright) and is restricted to the macmini agent. Refusing to run here. Set OPENCLAW_HOST_ROLE=macmini and OPENCLAW_ALLOW_BROWSER=1 to proceed (on macmini only).`,
+  );
+};
+
+const assertMacminiAgentOnly = (feature: string): void => {
+  const hostRole =
+    process.env.OPENCLAW_HOST_ROLE ??
+    process.env.OPENCLAW_AGENT_ROLE ??
+    process.env.OPENCLAW_AGENT ??
+    "";
+  const normalizedRole = hostRole.trim().toLowerCase();
+  if (normalizedRole === "macmini") return;
+
+  // Secondary check to reduce misconfig pain on the macmini if env isn't set.
+  const hostname = os.hostname().trim().toLowerCase();
+  if (hostname.includes("coopers") && hostname.includes("mini")) return;
+
+  throw new Error(
+    `${feature} is restricted to the macmini agent. Refusing to run here. Set OPENCLAW_HOST_ROLE=macmini (and run the agent work on macmini only).`,
+  );
+};
+
+const BAD_DASHES = /[\u2010\u2011\u2012\u2013\u2014\u2212]/g;
+
+const resolveNextVersionedArtifactPath = async (params: {
+  dir: string;
+  base: string;
+  ext: string;
+}): Promise<{ outPath: string; version: number }> => {
+  const dir = path.resolve(params.dir);
+  const base = params.base.trim();
+  const ext = params.ext.replace(/^\./, "").trim() || "pdf";
+  let maxVersion = 0;
+  try {
+    const entries = await fs.readdir(dir);
+    const re = new RegExp(`^${escapeRegExp(base)}\\.v(\\d+)\\.${escapeRegExp(ext)}$`, "i");
+    for (const entry of entries) {
+      const match = re.exec(entry);
+      if (!match) continue;
+      const version = Number.parseInt(match[1] ?? "", 10);
+      if (Number.isFinite(version) && version > maxVersion) maxVersion = version;
+    }
+  } catch {
+    // directory may not exist yet; treat as v0
+  }
+  const version = maxVersion + 1;
+  return { outPath: path.join(dir, `${base}.v${version}.${ext}`), version };
+};
 
 const parseSourceTypeOption = (value?: string) => {
   const normalized = (value ?? "").trim().toLowerCase();
@@ -365,6 +486,21 @@ const parseQualityGateArtifactType = (value?: string): QualityGateArtifactType |
   throw new Error(`Invalid artifact type: ${value}`);
 };
 
+const parseArtifactKind = (value?: string): "memo" | "sector_report" | "theme_report" => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "memo" || normalized === "sector_report" || normalized === "theme_report") {
+    return normalized;
+  }
+  throw new Error(`Invalid artifact kind: ${value}`);
+};
+
+const parsePdfFormat = (value?: string): "Letter" | "A4" => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized || normalized === "letter" || normalized === "us-letter") return "Letter";
+  if (normalized === "a4") return "A4";
+  throw new Error(`Invalid PDF format: ${value} (expected: letter|a4)`);
+};
+
 export function registerResearchCli(program: Command) {
   const research = program
     .command("research")
@@ -386,6 +522,7 @@ export function registerResearchCli(program: Command) {
     .option("--user-agent <value>", "SEC-compliant user agent (or use SEC_USER_AGENT env)")
     .action(async (opts: SecXbrlOptions) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
+        assertMacminiAgentOnly("research sec-xbrl");
         const ticker = opts.ticker?.trim();
         const cik = opts.cik?.trim();
         if (!ticker && !cik) {
@@ -1087,6 +1224,7 @@ export function registerResearchCli(program: Command) {
     .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
+        assertMacminiAgentOnly("research position-decision");
         const constraints: Partial<PortfolioDecisionConstraints> = {};
         const maxWeight = parseOptionalNumber(opts["maxWeight"]);
         const maxRiskBudget = parseOptionalNumber(opts["maxRiskBudget"]);
@@ -1596,9 +1734,11 @@ export function registerResearchCli(program: Command) {
     .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
     .option("--min-score <n>", "Institutional quality threshold [0-1]", "0.82")
     .option("--out <path>", "Write institutional report markdown to file")
+    .option("--print-metrics", "Print quality/telemetry metrics to stdout", false)
     .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
+        assertMacminiAgentOnly("research sector-research");
         const overrideTickers =
           typeof opts.tickers === "string" && opts.tickers.trim()
             ? parseTickersOption(opts.tickers as string)
@@ -1753,23 +1893,65 @@ export function registerResearchCli(program: Command) {
           throw err;
         }
         if (!final) throw lastError ?? new Error("Sector report generation failed");
+        const shouldPrintMetrics = Boolean(opts.printMetrics);
         if (opts.out) {
           const outPath = path.resolve(opts.out as string);
           await fs.writeFile(outPath, `${final.report.markdown}\n`, "utf8");
+          const manifestRes = await writeArtifactManifest({
+            kind: "sector_report",
+            outPath,
+            markdown: final.report.markdown,
+            seriesKey: deriveArtifactSeriesKey(outPath),
+            seriesManifestPath: deriveSeriesManifestPath(outPath),
+            metrics: {
+              sector: String(opts.sector),
+              tickers: final.result.tickers.length,
+              narrative_clarity: Number(final.report.quality.narrativeClarityScore.toFixed(4)),
+              exhibits: final.report.quality.exhibitCount,
+              actionability: Number(final.report.quality.actionabilityScore.toFixed(4)),
+              freshness_180d_ratio: Number(final.report.quality.freshness180dRatio.toFixed(4)),
+            },
+            gate: { runId: final.runId, ...final.gate },
+          });
           defaultRuntime.log(`Report written to ${outPath}`);
+          defaultRuntime.log(`Manifest written to ${manifestRes.manifestPath}`);
+          if (manifestRes.seriesManifestPath) {
+            defaultRuntime.log(`Series manifest written to ${manifestRes.seriesManifestPath}`);
+          }
+          const unicodeDashCount = Number(manifestRes.manifest.metrics.unicodeDashCount ?? 0);
+          if (Number.isFinite(unicodeDashCount) && unicodeDashCount > 0) {
+            throw new Error(
+              `Unicode dash characters detected (count=${unicodeDashCount}). Replace with ASCII hyphens before delivery.`,
+            );
+          }
+          const sourcesCount = Number(manifestRes.manifest.metrics.sourcesCount ?? 0);
+          if (!Number.isFinite(sourcesCount) || sourcesCount <= 0) {
+            throw new Error(
+              `Sources appendix missing or empty (sourcesCount=${sourcesCount}). Refusing to proceed.`,
+            );
+          }
+          if (manifestRes.manifest.unchangedFromPrevious) {
+            defaultRuntime.error(`artifact_unchanged=1 sha256=${manifestRes.manifest.sha256}`);
+            throw new Error(
+              `Artifact unchanged (sha256=${manifestRes.manifest.sha256}). Refusing to proceed.`,
+            );
+          }
         } else {
           defaultRuntime.log(final.report.markdown);
         }
-        defaultRuntime.log(
-          `institutional_gate run_id=${final.runId} gate=${final.gate.gateName} score=${final.gate.score.toFixed(2)} min_score=${final.gate.minScore.toFixed(2)} passed=${final.gate.passed ? 1 : 0} artifact_id=${final.gate.artifactId}`,
-        );
-        defaultRuntime.log(
-          `report_quality narrative_clarity=${final.report.quality.narrativeClarityScore.toFixed(2)} exhibits=${final.report.quality.exhibitCount} actionability=${final.report.quality.actionabilityScore.toFixed(2)} freshness_180d=${(final.report.quality.freshness180dRatio * 100).toFixed(1)}%`,
-        );
-        if (final.gate.requiredFailures.length) {
-          defaultRuntime.error(
-            `institutional_gate_required_failures=${final.gate.requiredFailures.join(",")}`,
+
+        if (shouldPrintMetrics) {
+          defaultRuntime.log(
+            `institutional_gate run_id=${final.runId} gate=${final.gate.gateName} score=${final.gate.score.toFixed(2)} min_score=${final.gate.minScore.toFixed(2)} passed=${final.gate.passed ? 1 : 0} artifact_id=${final.gate.artifactId}`,
           );
+          defaultRuntime.log(
+            `report_quality narrative_clarity=${final.report.quality.narrativeClarityScore.toFixed(2)} exhibits=${final.report.quality.exhibitCount} actionability=${final.report.quality.actionabilityScore.toFixed(2)} freshness_180d=${(final.report.quality.freshness180dRatio * 100).toFixed(1)}%`,
+          );
+          if (final.gate.requiredFailures.length) {
+            defaultRuntime.error(
+              `institutional_gate_required_failures=${final.gate.requiredFailures.join(",")}`,
+            );
+          }
         }
       });
     });
@@ -1788,9 +1970,56 @@ export function registerResearchCli(program: Command) {
     .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
     .option("--min-score <n>", "Institutional quality threshold [0-1]", "0.82")
     .option("--out <path>", "Write institutional report markdown to file")
+    .option("--print-metrics", "Print quality/telemetry metrics to stdout", false)
     .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--run-id <id>", "Optional explicit run id (v2 pipeline only)")
+    .option("--v2-fixture-dir <path>", "Optional fixture directory for v2 evidence collection")
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
+        assertMacminiAgentOnly("research theme-research");
+        const pipeline = (process.env.RESEARCH_PIPELINE ?? "").trim().toLowerCase();
+        if (pipeline === "v2") {
+          const tickers =
+            typeof opts.tickers === "string" && opts.tickers.trim()
+              ? parseTickersOption(opts.tickers as string)
+              : [];
+          if (!tickers.length) {
+            throw new Error(
+              "v2 theme memo requires --tickers (CSV) until theme registry evidence collection is wired for v2.",
+            );
+          }
+          const result = await runThemePipelineV2({
+            themeName: opts.theme as string,
+            universe: tickers,
+            fixtureDir: (opts.v2FixtureDir as string | undefined) ?? undefined,
+            runId: (opts.runId as string | undefined) ?? undefined,
+            dbPath: opts.db as string,
+          });
+          if (!result.passed) {
+            const reasons = result.issues
+              .filter((i) => i.severity === "error")
+              .slice(0, 12)
+              .map((i) => `${i.code}${i.path ? `@${i.path}` : ""}: ${i.message}`)
+              .join("; ");
+            throw new Error(
+              `v2 quality gate failed (run_id=${result.runId}): ${reasons || "unknown"}`,
+            );
+          }
+          if (opts.out) {
+            const outPath = path.resolve(opts.out as string);
+            await fs.writeFile(
+              outPath,
+              await fs.readFile(result.reportMarkdownPath, "utf8"),
+              "utf8",
+            );
+            defaultRuntime.log(`v2 theme memo written to ${outPath}`);
+            defaultRuntime.log(`v2 run dir: ${result.runDir}`);
+          } else {
+            defaultRuntime.log(await fs.readFile(result.reportMarkdownPath, "utf8"));
+          }
+          return;
+        }
+
         const tickers =
           typeof opts.tickers === "string" && opts.tickers.trim()
             ? parseTickersOption(opts.tickers as string)
@@ -1999,23 +2228,65 @@ export function registerResearchCli(program: Command) {
           throw err;
         }
         if (!final) throw lastError ?? new Error("Theme report generation failed");
+        const shouldPrintMetrics = Boolean(opts.printMetrics);
         if (opts.out) {
           const outPath = path.resolve(opts.out as string);
           await fs.writeFile(outPath, `${final.report.markdown}\n`, "utf8");
+          const manifestRes = await writeArtifactManifest({
+            kind: "theme_report",
+            outPath,
+            markdown: final.report.markdown,
+            seriesKey: deriveArtifactSeriesKey(outPath),
+            seriesManifestPath: deriveSeriesManifestPath(outPath),
+            metrics: {
+              theme: String(opts.theme),
+              tickers: final.result.tickers.length,
+              used_theme_registry: final.result.usedThemeRegistry,
+              narrative_clarity: Number(final.report.quality.narrativeClarityScore.toFixed(4)),
+              exhibits: final.report.quality.exhibitCount,
+              actionability: Number(final.report.quality.actionabilityScore.toFixed(4)),
+              freshness_180d_ratio: Number(final.report.quality.freshness180dRatio.toFixed(4)),
+            },
+            gate: { runId: final.runId, ...final.gate },
+          });
           defaultRuntime.log(`Report written to ${outPath}`);
+          defaultRuntime.log(`Manifest written to ${manifestRes.manifestPath}`);
+          if (manifestRes.seriesManifestPath) {
+            defaultRuntime.log(`Series manifest written to ${manifestRes.seriesManifestPath}`);
+          }
+          const unicodeDashCount = Number(manifestRes.manifest.metrics.unicodeDashCount ?? 0);
+          if (Number.isFinite(unicodeDashCount) && unicodeDashCount > 0) {
+            throw new Error(
+              `Unicode dash characters detected (count=${unicodeDashCount}). Replace with ASCII hyphens before delivery.`,
+            );
+          }
+          const sourcesCount = Number(manifestRes.manifest.metrics.sourcesCount ?? 0);
+          if (!Number.isFinite(sourcesCount) || sourcesCount <= 0) {
+            throw new Error(
+              `Sources appendix missing or empty (sourcesCount=${sourcesCount}). Refusing to proceed.`,
+            );
+          }
+          if (manifestRes.manifest.unchangedFromPrevious) {
+            defaultRuntime.error(`artifact_unchanged=1 sha256=${manifestRes.manifest.sha256}`);
+            throw new Error(
+              `Artifact unchanged (sha256=${manifestRes.manifest.sha256}). Refusing to proceed.`,
+            );
+          }
         } else {
           defaultRuntime.log(final.report.markdown);
         }
-        defaultRuntime.log(
-          `institutional_gate run_id=${final.runId} gate=${final.gate.gateName} score=${final.gate.score.toFixed(2)} min_score=${final.gate.minScore.toFixed(2)} passed=${final.gate.passed ? 1 : 0} artifact_id=${final.gate.artifactId}`,
-        );
-        defaultRuntime.log(
-          `report_quality narrative_clarity=${final.report.quality.narrativeClarityScore.toFixed(2)} exhibits=${final.report.quality.exhibitCount} actionability=${final.report.quality.actionabilityScore.toFixed(2)} freshness_180d=${(final.report.quality.freshness180dRatio * 100).toFixed(1)}%`,
-        );
-        if (final.gate.requiredFailures.length) {
-          defaultRuntime.error(
-            `institutional_gate_required_failures=${final.gate.requiredFailures.join(",")}`,
+        if (shouldPrintMetrics) {
+          defaultRuntime.log(
+            `institutional_gate run_id=${final.runId} gate=${final.gate.gateName} score=${final.gate.score.toFixed(2)} min_score=${final.gate.minScore.toFixed(2)} passed=${final.gate.passed ? 1 : 0} artifact_id=${final.gate.artifactId}`,
           );
+          defaultRuntime.log(
+            `report_quality narrative_clarity=${final.report.quality.narrativeClarityScore.toFixed(2)} exhibits=${final.report.quality.exhibitCount} actionability=${final.report.quality.actionabilityScore.toFixed(2)} freshness_180d=${(final.report.quality.freshness180dRatio * 100).toFixed(1)}%`,
+          );
+          if (final.gate.requiredFailures.length) {
+            defaultRuntime.error(
+              `institutional_gate_required_failures=${final.gate.requiredFailures.join(",")}`,
+            );
+          }
         }
       });
     });
@@ -3090,12 +3361,52 @@ export function registerResearchCli(program: Command) {
     .requiredOption("--ticker <symbol>", "Ticker symbol")
     .requiredOption("--question <text>", "Research question")
     .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--run-id <id>", "Optional explicit run id (v2 pipeline only)")
+    .option("--v2-fixture-dir <path>", "Optional fixture directory for v2 evidence collection")
     .option("--out <path>", "Write memo markdown to file")
+    .option("--print-metrics", "Print quality/telemetry metrics to stdout", false)
     .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
     .option("--min-score <n>", "Institutional quality threshold [0-1]", "0.8")
     .option("--quality-attempts <n>", "Quality refinement attempts before hard fail", "4")
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
+        assertMacminiAgentOnly("research memo");
+        const pipeline = (process.env.RESEARCH_PIPELINE ?? "").trim().toLowerCase();
+        if (pipeline === "v2") {
+          const result = await runCompanyPipelineV2({
+            ticker: opts.ticker as string,
+            question: opts.question as string,
+            fixtureDir: (opts.v2FixtureDir as string | undefined) ?? undefined,
+            runId: (opts.runId as string | undefined) ?? undefined,
+            dbPath: opts.db as string,
+          });
+
+          if (!result.passed) {
+            const reasons = result.issues
+              .filter((i) => i.severity === "error")
+              .slice(0, 12)
+              .map((i) => `${i.code}${i.path ? `@${i.path}` : ""}: ${i.message}`)
+              .join("; ");
+            throw new Error(
+              `v2 quality gate failed (run_id=${result.runId}): ${reasons || "unknown"}`,
+            );
+          }
+
+          if (opts.out) {
+            const outPath = path.resolve(opts.out as string);
+            await fs.writeFile(
+              outPath,
+              await fs.readFile(result.reportMarkdownPath, "utf8"),
+              "utf8",
+            );
+            defaultRuntime.log(`v2 memo written to ${outPath}`);
+            defaultRuntime.log(`v2 run dir: ${result.runDir}`);
+          } else {
+            defaultRuntime.log(await fs.readFile(result.reportMarkdownPath, "utf8"));
+          }
+          return;
+        }
+
         const qualityAttempts = Math.max(1, parseOptionalNumber(opts["qualityAttempts"]) ?? 4);
         const strictMode = !Boolean(opts.allowDraft);
         const baseQuestion = (opts.question as string).trim();
@@ -3168,34 +3479,693 @@ export function registerResearchCli(program: Command) {
             new Error(`Memo generation failed after ${qualityAttempts} quality attempts`)
           );
         }
+        const shouldPrintMetrics = Boolean(opts.printMetrics);
         if (opts.out) {
-          await fs.writeFile(path.resolve(opts.out as string), `${result.memo}\n`, "utf8");
-          defaultRuntime.log(`Memo written to ${path.resolve(opts.out as string)}`);
+          const outPath = path.resolve(opts.out as string);
+          await fs.writeFile(outPath, `${result.memo}\n`, "utf8");
+          const manifestRes = await writeArtifactManifest({
+            kind: "memo",
+            outPath,
+            markdown: result.memo,
+            seriesKey: deriveArtifactSeriesKey(outPath),
+            seriesManifestPath: deriveSeriesManifestPath(outPath),
+            metrics: {
+              claims: result.claims,
+              citations: result.citations,
+              quality_score: Number(result.quality.score.toFixed(4)),
+              quality_passed: result.quality.passed,
+              quality_min_score: Number(result.quality.minScore.toFixed(4)),
+            },
+            gate: {
+              runId: result.qualityGateRunId,
+              ...result.qualityGate,
+            },
+          });
+          defaultRuntime.log(`Memo written to ${outPath}`);
+          defaultRuntime.log(`Manifest written to ${manifestRes.manifestPath}`);
+          if (manifestRes.seriesManifestPath) {
+            defaultRuntime.log(`Series manifest written to ${manifestRes.seriesManifestPath}`);
+          }
+          const unicodeDashCount = Number(manifestRes.manifest.metrics.unicodeDashCount ?? 0);
+          if (Number.isFinite(unicodeDashCount) && unicodeDashCount > 0) {
+            throw new Error(
+              `Unicode dash characters detected (count=${unicodeDashCount}). Replace with ASCII hyphens before delivery.`,
+            );
+          }
+          const sourcesCount = Number(manifestRes.manifest.metrics.sourcesCount ?? 0);
+          if (!Number.isFinite(sourcesCount) || sourcesCount <= 0) {
+            throw new Error(
+              `Sources appendix missing or empty (sourcesCount=${sourcesCount}). Refusing to proceed.`,
+            );
+          }
+          if (manifestRes.manifest.unchangedFromPrevious) {
+            defaultRuntime.error(`artifact_unchanged=1 sha256=${manifestRes.manifest.sha256}`);
+            throw new Error(
+              `Artifact unchanged (sha256=${manifestRes.manifest.sha256}). Refusing to proceed.`,
+            );
+          }
         } else {
+          // By default, print only the memo body (clean deliverable). Metrics belong in the DB/manifest.
           defaultRuntime.log(result.memo);
         }
-        defaultRuntime.log(`claims=${result.claims} citations=${result.citations}`);
-        defaultRuntime.log(`quality_score=${result.quality.score.toFixed(2)}`);
-        defaultRuntime.log(`quality_passed=${result.quality.passed ? 1 : 0}`);
-        defaultRuntime.log(`quality_min_score=${result.quality.minScore.toFixed(2)}`);
-        defaultRuntime.log(
-          `institutional_gate run_id=${result.qualityGateRunId} gate=${result.qualityGate.gateName} score=${result.qualityGate.score.toFixed(2)} min_score=${result.qualityGate.minScore.toFixed(2)} passed=${result.qualityGate.passed ? 1 : 0} artifact_id=${result.qualityGate.artifactId}`,
-        );
-        defaultRuntime.log(
-          `actionability_score=${result.quality.actionabilityScore.toFixed(2)} adversarial_coverage_score=${result.quality.adversarialCoverageScore.toFixed(2)} calibration_mode=${result.quality.calibration.mode} calibration_score=${result.quality.calibration.score.toFixed(2)} calibration_samples=${result.quality.calibration.sampleCount}`,
-        );
-        defaultRuntime.log(
-          `research_cell_passed=${result.researchCell.debate.passed ? 1 : 0} research_cell_consensus=${result.researchCell.debate.consensusScore.toFixed(2)} research_cell_final_stance=${result.researchCell.allocator.finalStance}`,
-        );
-        defaultRuntime.log(
-          `decision_recommendation=${result.portfolioDecision.recommendation} decision_score=${result.portfolioDecision.decisionScore.toFixed(2)} decision_confidence=${result.portfolioDecision.confidence.toFixed(2)} decision_breaches=${result.portfolioDecision.riskBreaches.length}`,
-        );
-        if (result.quality.requiredFailures.length) {
-          defaultRuntime.error(`required_failures=${result.quality.requiredFailures.join(",")}`);
+
+        if (shouldPrintMetrics) {
+          defaultRuntime.log(`claims=${result.claims} citations=${result.citations}`);
+          defaultRuntime.log(`quality_score=${result.quality.score.toFixed(2)}`);
+          defaultRuntime.log(`quality_passed=${result.quality.passed ? 1 : 0}`);
+          defaultRuntime.log(`quality_min_score=${result.quality.minScore.toFixed(2)}`);
+          defaultRuntime.log(
+            `institutional_gate run_id=${result.qualityGateRunId} gate=${result.qualityGate.gateName} score=${result.qualityGate.score.toFixed(2)} min_score=${result.qualityGate.minScore.toFixed(2)} passed=${result.qualityGate.passed ? 1 : 0} artifact_id=${result.qualityGate.artifactId}`,
+          );
+          defaultRuntime.log(
+            `actionability_score=${result.quality.actionabilityScore.toFixed(2)} adversarial_coverage_score=${result.quality.adversarialCoverageScore.toFixed(2)} calibration_mode=${result.quality.calibration.mode} calibration_score=${result.quality.calibration.score.toFixed(2)} calibration_samples=${result.quality.calibration.sampleCount}`,
+          );
+          defaultRuntime.log(
+            `research_cell_passed=${result.researchCell.debate.passed ? 1 : 0} research_cell_consensus=${result.researchCell.debate.consensusScore.toFixed(2)} research_cell_final_stance=${result.researchCell.allocator.finalStance}`,
+          );
+          defaultRuntime.log(
+            `decision_recommendation=${result.portfolioDecision.recommendation} decision_score=${result.portfolioDecision.decisionScore.toFixed(2)} decision_confidence=${result.portfolioDecision.confidence.toFixed(2)} decision_breaches=${result.portfolioDecision.riskBreaches.length}`,
+          );
+          if (result.quality.requiredFailures.length) {
+            defaultRuntime.error(`required_failures=${result.quality.requiredFailures.join(",")}`);
+          }
+          if (result.qualityGate.requiredFailures.length) {
+            defaultRuntime.error(
+              `institutional_gate_required_failures=${result.qualityGate.requiredFailures.join(",")}`,
+            );
+          }
         }
-        if (result.qualityGate.requiredFailures.length) {
-          defaultRuntime.error(
-            `institutional_gate_required_failures=${result.qualityGate.requiredFailures.join(",")}`,
+      });
+    });
+
+  research
+    .command("preflight")
+    .description(
+      "Generate a manifest-first preflight bundle (expected counts, exhibits, sources) for a markdown -> PDF artifact",
+    )
+    .requiredOption("--kind <kind>", "memo|sector_report|theme_report")
+    .requiredOption("--in <path>", "Input markdown path")
+    .requiredOption("--out <path>", "Expected output PDF path")
+    .option("--write <path>", "Write preflight JSON (default: <out-dir>/artifact.preflight.json)")
+    .option(
+      "--strict",
+      "Fail-closed when unicode dashes, placeholders, exhibits, or sources are missing/invalid",
+      false,
+    )
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const kind = parseArtifactKind(opts.kind as string);
+        const inPath = path.resolve(opts.in as string);
+        const outPath = path.resolve(opts.out as string);
+        const outDir = path.dirname(outPath);
+        await fs.mkdir(outDir, { recursive: true });
+
+        const preflight = await buildArtifactPreflight({ kind, inPath, outPath });
+        const writePath =
+          typeof opts.write === "string" && opts.write.trim()
+            ? path.resolve(opts.write as string)
+            : path.join(outDir, "artifact.preflight.json");
+
+        await fs.writeFile(writePath, `${JSON.stringify(preflight, null, 2)}\n`, "utf8");
+        defaultRuntime.log(`Preflight written to ${writePath}`);
+        defaultRuntime.log(
+          `expected exhibits=${preflight.metrics.exhibitCount} footnotes=${preflight.metrics.footnoteCount} sources=${preflight.metrics.sourcesCount} unicode_dashes=${preflight.metrics.unicodeDashCount} placeholders=${preflight.metrics.placeholderTokenCount}`,
+        );
+        const assetCount = preflight.exhibits.reduce(
+          (sum, exhibit) => sum + exhibit.assets.length,
+          0,
+        );
+        defaultRuntime.log(
+          `exhibit_assets=${assetCount} sources_parsed=${preflight.sources.length} sources_with_url=${preflight.metrics.sourcesWithUrlCount} sources_with_key=${preflight.metrics.sourcesWithKeyCount}`,
+        );
+
+        if (Boolean(opts.strict)) {
+          if (preflight.metrics.unicodeDashCount > 0) {
+            throw new Error(
+              `Unicode dash characters detected in markdown (count=${preflight.metrics.unicodeDashCount}). Replace with ASCII hyphens before delivery.`,
+            );
+          }
+          if (preflight.metrics.placeholderTokenCount > 0) {
+            throw new Error(
+              `Placeholder language detected in markdown (count=${preflight.metrics.placeholderTokenCount}). Remove "on request"/"to appear"/"appendix pass" style text before delivery.`,
+            );
+          }
+          if (preflight.metrics.exhibitCount <= 0) {
+            throw new Error(
+              `Exhibits missing or unnumbered (exhibitCount=${preflight.metrics.exhibitCount}). Refusing to proceed.`,
+            );
+          }
+          if (preflight.metrics.sourcesCount <= 0) {
+            throw new Error(
+              `Sources appendix missing or empty (sourcesCount=${preflight.metrics.sourcesCount}). Refusing to proceed.`,
+            );
+          }
+          if (preflight.metrics.sourcesWithUrlCount <= 0) {
+            throw new Error(
+              `Sources list has no parseable URLs (sourcesWithUrlCount=${preflight.metrics.sourcesWithUrlCount}). Refusing to proceed.`,
+            );
+          }
+          if (preflight.metrics.sourcesWithKeyCount <= 0) {
+            throw new Error(
+              `Sources list has no parseable source keys (e.g., C1:) (sourcesWithKeyCount=${preflight.metrics.sourcesWithKeyCount}). Refusing to proceed.`,
+            );
+          }
+        }
+      });
+    });
+
+  research
+    .command("pdf-diagnostics")
+    .description(
+      "Inspect a PDF for common pre-send failures (markdown tokens, missing sources, dash encoding issues)",
+    )
+    .requiredOption("--in <path>", "Input PDF path")
+    .option("--max-pages <n>", "Max pages to scan for text extraction", "12")
+    .option("--dump-text <path>", "Write extracted text to a file for inspection")
+    .option("--strict", "Fail-closed if PDF violates institutional pre-send checks", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const inPath = path.resolve(opts.in as string);
+        const maxPages = Math.max(1, parseOptionalNumber(opts["maxPages"]) ?? 12);
+        const buffer = await fs.readFile(inPath);
+        const { extractPdfTextFromBuffer, diagnosePdfBuffer } =
+          await import("../research/pdf-diagnostics.js");
+        const { pages, scannedPages, text } = await extractPdfTextFromBuffer({
+          buffer: new Uint8Array(buffer),
+          maxPages,
+        });
+        const strict = Boolean(opts.strict);
+        const { metrics, errors } = await diagnosePdfBuffer({
+          buffer: new Uint8Array(buffer),
+          maxPages,
+          strict,
+        });
+
+        const dumpPath = (opts["dumpText"] as string | undefined)?.trim();
+        if (dumpPath) {
+          const resolvedDumpPath = path.resolve(dumpPath);
+          await fs.mkdir(path.dirname(resolvedDumpPath), { recursive: true });
+          await fs.writeFile(resolvedDumpPath, `${text}\n`, "utf8");
+          defaultRuntime.log(`Extracted text written to ${resolvedDumpPath}`);
+        }
+
+        defaultRuntime.log(
+          `${JSON.stringify(
+            {
+              inPath,
+              pages,
+              scannedPages,
+              byteSize: buffer.byteLength,
+              metrics,
+              ...(strict ? { errors } : {}),
+            },
+            null,
+            2,
+          )}\n`,
+        );
+
+        if (strict && errors.length > 0) {
+          throw new Error(`PDF failed strict diagnostics:\n- ${errors.join("\n- ")}`);
+        }
+      });
+    });
+
+  research
+    .command("render-pdf")
+    .description("Render markdown to a styled PDF and write an artifact manifest (fail-closed)")
+    .requiredOption("--kind <kind>", "memo|sector_report|theme_report")
+    .requiredOption("--in <path>", "Input markdown path")
+    .requiredOption("--out <path>", "Output PDF path")
+    .option("--title <text>", "Header title override")
+    .option("--format <fmt>", "letter|a4", "letter")
+    .option("--chrome <path>", "Chrome executable path (defaults to OPENCLAW_CHROME_PATH)")
+    .option("--series-key <key>", "Optional stable series key (defaults to basename without .vN)")
+    .option(
+      "--series-manifest <path>",
+      "Optional series manifest path (default: <out-dir>/artifact.json)",
+    )
+    .option(
+      "--skip-pdf-diagnostics",
+      "Skip strict PDF diagnostics (URLs/citations/exhibits/mojibake/placeholders)",
+      false,
+    )
+    .option("--pdf-diagnostics-max-pages <n>", "Max pages to scan for strict PDF diagnostics", "50")
+    .option("--pdf-diagnostics-dump-text <path>", "Write extracted PDF text to a file")
+    .option("--allow-no-sources", "Allow rendering without a non-empty Sources appendix", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        assertMacminiBrowserAllowed("research render-pdf");
+        const kind = parseArtifactKind(opts.kind as string);
+        const inPath = path.resolve(opts.in as string);
+        const outPath = path.resolve(opts.out as string);
+        const pdfFormat = parsePdfFormat(opts.format as string | undefined);
+        const titleOverride = (opts.title as string | undefined)?.trim();
+        const chromePath = resolveChromeExecutablePath(opts.chrome as string | undefined);
+        if (!chromePath) {
+          throw new Error(
+            "Chrome executable not found. Set OPENCLAW_CHROME_PATH (or pass --chrome).",
+          );
+        }
+
+        await fs.mkdir(path.dirname(outPath), { recursive: true });
+
+        const markdown = await fs.readFile(inPath, "utf8");
+        const unicodeDashCount = (markdown.match(BAD_DASHES) ?? []).length;
+        if (unicodeDashCount > 0) {
+          throw new Error(
+            `Unicode dash characters detected in markdown (count=${unicodeDashCount}). Replace with ASCII hyphens before rendering.`,
+          );
+        }
+
+        const builtAtEt = formatBuiltAtEt(new Date());
+
+        const { default: MarkdownIt } = await import("markdown-it");
+        const md = new MarkdownIt({
+          html: true,
+          linkify: true,
+          breaks: false,
+          typographer: false,
+        });
+        const bodyHtml = md.render(markdown);
+        const baseHref = pathToFileURL(path.dirname(inPath) + path.sep).href;
+        const title =
+          titleOverride ||
+          markdown
+            .split(/\r?\n/)
+            .find((line) => line.startsWith("# "))
+            ?.replace(/^#\s+/, "")
+            .trim() ||
+          path.basename(inPath);
+
+        const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <base href="${escapeHtml(baseHref)}" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      :root {
+        --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+        --font-serif: ui-serif, "Iowan Old Style", "Palatino", "Georgia", serif;
+        --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        --text: #111827;
+        --muted: #6b7280;
+        --rule: #e5e7eb;
+        --accent: #0b3d91;
+        --bg: #ffffff;
+      }
+
+      html {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+        background: var(--bg);
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        color: var(--text);
+        background: var(--bg);
+        font-family: var(--font-serif);
+        font-size: 11.5pt;
+        line-height: 1.38;
+      }
+
+      .doc {
+        max-width: 7.2in;
+        margin: 0 auto;
+        padding: 0.15in 0;
+      }
+
+      h1, h2, h3, h4 {
+        font-family: var(--font-sans);
+        letter-spacing: -0.01em;
+        margin: 0;
+      }
+      h1 {
+        font-size: 22pt;
+        line-height: 1.15;
+        margin-bottom: 0.18in;
+      }
+      h2 {
+        font-size: 14pt;
+        margin-top: 0.26in;
+        padding-top: 0.16in;
+        border-top: 1px solid var(--rule);
+        margin-bottom: 0.1in;
+      }
+      h3 {
+        font-size: 11.75pt;
+        margin-top: 0.16in;
+        margin-bottom: 0.06in;
+      }
+
+      p {
+        margin: 0 0 0.12in 0;
+      }
+
+      ul, ol {
+        margin: 0 0 0.12in 0.22in;
+        padding: 0;
+      }
+      li {
+        margin: 0.04in 0;
+      }
+
+      blockquote {
+        margin: 0.12in 0;
+        padding: 0.12in 0.16in;
+        border-left: 3px solid var(--rule);
+        background: #fafafa;
+        color: #111827;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 0.14in 0;
+        font-family: var(--font-sans);
+        font-size: 10pt;
+      }
+      th, td {
+        border-bottom: 1px solid var(--rule);
+        padding: 0.06in 0.08in;
+        vertical-align: top;
+      }
+      th {
+        text-align: left;
+        color: #111827;
+        font-weight: 600;
+      }
+
+      code {
+        font-family: var(--font-mono);
+        font-size: 0.95em;
+        background: #f3f4f6;
+        padding: 0.03em 0.2em;
+        border-radius: 4px;
+      }
+      pre {
+        background: #0b1020;
+        color: #e5e7eb;
+        padding: 0.14in;
+        border-radius: 8px;
+        overflow-x: auto;
+        margin: 0.14in 0;
+      }
+      pre code {
+        background: transparent;
+        padding: 0;
+        border-radius: 0;
+        font-size: 9.5pt;
+      }
+
+      hr {
+        border: none;
+        border-top: 1px solid var(--rule);
+        margin: 0.2in 0;
+      }
+
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+
+      /* Pagination hints */
+      h2, h3, h4 { break-after: avoid-page; }
+      table, blockquote, pre { break-inside: avoid; }
+    </style>
+  </head>
+  <body>
+    <main class="doc">
+      ${bodyHtml}
+    </main>
+  </body>
+</html>`;
+
+        const { chromium } = await import("playwright-core");
+        const browser = await chromium.launch({
+          headless: true,
+          executablePath: chromePath,
+        });
+        try {
+          const page = await browser.newPage();
+          await page.setContent(html, { waitUntil: "load" });
+          await page.emulateMedia({ media: "print" });
+
+          const headerTemplate = `<div style=\"font-size:8px;padding:0 24px;width:100%;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',Helvetica,Arial,sans-serif;color:#6b7280;display:flex;align-items:center;justify-content:space-between;\"><span>${escapeHtml(
+            title,
+          )}</span><span></span></div>`;
+          const footerTemplate = `<div style=\"font-size:8px;padding:0 24px;width:100%;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',Helvetica,Arial,sans-serif;color:#6b7280;display:flex;align-items:center;justify-content:space-between;\"><span>FOR DISCUSSION PURPOSES ONLY; NOT INVESTMENT ADVICE.</span><span>Built: ${escapeHtml(
+            builtAtEt,
+          )}</span><span>Page <span class=\"pageNumber\"></span> / <span class=\"totalPages\"></span></span></div>`;
+
+          await page.pdf({
+            path: outPath,
+            format: pdfFormat,
+            printBackground: true,
+            displayHeaderFooter: true,
+            headerTemplate,
+            footerTemplate,
+            margin: {
+              top: "0.9in",
+              bottom: "0.9in",
+              left: "0.9in",
+              right: "0.9in",
+            },
+          });
+        } finally {
+          await browser.close();
+        }
+
+        const preSendErrors: string[] = [];
+
+        const skipPdfDiagnostics = Boolean(opts["skipPdfDiagnostics"]);
+        const pdfDiagnosticsMaxPages = Math.max(
+          1,
+          parseOptionalNumber(opts["pdfDiagnosticsMaxPages"]) ?? 50,
+        );
+        const pdfDiagnosticsDumpText = (opts["pdfDiagnosticsDumpText"] as string | undefined)
+          ?.trim()
+          ?.trim();
+
+        let pdfDiagnostics:
+          | {
+              pages: number;
+              scannedPages: number;
+              metrics: {
+                markdownHeadingTokens: number;
+                markdownFenceTokens: number;
+                urlCount: number;
+                citationKeyCount: number;
+                exhibitTokenCount: number;
+                sourcesHeadingPresent: boolean;
+                dashMojibakeDateCount: number;
+                dashMojibakeStandaloneNCount: number;
+                placeholderTokenCount: number;
+                extractedChars: number;
+              };
+              errors: string[];
+            }
+          | undefined;
+
+        if (!skipPdfDiagnostics) {
+          const pdfBuffer = await fs.readFile(outPath);
+          const { extractPdfTextFromBuffer, computePdfDiagnostics, validatePdfDiagnosticsStrict } =
+            await import("../research/pdf-diagnostics.js");
+          const extracted = await extractPdfTextFromBuffer({
+            buffer: new Uint8Array(pdfBuffer),
+            maxPages: pdfDiagnosticsMaxPages,
+          });
+          const metrics = computePdfDiagnostics(extracted.text);
+          const errors = validatePdfDiagnosticsStrict({ metrics });
+          pdfDiagnostics = {
+            pages: extracted.pages,
+            scannedPages: extracted.scannedPages,
+            metrics,
+            errors,
+          };
+
+          if (pdfDiagnosticsDumpText) {
+            const resolvedDumpPath = path.resolve(pdfDiagnosticsDumpText);
+            await fs.mkdir(path.dirname(resolvedDumpPath), { recursive: true });
+            await fs.writeFile(resolvedDumpPath, `${extracted.text}\n`, "utf8");
+            defaultRuntime.log(`Extracted PDF text written to ${resolvedDumpPath}`);
+          }
+        }
+
+        const seriesKey =
+          typeof opts.seriesKey === "string" && opts.seriesKey.trim()
+            ? opts.seriesKey.trim()
+            : deriveArtifactSeriesKey(outPath);
+        const seriesManifestPath =
+          typeof opts.seriesManifest === "string" && opts.seriesManifest.trim()
+            ? path.resolve(opts.seriesManifest as string)
+            : deriveSeriesManifestPath(outPath);
+
+        const manifestRes = await writeFileArtifactManifest({
+          kind,
+          outPath,
+          seriesKey,
+          seriesManifestPath,
+          markdownForMetrics: markdown,
+          metrics: pdfDiagnostics
+            ? {
+                pdfDiagnosticsPages: pdfDiagnostics.pages,
+                pdfDiagnosticsScannedPages: pdfDiagnostics.scannedPages,
+                pdfMarkdownHeadingTokens: pdfDiagnostics.metrics.markdownHeadingTokens,
+                pdfMarkdownFenceTokens: pdfDiagnostics.metrics.markdownFenceTokens,
+                pdfUrlCount: pdfDiagnostics.metrics.urlCount,
+                pdfCitationKeyCount: pdfDiagnostics.metrics.citationKeyCount,
+                pdfExhibitTokenCount: pdfDiagnostics.metrics.exhibitTokenCount,
+                pdfSourcesHeadingPresent: pdfDiagnostics.metrics.sourcesHeadingPresent,
+                pdfDashMojibakeDateCount: pdfDiagnostics.metrics.dashMojibakeDateCount,
+                pdfDashMojibakeStandaloneNCount:
+                  pdfDiagnostics.metrics.dashMojibakeStandaloneNCount,
+                pdfPlaceholderTokenCount: pdfDiagnostics.metrics.placeholderTokenCount,
+                pdfExtractedChars: pdfDiagnostics.metrics.extractedChars,
+                pdfStrictDiagnosticsErrorCount: pdfDiagnostics.errors.length,
+              }
+            : undefined,
+          gate: pdfDiagnostics ? { pdfDiagnostics } : undefined,
+        });
+        defaultRuntime.log(`PDF written to ${outPath}`);
+        defaultRuntime.log(`Manifest written to ${manifestRes.manifestPath}`);
+        if (manifestRes.seriesManifestPath) {
+          defaultRuntime.log(`Series manifest written to ${manifestRes.seriesManifestPath}`);
+        }
+        defaultRuntime.log(
+          `artifact sha256=${manifestRes.manifest.sha256} bytes=${manifestRes.manifest.byteSize}`,
+        );
+
+        const pdfDashCount = Number(manifestRes.manifest.metrics.unicodeDashCount ?? 0);
+        if (Number.isFinite(pdfDashCount) && pdfDashCount > 0) {
+          preSendErrors.push(
+            `unicode_dashes: count=${pdfDashCount} (replace with ASCII hyphens before delivery)`,
+          );
+        }
+
+        if (!Boolean(opts["allowNoSources"])) {
+          const sourcesCount = Number(manifestRes.manifest.metrics.sourcesCount ?? 0);
+          if (!Number.isFinite(sourcesCount) || sourcesCount <= 0) {
+            preSendErrors.push(
+              `sources_missing: sourcesCount=${sourcesCount} (appendix missing or empty)`,
+            );
+          }
+        }
+
+        if (manifestRes.manifest.unchangedFromPrevious) {
+          defaultRuntime.error(`artifact_unchanged=1 sha256=${manifestRes.manifest.sha256}`);
+          preSendErrors.push(
+            `artifact_unchanged: sha256=${manifestRes.manifest.sha256} (refusing to proceed)`,
+          );
+        }
+
+        if (pdfDiagnostics && pdfDiagnostics.errors.length > 0) {
+          preSendErrors.push(...pdfDiagnostics.errors);
+        }
+
+        if (preSendErrors.length > 0) {
+          defaultRuntime.error(`artifact_presend_failed=1 errors=${preSendErrors.length}`);
+          throw new Error(`Artifact failed pre-send checks:\n- ${preSendErrors.join("\n- ")}`);
+        }
+      });
+    });
+
+  research
+    .command("artifact-path")
+    .description("Compute the next versioned artifact path (base.vN.ext) inside a directory")
+    .requiredOption("--dir <path>", "Output directory")
+    .requiredOption("--base <name>", "Base filename (no version, no extension)")
+    .option("--ext <ext>", "File extension", "pdf")
+    .option("--mkdir", "Create the directory if missing", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const dir = path.resolve(opts.dir as string);
+        if (Boolean(opts.mkdir)) {
+          await fs.mkdir(dir, { recursive: true });
+        }
+        const res = await resolveNextVersionedArtifactPath({
+          dir,
+          base: opts.base as string,
+          ext: opts.ext as string,
+        });
+        defaultRuntime.log(res.outPath);
+        defaultRuntime.log(`artifact_version=v${res.version}`);
+        defaultRuntime.log(`series_manifest=${deriveSeriesManifestPath(res.outPath)}`);
+      });
+    });
+
+  research
+    .command("manifest-file")
+    .description("Write artifact manifest for an existing file (e.g., a PDF)")
+    .requiredOption("--kind <kind>", "memo|sector_report|theme_report")
+    .requiredOption("--out <path>", "Artifact file path (e.g., /path/to/report.pdf)")
+    .option("--markdown <path>", "Optional markdown to compute exhibit/source/footnote counts")
+    .option("--series-key <key>", "Optional stable series key (defaults to basename without .vN)")
+    .option(
+      "--series-manifest <path>",
+      "Optional series manifest path (default: <out-dir>/artifact.json)",
+    )
+    .option("--metrics <json>", "Optional JSON object merged into manifest.metrics")
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const kind = parseArtifactKind(opts.kind as string);
+        const outPath = path.resolve(opts.out as string);
+        const seriesKey =
+          typeof opts.seriesKey === "string" && opts.seriesKey.trim()
+            ? opts.seriesKey.trim()
+            : deriveArtifactSeriesKey(outPath);
+        const seriesManifestPath =
+          typeof opts.seriesManifest === "string" && opts.seriesManifest.trim()
+            ? path.resolve(opts.seriesManifest as string)
+            : deriveSeriesManifestPath(outPath);
+
+        const markdownForMetrics =
+          typeof opts.markdown === "string" && opts.markdown.trim()
+            ? await fs.readFile(path.resolve(opts.markdown as string), "utf8")
+            : undefined;
+        const extraMetrics = parseOptionalJsonObject(opts.metrics) ?? undefined;
+
+        const manifestRes = await writeFileArtifactManifest({
+          kind,
+          outPath,
+          seriesKey,
+          seriesManifestPath,
+          markdownForMetrics,
+          metrics: extraMetrics as Record<string, number | string | boolean | null> | undefined,
+        });
+
+        defaultRuntime.log(`Manifest written to ${manifestRes.manifestPath}`);
+        if (manifestRes.seriesManifestPath) {
+          defaultRuntime.log(`Series manifest written to ${manifestRes.seriesManifestPath}`);
+        }
+        defaultRuntime.log(
+          `artifact sha256=${manifestRes.manifest.sha256} bytes=${manifestRes.manifest.byteSize}`,
+        );
+        const unicodeDashCount = Number(manifestRes.manifest.metrics.unicodeDashCount ?? 0);
+        if (Number.isFinite(unicodeDashCount) && unicodeDashCount > 0) {
+          throw new Error(
+            `Unicode dash characters detected (count=${unicodeDashCount}). Replace with ASCII hyphens before delivery.`,
+          );
+        }
+        const rawSourcesCount = manifestRes.manifest.metrics.sourcesCount;
+        if (rawSourcesCount !== null && rawSourcesCount !== undefined) {
+          const sourcesCount = Number(rawSourcesCount);
+          if (!Number.isFinite(sourcesCount) || sourcesCount <= 0) {
+            throw new Error(
+              `Sources appendix missing or empty (sourcesCount=${sourcesCount}). Refusing to proceed.`,
+            );
+          }
+        }
+        if (manifestRes.manifest.unchangedFromPrevious) {
+          defaultRuntime.error(`artifact_unchanged=1 sha256=${manifestRes.manifest.sha256}`);
+          throw new Error(
+            `Artifact unchanged (sha256=${manifestRes.manifest.sha256}). Refusing to proceed.`,
           );
         }
       });

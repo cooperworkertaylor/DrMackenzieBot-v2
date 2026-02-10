@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence_item.schema.json",
+  "title": "EvidenceItem",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "title",
+    "publisher",
+    "date_published",
+    "accessed_at",
+    "url",
+    "reliability_tier",
+    "excerpt_or_key_points",
+    "tags"
+  ],
+  "properties": {
+    "id": { "$ref": "source_item.schema.json#/properties/id" },
+    "title": { "$ref": "source_item.schema.json#/properties/title" },
+    "publisher": { "$ref": "source_item.schema.json#/properties/publisher" },
+    "date_published": { "$ref": "source_item.schema.json#/properties/date_published" },
+    "accessed_at": { "$ref": "source_item.schema.json#/properties/accessed_at" },
+    "url": { "$ref": "source_item.schema.json#/properties/url" },
+    "reliability_tier": { "$ref": "source_item.schema.json#/properties/reliability_tier" },
+    "excerpt_or_key_points": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "raw_text_ref": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Pointer/path to stored raw text, if available."
+    },
+    "tags": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

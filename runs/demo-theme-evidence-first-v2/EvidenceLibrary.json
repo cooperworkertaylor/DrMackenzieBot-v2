@@ -1,0 +1,37 @@
+[
+  {
+    "id": "S1",
+    "title": "Internal: v2 research contracts and quality gates",
+    "publisher": "Internal",
+    "date_published": "2026-02-10",
+    "accessed_at": "2026-02-10T03:58:09.511Z",
+    "url": "https://example.com/internal/v2-quality-gates",
+    "reliability_tier": 4,
+    "excerpt_or_key_points": [
+      "Defines contracts for citations, numeric provenance, structure, and repair loop behavior."
+    ],
+    "tags": [
+      "internal:spec",
+      "v2:quality",
+      "theme:Evidence-first underwriting"
+    ]
+  },
+  {
+    "id": "S2",
+    "title": "SEC XBRL time-series (AAPL)",
+    "publisher": "SEC",
+    "date_published": "2026-02-10",
+    "accessed_at": "2026-02-10T03:58:09.511Z",
+    "url": "https://sec.gov/edgar/search",
+    "reliability_tier": 1,
+    "excerpt_or_key_points": [
+      "Fixture: time-series extract representing SEC XBRL submissions (for offline demo)."
+    ],
+    "raw_text_ref": "/Users/cooptaylor1/Documents/DrMackenzie Vault/DrMackenzieBot-v2/runs/demo-theme-evidence-first-v2/sources/S2.csv",
+    "tags": [
+      "company:AAPL",
+      "source:sec",
+      "fixture:sec-xbrl-timeseries"
+    ]
+  }
+]
