@@ -25,19 +25,41 @@ export function parseQuickResearchRequest(raw: string): QuickResearchRequest | n
   if (!text) return null;
   const lowered = text.toLowerCase();
 
-  // Natural language trigger: require minutes + pdf + an "action-ish" keyword so we don't hijack normal chat.
   const actionOk =
     /\b(research|reserach|reasearch|snapshot|memo|report|write[- ]?up|update|deep\s*dive|run)\b/.test(
       lowered,
-    ) || /\bt\+\s*\d+\b/.test(lowered);
-  if (!/\bpdf\b/.test(lowered)) return null;
+    );
+  const mentionsPdf = /\bpdf\b/.test(lowered);
   const minuteRe = /\b(\d{1,3})\s*(?:[-\u2010-\u2015\u2212]\s*)?(min|mins|minute|minutes)\b/;
-  if (!minuteRe.test(lowered)) return null;
-  if (!actionOk) return null;
+  const tPlusRe = /\bt\+\s*(\d{1,3})\b/i;
 
-  const minutesMatch = lowered.match(minuteRe);
-  const minutesRaw = minutesMatch?.[1] ?? "";
-  const minutes = Math.max(1, Math.min(600, Number.parseInt(minutesRaw, 10) || 5));
+  let minutes: number | null = null;
+  const minuteMatch = lowered.match(minuteRe);
+  if (minuteMatch?.[1]) {
+    minutes = Math.max(1, Math.min(600, Number.parseInt(minuteMatch[1], 10) || 5));
+  } else {
+    const tPlus = lowered.match(tPlusRe);
+    if (tPlus?.[1]) {
+      minutes = Math.max(1, Math.min(600, Number.parseInt(tPlus[1], 10) || 5));
+    } else {
+      // Very common shorthand: "<topic> 5" or "<topic> 30" (minutes).
+      const tail = text.match(/\b(\d{1,3})\b\s*[:.\u2010-\u2015\u2212]*\s*$/);
+      const tailN = tail?.[1] ? Number.parseInt(tail[1], 10) : NaN;
+      if (Number.isFinite(tailN) && tailN >= 1 && tailN <= 600) {
+        minutes = Math.max(1, Math.min(600, tailN));
+      }
+    }
+  }
+
+  if (minutes == null) return null;
+
+  // Trigger guard: require either an action keyword OR explicit PDF mention OR a T+ timebox.
+  // Also allow shorthand "<topic> <minutes>" if the topic is non-trivial.
+  const hasTPlus = tPlusRe.test(lowered);
+  const shorthandCandidate = /\b(\d{1,3})\b\s*[:.\u2010-\u2015\u2212]*\s*$/.test(text);
+  if (!actionOk && !mentionsPdf && !hasTPlus && !shorthandCandidate) {
+    return null;
+  }
 
   const cutAtInstruction = (value: string): string =>
     value
@@ -49,13 +71,15 @@ export function parseQuickResearchRequest(raw: string): QuickResearchRequest | n
   const prepMatch = text.match(/\b(on|about|of|for)\s+(.+?)(?:\s+(?:and|then)\b|[.?!]|$)/i);
   let subject = normalizeSpaces(cutAtInstruction(prepMatch?.[2] ?? ""));
   if (!subject) {
-    // Fallback: try to grab the text after the minutes phrase up to delivery instructions.
-    const idx = lowered.search(minuteRe);
-    const after = idx >= 0 ? text.slice(idx).replace(minuteRe, "") : text;
+    // Fallback: strip the timebox and common verbs, keeping the remaining topic.
+    const withoutTime = minuteMatch?.[0]
+      ? text.replace(minuteRe, "")
+      : text.replace(tPlusRe, "").replace(/\b(\d{1,3})\b\s*[:.\u2010-\u2015\u2212]*\s*$/g, "");
     subject = normalizeSpaces(
       cutAtInstruction(
-        after
+        withoutTime
           .replace(/\b(?:a|an|the)\b/gi, "")
+          .replaceAll(/\b(?:fresh|new|quick|brief|single)\b/gi, "")
           .replaceAll(
             /\b(?:research|reserach|reasearch|snapshot|memo|report|write[- ]?up|update|deep\s*dive|run)\b/gi,
             "",
@@ -66,6 +90,12 @@ export function parseQuickResearchRequest(raw: string): QuickResearchRequest | n
   }
   if (!subject) {
     return null;
+  }
+
+  // Shorthand safety: if we triggered only on a trailing number, require a non-trivial topic.
+  if (!actionOk && !mentionsPdf && !hasTPlus) {
+    const tokens = subject.split(" ").filter(Boolean);
+    if (tokens.length < 2 && subject.length < 10) return null;
   }
 
   // Heuristic: if subject is a single ticker-ish token, treat as company.

@@ -16,6 +16,11 @@ describe("parseQuickResearchRequest", () => {
     expect(res).toEqual({ kind: "theme", minutes: 5, theme: "optical networking" });
   });
 
+  it("parses shorthand '<theme> <minutes>'", () => {
+    const res = parseQuickResearchRequest("optical networking 5");
+    expect(res).toEqual({ kind: "theme", minutes: 5, theme: "optical networking" });
+  });
+
   it("parses company request when subject looks like a ticker", () => {
     const res = parseQuickResearchRequest("give me a 10 min research run on PLTR and send the pdf");
     expect(res?.kind).toBe("company");
