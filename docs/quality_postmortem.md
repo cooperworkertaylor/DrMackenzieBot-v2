@@ -7,7 +7,7 @@ This is a failure-mode inventory grounded in concrete artifacts and the current 
 The following metrics come from `openclaw research pdf-diagnostics` (PDF text extraction heuristics), run against the delivered artifacts:
 
 ### 1) PLTR memo PDF
-- Path: `/Users/cooptaylor1/Documents/DrMackenzie Vault/tmp/pdfs/pltr.pdf`
+- Path: `/Users/cooptaylor1/Downloads/pltr-enterprise-ai-ops-institutional-memo-2026-02-08 (1).pdf`
 - Pages: 9
 - Key failures:
   - `markdownHeadingTokens=22`: the PDF contains literal markdown markers (`###`), indicating markdown was not rendered or was rendered incorrectly.
@@ -15,12 +15,22 @@ The following metrics come from `openclaw research pdf-diagnostics` (PDF text ex
   - `citationKeyCount=0`: no structured source keys (`S#`/`C#`) detected in the extracted text, which prevents systematic citation + provenance enforcement.
 
 ### 2) Agentic commerce PDF (part 1)
-- Path: `/Users/cooptaylor1/Documents/DrMackenzie Vault/tmp/pdfs/agentic_part1.pdf`
+- Path: `/Users/cooptaylor1/Downloads/agentic_commerce_crypto_protocols_deep_2026_02_09_SPLIT_part1.pdf`
 - Pages: 3
 - Key failures:
   - `sourcesHeadingPresent=false` and `urlCount=0`: no Sources appendix and no URLs detected.
   - `exhibitTokenCount=0`: missing exhibits entirely.
   - This artifact is too small (`bytes=7792`) to be a complete “deep research” deliverable.
+
+### (Comparison) Claude baseline PDF
+- Path: `/Users/cooptaylor1/Downloads/agentic_commerce_crypto_positioning_report.pdf`
+- Pages: 17 (scanned first 12 pages by diagnostics)
+- Notable positives:
+  - `markdownHeadingTokens=0`: no raw markdown token leakage.
+  - `dashMojibakeDateCount=0`: no obvious Unicode dash/font mojibake.
+  - `sourcesHeadingPresent=true`: at least a Sources section is present.
+- Gaps relative to our “auditable research” requirements:
+  - `urlCount=0` and `citationKeyCount=0`: sources are not machine-linkable via URL and claims are not bound to `[S#]` keys in extracted text.
 
 ## Root Cause Top 12 (Ranked)
 
@@ -74,4 +84,3 @@ The fix should not redesign the entire stack. It should wrap existing analyzers/
 - Contract schemas (reports, evidence, exhibits).
 - Validators that fail closed with actionable errors.
 - A v2 pipeline that can be toggled on without breaking the existing pipeline.
-
