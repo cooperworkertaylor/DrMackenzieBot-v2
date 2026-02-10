@@ -3656,6 +3656,13 @@ export function registerResearchCli(program: Command) {
       "--series-manifest <path>",
       "Optional series manifest path (default: <out-dir>/artifact.json)",
     )
+    .option(
+      "--skip-pdf-diagnostics",
+      "Skip strict PDF diagnostics (URLs/citations/exhibits/mojibake/placeholders)",
+      false,
+    )
+    .option("--pdf-diagnostics-max-pages <n>", "Max pages to scan for strict PDF diagnostics", "50")
+    .option("--pdf-diagnostics-dump-text <path>", "Write extracted PDF text to a file")
     .option("--allow-no-sources", "Allow rendering without a non-empty Sources appendix", false)
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
@@ -3887,6 +3894,62 @@ export function registerResearchCli(program: Command) {
           await browser.close();
         }
 
+        const preSendErrors: string[] = [];
+
+        const skipPdfDiagnostics = Boolean(opts["skipPdfDiagnostics"]);
+        const pdfDiagnosticsMaxPages = Math.max(
+          1,
+          parseOptionalNumber(opts["pdfDiagnosticsMaxPages"]) ?? 50,
+        );
+        const pdfDiagnosticsDumpText = (opts["pdfDiagnosticsDumpText"] as string | undefined)
+          ?.trim()
+          ?.trim();
+
+        let pdfDiagnostics:
+          | {
+              pages: number;
+              scannedPages: number;
+              metrics: {
+                markdownHeadingTokens: number;
+                markdownFenceTokens: number;
+                urlCount: number;
+                citationKeyCount: number;
+                exhibitTokenCount: number;
+                sourcesHeadingPresent: boolean;
+                dashMojibakeDateCount: number;
+                dashMojibakeStandaloneNCount: number;
+                placeholderTokenCount: number;
+                extractedChars: number;
+              };
+              errors: string[];
+            }
+          | undefined;
+
+        if (!skipPdfDiagnostics) {
+          const pdfBuffer = await fs.readFile(outPath);
+          const { extractPdfTextFromBuffer, computePdfDiagnostics, validatePdfDiagnosticsStrict } =
+            await import("../research/pdf-diagnostics.js");
+          const extracted = await extractPdfTextFromBuffer({
+            buffer: new Uint8Array(pdfBuffer),
+            maxPages: pdfDiagnosticsMaxPages,
+          });
+          const metrics = computePdfDiagnostics(extracted.text);
+          const errors = validatePdfDiagnosticsStrict({ metrics });
+          pdfDiagnostics = {
+            pages: extracted.pages,
+            scannedPages: extracted.scannedPages,
+            metrics,
+            errors,
+          };
+
+          if (pdfDiagnosticsDumpText) {
+            const resolvedDumpPath = path.resolve(pdfDiagnosticsDumpText);
+            await fs.mkdir(path.dirname(resolvedDumpPath), { recursive: true });
+            await fs.writeFile(resolvedDumpPath, `${extracted.text}\n`, "utf8");
+            defaultRuntime.log(`Extracted PDF text written to ${resolvedDumpPath}`);
+          }
+        }
+
         const seriesKey =
           typeof opts.seriesKey === "string" && opts.seriesKey.trim()
             ? opts.seriesKey.trim()
@@ -3902,6 +3965,25 @@ export function registerResearchCli(program: Command) {
           seriesKey,
           seriesManifestPath,
           markdownForMetrics: markdown,
+          metrics: pdfDiagnostics
+            ? {
+                pdfDiagnosticsPages: pdfDiagnostics.pages,
+                pdfDiagnosticsScannedPages: pdfDiagnostics.scannedPages,
+                pdfMarkdownHeadingTokens: pdfDiagnostics.metrics.markdownHeadingTokens,
+                pdfMarkdownFenceTokens: pdfDiagnostics.metrics.markdownFenceTokens,
+                pdfUrlCount: pdfDiagnostics.metrics.urlCount,
+                pdfCitationKeyCount: pdfDiagnostics.metrics.citationKeyCount,
+                pdfExhibitTokenCount: pdfDiagnostics.metrics.exhibitTokenCount,
+                pdfSourcesHeadingPresent: pdfDiagnostics.metrics.sourcesHeadingPresent,
+                pdfDashMojibakeDateCount: pdfDiagnostics.metrics.dashMojibakeDateCount,
+                pdfDashMojibakeStandaloneNCount:
+                  pdfDiagnostics.metrics.dashMojibakeStandaloneNCount,
+                pdfPlaceholderTokenCount: pdfDiagnostics.metrics.placeholderTokenCount,
+                pdfExtractedChars: pdfDiagnostics.metrics.extractedChars,
+                pdfStrictDiagnosticsErrorCount: pdfDiagnostics.errors.length,
+              }
+            : undefined,
+          gate: pdfDiagnostics ? { pdfDiagnostics } : undefined,
         });
         defaultRuntime.log(`PDF written to ${outPath}`);
         defaultRuntime.log(`Manifest written to ${manifestRes.manifestPath}`);
@@ -3914,25 +3996,34 @@ export function registerResearchCli(program: Command) {
 
         const pdfDashCount = Number(manifestRes.manifest.metrics.unicodeDashCount ?? 0);
         if (Number.isFinite(pdfDashCount) && pdfDashCount > 0) {
-          throw new Error(
-            `Unicode dash characters detected (count=${pdfDashCount}). Replace with ASCII hyphens before delivery.`,
+          preSendErrors.push(
+            `unicode_dashes: count=${pdfDashCount} (replace with ASCII hyphens before delivery)`,
           );
         }
 
         if (!Boolean(opts["allowNoSources"])) {
           const sourcesCount = Number(manifestRes.manifest.metrics.sourcesCount ?? 0);
           if (!Number.isFinite(sourcesCount) || sourcesCount <= 0) {
-            throw new Error(
-              `Sources appendix missing or empty (sourcesCount=${sourcesCount}). Refusing to proceed.`,
+            preSendErrors.push(
+              `sources_missing: sourcesCount=${sourcesCount} (appendix missing or empty)`,
             );
           }
         }
 
         if (manifestRes.manifest.unchangedFromPrevious) {
           defaultRuntime.error(`artifact_unchanged=1 sha256=${manifestRes.manifest.sha256}`);
-          throw new Error(
-            `Artifact unchanged (sha256=${manifestRes.manifest.sha256}). Refusing to proceed.`,
+          preSendErrors.push(
+            `artifact_unchanged: sha256=${manifestRes.manifest.sha256} (refusing to proceed)`,
           );
+        }
+
+        if (pdfDiagnostics && pdfDiagnostics.errors.length > 0) {
+          preSendErrors.push(...pdfDiagnostics.errors);
+        }
+
+        if (preSendErrors.length > 0) {
+          defaultRuntime.error(`artifact_presend_failed=1 errors=${preSendErrors.length}`);
+          throw new Error(`Artifact failed pre-send checks:\n- ${preSendErrors.join("\n- ")}`);
         }
       });
     });

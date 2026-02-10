@@ -109,6 +109,8 @@ If the report still fails after all attempts, the pipeline must output a **FAILE
 
 Even if markdown gates pass, the final artifact can still fail institutional standards at the PDF layer (e.g., encoding mojibake, missing URLs/citations, placeholder language).
 
+`openclaw research render-pdf` now runs strict PDF diagnostics by default (fail-closed). To bypass for local debugging only, pass `--skip-pdf-diagnostics`.
+
 Use:
 
 ```bash
