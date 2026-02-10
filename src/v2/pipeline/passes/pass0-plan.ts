@@ -47,7 +47,8 @@ export function buildPlanCompanyV2(params: {
     generated_at: nowIso(),
     posture: "long-only",
     horizon: params.horizon ?? "12-36 months",
-    timebox_minutes: Math.max(15, Math.min(600, params.timeboxMinutes ?? 90)),
+    // Allow "5 min run" style quick scans without lying in the rendered memo.
+    timebox_minutes: Math.max(5, Math.min(600, params.timeboxMinutes ?? 90)),
     key_questions: [
       question,
       "What would falsify the thesis quickly (measurable triggers)?",
@@ -110,7 +111,8 @@ export function buildPlanThemeV2(params: {
     generated_at: nowIso(),
     posture: "long-only",
     horizon: params.horizon ?? "12-36 months",
-    timebox_minutes: Math.max(15, Math.min(600, params.timeboxMinutes ?? 120)),
+    // Allow "5 min run" style quick scans without lying in the rendered memo.
+    timebox_minutes: Math.max(5, Math.min(600, params.timeboxMinutes ?? 120)),
     key_questions: [
       `Define the theme precisely: ${themeName}`,
       "Where does value accrue (value chain) and what are the capture mechanisms?",
