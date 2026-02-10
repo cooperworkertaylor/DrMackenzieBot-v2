@@ -264,10 +264,14 @@ export function registerPluginsCli(program: Command) {
     .argument("<id>", "Plugin id")
     .action(async (id: string) => {
       const cfg = loadConfig();
+      const allow = Array.isArray(cfg.plugins?.allow) ? cfg.plugins?.allow : undefined;
+      const nextAllow =
+        allow && allow.length > 0 && !allow.includes(id) ? [...allow, id] : (allow ?? undefined);
       let next: OpenClawConfig = {
         ...cfg,
         plugins: {
           ...cfg.plugins,
+          allow: nextAllow,
           entries: {
             ...cfg.plugins?.entries,
             [id]: {
