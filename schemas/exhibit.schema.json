@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "exhibit.schema.json",
+  "title": "Exhibit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "question", "data_summary", "takeaway", "source_ids"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^X\\d+$"
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "question": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The explicit investment question this exhibit answers."
+    },
+    "data_summary": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "takeaway": {
+      "type": "string",
+      "pattern": "^Takeaway:\\s+.+$"
+    },
+    "source_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "^S\\d+$" }
+    },
+    "numeric_refs": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^N\\d+$" }
+    },
+    "notes": { "type": "string" }
+  }
+}
+

@@ -96,6 +96,7 @@ USER.md
 *.tgz
 .serena/
 bin/
+tmp/
 # Research outputs (do not commit)
 report_*.md
 report_*.pdf
