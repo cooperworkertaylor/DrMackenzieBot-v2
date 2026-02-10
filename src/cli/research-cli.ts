@@ -9,6 +9,7 @@ import {
   timeSeriesToCsv,
   timeSeriesToMarkdown,
 } from "../agents/sec-xbrl-timeseries.js";
+import { writeArtifactManifest } from "../research/artifact-manifest.js";
 import {
   applyBenchmarkGovernance,
   benchmarkReport,
@@ -1596,6 +1597,7 @@ export function registerResearchCli(program: Command) {
     .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
     .option("--min-score <n>", "Institutional quality threshold [0-1]", "0.82")
     .option("--out <path>", "Write institutional report markdown to file")
+    .option("--print-metrics", "Print quality/telemetry metrics to stdout", false)
     .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
@@ -1753,23 +1755,45 @@ export function registerResearchCli(program: Command) {
           throw err;
         }
         if (!final) throw lastError ?? new Error("Sector report generation failed");
+        const shouldPrintMetrics = Boolean(opts.printMetrics);
         if (opts.out) {
           const outPath = path.resolve(opts.out as string);
           await fs.writeFile(outPath, `${final.report.markdown}\n`, "utf8");
+          const manifestRes = await writeArtifactManifest({
+            kind: "sector_report",
+            outPath,
+            markdown: final.report.markdown,
+            metrics: {
+              sector: String(opts.sector),
+              tickers: final.result.tickers.length,
+              narrative_clarity: Number(final.report.quality.narrativeClarityScore.toFixed(4)),
+              exhibits: final.report.quality.exhibitCount,
+              actionability: Number(final.report.quality.actionabilityScore.toFixed(4)),
+              freshness_180d_ratio: Number(final.report.quality.freshness180dRatio.toFixed(4)),
+            },
+            gate: { runId: final.runId, ...final.gate },
+          });
           defaultRuntime.log(`Report written to ${outPath}`);
+          defaultRuntime.log(`Manifest written to ${manifestRes.manifestPath}`);
+          if (manifestRes.manifest.unchangedFromPrevious) {
+            defaultRuntime.error(`artifact_unchanged=1 sha256=${manifestRes.manifest.sha256}`);
+          }
         } else {
           defaultRuntime.log(final.report.markdown);
         }
-        defaultRuntime.log(
-          `institutional_gate run_id=${final.runId} gate=${final.gate.gateName} score=${final.gate.score.toFixed(2)} min_score=${final.gate.minScore.toFixed(2)} passed=${final.gate.passed ? 1 : 0} artifact_id=${final.gate.artifactId}`,
-        );
-        defaultRuntime.log(
-          `report_quality narrative_clarity=${final.report.quality.narrativeClarityScore.toFixed(2)} exhibits=${final.report.quality.exhibitCount} actionability=${final.report.quality.actionabilityScore.toFixed(2)} freshness_180d=${(final.report.quality.freshness180dRatio * 100).toFixed(1)}%`,
-        );
-        if (final.gate.requiredFailures.length) {
-          defaultRuntime.error(
-            `institutional_gate_required_failures=${final.gate.requiredFailures.join(",")}`,
+
+        if (shouldPrintMetrics) {
+          defaultRuntime.log(
+            `institutional_gate run_id=${final.runId} gate=${final.gate.gateName} score=${final.gate.score.toFixed(2)} min_score=${final.gate.minScore.toFixed(2)} passed=${final.gate.passed ? 1 : 0} artifact_id=${final.gate.artifactId}`,
           );
+          defaultRuntime.log(
+            `report_quality narrative_clarity=${final.report.quality.narrativeClarityScore.toFixed(2)} exhibits=${final.report.quality.exhibitCount} actionability=${final.report.quality.actionabilityScore.toFixed(2)} freshness_180d=${(final.report.quality.freshness180dRatio * 100).toFixed(1)}%`,
+          );
+          if (final.gate.requiredFailures.length) {
+            defaultRuntime.error(
+              `institutional_gate_required_failures=${final.gate.requiredFailures.join(",")}`,
+            );
+          }
         }
       });
     });
@@ -1788,6 +1812,7 @@ export function registerResearchCli(program: Command) {
     .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
     .option("--min-score <n>", "Institutional quality threshold [0-1]", "0.82")
     .option("--out <path>", "Write institutional report markdown to file")
+    .option("--print-metrics", "Print quality/telemetry metrics to stdout", false)
     .option("--db <path>", "Database path", resolveResearchDbPath())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
@@ -1999,23 +2024,45 @@ export function registerResearchCli(program: Command) {
           throw err;
         }
         if (!final) throw lastError ?? new Error("Theme report generation failed");
+        const shouldPrintMetrics = Boolean(opts.printMetrics);
         if (opts.out) {
           const outPath = path.resolve(opts.out as string);
           await fs.writeFile(outPath, `${final.report.markdown}\n`, "utf8");
+          const manifestRes = await writeArtifactManifest({
+            kind: "theme_report",
+            outPath,
+            markdown: final.report.markdown,
+            metrics: {
+              theme: String(opts.theme),
+              tickers: final.result.tickers.length,
+              used_theme_registry: final.result.usedThemeRegistry,
+              narrative_clarity: Number(final.report.quality.narrativeClarityScore.toFixed(4)),
+              exhibits: final.report.quality.exhibitCount,
+              actionability: Number(final.report.quality.actionabilityScore.toFixed(4)),
+              freshness_180d_ratio: Number(final.report.quality.freshness180dRatio.toFixed(4)),
+            },
+            gate: { runId: final.runId, ...final.gate },
+          });
           defaultRuntime.log(`Report written to ${outPath}`);
+          defaultRuntime.log(`Manifest written to ${manifestRes.manifestPath}`);
+          if (manifestRes.manifest.unchangedFromPrevious) {
+            defaultRuntime.error(`artifact_unchanged=1 sha256=${manifestRes.manifest.sha256}`);
+          }
         } else {
           defaultRuntime.log(final.report.markdown);
         }
-        defaultRuntime.log(
-          `institutional_gate run_id=${final.runId} gate=${final.gate.gateName} score=${final.gate.score.toFixed(2)} min_score=${final.gate.minScore.toFixed(2)} passed=${final.gate.passed ? 1 : 0} artifact_id=${final.gate.artifactId}`,
-        );
-        defaultRuntime.log(
-          `report_quality narrative_clarity=${final.report.quality.narrativeClarityScore.toFixed(2)} exhibits=${final.report.quality.exhibitCount} actionability=${final.report.quality.actionabilityScore.toFixed(2)} freshness_180d=${(final.report.quality.freshness180dRatio * 100).toFixed(1)}%`,
-        );
-        if (final.gate.requiredFailures.length) {
-          defaultRuntime.error(
-            `institutional_gate_required_failures=${final.gate.requiredFailures.join(",")}`,
+        if (shouldPrintMetrics) {
+          defaultRuntime.log(
+            `institutional_gate run_id=${final.runId} gate=${final.gate.gateName} score=${final.gate.score.toFixed(2)} min_score=${final.gate.minScore.toFixed(2)} passed=${final.gate.passed ? 1 : 0} artifact_id=${final.gate.artifactId}`,
           );
+          defaultRuntime.log(
+            `report_quality narrative_clarity=${final.report.quality.narrativeClarityScore.toFixed(2)} exhibits=${final.report.quality.exhibitCount} actionability=${final.report.quality.actionabilityScore.toFixed(2)} freshness_180d=${(final.report.quality.freshness180dRatio * 100).toFixed(1)}%`,
+          );
+          if (final.gate.requiredFailures.length) {
+            defaultRuntime.error(
+              `institutional_gate_required_failures=${final.gate.requiredFailures.join(",")}`,
+            );
+          }
         }
       });
     });
@@ -3091,6 +3138,7 @@ export function registerResearchCli(program: Command) {
     .requiredOption("--question <text>", "Research question")
     .option("--db <path>", "Database path", resolveResearchDbPath())
     .option("--out <path>", "Write memo markdown to file")
+    .option("--print-metrics", "Print quality/telemetry metrics to stdout", false)
     .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
     .option("--min-score <n>", "Institutional quality threshold [0-1]", "0.8")
     .option("--quality-attempts <n>", "Quality refinement attempts before hard fail", "4")
@@ -3168,35 +3216,61 @@ export function registerResearchCli(program: Command) {
             new Error(`Memo generation failed after ${qualityAttempts} quality attempts`)
           );
         }
+        const shouldPrintMetrics = Boolean(opts.printMetrics);
         if (opts.out) {
-          await fs.writeFile(path.resolve(opts.out as string), `${result.memo}\n`, "utf8");
-          defaultRuntime.log(`Memo written to ${path.resolve(opts.out as string)}`);
+          const outPath = path.resolve(opts.out as string);
+          await fs.writeFile(outPath, `${result.memo}\n`, "utf8");
+          const manifestRes = await writeArtifactManifest({
+            kind: "memo",
+            outPath,
+            markdown: result.memo,
+            metrics: {
+              claims: result.claims,
+              citations: result.citations,
+              quality_score: Number(result.quality.score.toFixed(4)),
+              quality_passed: result.quality.passed,
+              quality_min_score: Number(result.quality.minScore.toFixed(4)),
+            },
+            gate: {
+              runId: result.qualityGateRunId,
+              ...result.qualityGate,
+            },
+          });
+          defaultRuntime.log(`Memo written to ${outPath}`);
+          defaultRuntime.log(`Manifest written to ${manifestRes.manifestPath}`);
+          if (manifestRes.manifest.unchangedFromPrevious) {
+            defaultRuntime.error(`artifact_unchanged=1 sha256=${manifestRes.manifest.sha256}`);
+          }
         } else {
+          // By default, print only the memo body (clean deliverable). Metrics belong in the DB/manifest.
           defaultRuntime.log(result.memo);
         }
-        defaultRuntime.log(`claims=${result.claims} citations=${result.citations}`);
-        defaultRuntime.log(`quality_score=${result.quality.score.toFixed(2)}`);
-        defaultRuntime.log(`quality_passed=${result.quality.passed ? 1 : 0}`);
-        defaultRuntime.log(`quality_min_score=${result.quality.minScore.toFixed(2)}`);
-        defaultRuntime.log(
-          `institutional_gate run_id=${result.qualityGateRunId} gate=${result.qualityGate.gateName} score=${result.qualityGate.score.toFixed(2)} min_score=${result.qualityGate.minScore.toFixed(2)} passed=${result.qualityGate.passed ? 1 : 0} artifact_id=${result.qualityGate.artifactId}`,
-        );
-        defaultRuntime.log(
-          `actionability_score=${result.quality.actionabilityScore.toFixed(2)} adversarial_coverage_score=${result.quality.adversarialCoverageScore.toFixed(2)} calibration_mode=${result.quality.calibration.mode} calibration_score=${result.quality.calibration.score.toFixed(2)} calibration_samples=${result.quality.calibration.sampleCount}`,
-        );
-        defaultRuntime.log(
-          `research_cell_passed=${result.researchCell.debate.passed ? 1 : 0} research_cell_consensus=${result.researchCell.debate.consensusScore.toFixed(2)} research_cell_final_stance=${result.researchCell.allocator.finalStance}`,
-        );
-        defaultRuntime.log(
-          `decision_recommendation=${result.portfolioDecision.recommendation} decision_score=${result.portfolioDecision.decisionScore.toFixed(2)} decision_confidence=${result.portfolioDecision.confidence.toFixed(2)} decision_breaches=${result.portfolioDecision.riskBreaches.length}`,
-        );
-        if (result.quality.requiredFailures.length) {
-          defaultRuntime.error(`required_failures=${result.quality.requiredFailures.join(",")}`);
-        }
-        if (result.qualityGate.requiredFailures.length) {
-          defaultRuntime.error(
-            `institutional_gate_required_failures=${result.qualityGate.requiredFailures.join(",")}`,
+
+        if (shouldPrintMetrics) {
+          defaultRuntime.log(`claims=${result.claims} citations=${result.citations}`);
+          defaultRuntime.log(`quality_score=${result.quality.score.toFixed(2)}`);
+          defaultRuntime.log(`quality_passed=${result.quality.passed ? 1 : 0}`);
+          defaultRuntime.log(`quality_min_score=${result.quality.minScore.toFixed(2)}`);
+          defaultRuntime.log(
+            `institutional_gate run_id=${result.qualityGateRunId} gate=${result.qualityGate.gateName} score=${result.qualityGate.score.toFixed(2)} min_score=${result.qualityGate.minScore.toFixed(2)} passed=${result.qualityGate.passed ? 1 : 0} artifact_id=${result.qualityGate.artifactId}`,
           );
+          defaultRuntime.log(
+            `actionability_score=${result.quality.actionabilityScore.toFixed(2)} adversarial_coverage_score=${result.quality.adversarialCoverageScore.toFixed(2)} calibration_mode=${result.quality.calibration.mode} calibration_score=${result.quality.calibration.score.toFixed(2)} calibration_samples=${result.quality.calibration.sampleCount}`,
+          );
+          defaultRuntime.log(
+            `research_cell_passed=${result.researchCell.debate.passed ? 1 : 0} research_cell_consensus=${result.researchCell.debate.consensusScore.toFixed(2)} research_cell_final_stance=${result.researchCell.allocator.finalStance}`,
+          );
+          defaultRuntime.log(
+            `decision_recommendation=${result.portfolioDecision.recommendation} decision_score=${result.portfolioDecision.decisionScore.toFixed(2)} decision_confidence=${result.portfolioDecision.confidence.toFixed(2)} decision_breaches=${result.portfolioDecision.riskBreaches.length}`,
+          );
+          if (result.quality.requiredFailures.length) {
+            defaultRuntime.error(`required_failures=${result.quality.requiredFailures.join(",")}`);
+          }
+          if (result.qualityGate.requiredFailures.length) {
+            defaultRuntime.error(
+              `institutional_gate_required_failures=${result.qualityGate.requiredFailures.join(",")}`,
+            );
+          }
         }
       });
     });
