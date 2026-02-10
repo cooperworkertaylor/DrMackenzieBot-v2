@@ -241,7 +241,7 @@ const companySectionTemplate = (params: {
         },
         {
           tag: "INTERPRETATION",
-          text: "Catalysts should be framed as information releases that change scenario weights, not as calendar events alone.",
+          text: "Catalysts should be framed as information releases that change scenario weights, with explicit monitoring and what-would-change views.",
         },
         {
           tag: "ASSUMPTION",
@@ -441,9 +441,19 @@ const buildCompanyReportV2 = (params: {
       title: "Catalyst Calendar (Catalyst calendar)",
       question: "What dated events can change scenario weights?",
       data_summary:
-        catalystCalendar && catalystCalendar.length
-          ? catalystCalendar.map((row: any) => `${String(row.date)}: ${String(row.label)}`.trim())
-          : ["N/A in this run (no dated filing/transcript events collected)."],
+        Array.isArray((params.analyzers as any).catalyst_ranked) &&
+        (params.analyzers as any).catalyst_ranked.length
+          ? (params.analyzers as any).catalyst_ranked.map((row: any) =>
+              [
+                `${String(row.rank)} | ${String(row.date)}: ${String(row.label)}`.trim(),
+                `Why: ${String(row.why_it_matters)}`.trim(),
+                `Changes: ${String(row.what_changes)}`.trim(),
+                `Watch: ${String(row.what_to_watch)}`.trim(),
+              ].join(" "),
+            )
+          : catalystCalendar && catalystCalendar.length
+            ? catalystCalendar.map((row: any) => `${String(row.date)}: ${String(row.label)}`.trim())
+            : ["N/A in this run (no dated filing/transcript events collected)."],
       takeaway: "Takeaway: A calendar is only as good as its dated sources.",
       source_ids: calendarSourceIdsFinal,
     },

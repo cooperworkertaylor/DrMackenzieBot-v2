@@ -47,6 +47,15 @@ export type CompanyAnalyzerOutputV2 = {
     label: string;
     source_ids: string[];
   }>;
+  catalyst_ranked: Array<{
+    rank: "A" | "B" | "C" | "D" | "E" | "F";
+    date: string; // YYYY-MM-DD
+    label: string;
+    why_it_matters: string;
+    what_changes: string;
+    what_to_watch: string;
+    source_ids: string[];
+  }>;
   numeric_facts: Array<{
     id: string;
     value: number;
@@ -314,6 +323,48 @@ const buildCatalystCalendar = (params: {
     .slice(0, 10);
 };
 
+const sanitizeNoDigits = (text: string): string =>
+  text.replaceAll(/\d+/g, "").replaceAll(/\s+/g, " ").trim();
+
+const buildRankedCatalysts = (params: {
+  calendar: CompanyAnalyzerOutputV2["catalyst_calendar"];
+}): CompanyAnalyzerOutputV2["catalyst_ranked"] => {
+  const ranks = ["A", "B", "C", "D", "E", "F"] as const;
+  return params.calendar.slice(0, ranks.length).map((row, idx) => {
+    const labelLower = row.label.toLowerCase();
+    const isFiling = labelLower.includes("sec filing");
+    const isTranscript = labelLower.includes("earnings transcript");
+
+    const why = isFiling
+      ? "Primary disclosure can update risk framing, KPI definitions, and scenario drivers."
+      : isTranscript
+        ? "Management commentary can move expectations around demand, pricing, and execution."
+        : "Dated evidence can change scenario weights if it updates drivers or risk.";
+
+    const changes = isFiling
+      ? "Scenario weights and monitoring triggers should be updated if disclosures shift."
+      : isTranscript
+        ? "Scenario weights should be updated if commentary is confirmed in filings and KPIs."
+        : "Update the monitoring plan if new evidence changes the driver set.";
+
+    const watch = isFiling
+      ? "Watch for definition drift, risk language changes, and accounting disclosure shifts."
+      : isTranscript
+        ? "Watch for confirmation in the next filing set and KPI deltas."
+        : "Watch for corroboration across independent sources.";
+
+    return {
+      rank: ranks[idx] ?? "F",
+      date: row.date,
+      label: row.label,
+      why_it_matters: sanitizeNoDigits(why),
+      what_changes: sanitizeNoDigits(changes),
+      what_to_watch: sanitizeNoDigits(watch),
+      source_ids: row.source_ids,
+    };
+  });
+};
+
 const extractSection = (text: string, startRe: RegExp, endRe: RegExp, maxChars: number): string => {
   const start = startRe.exec(text);
   if (!start || start.index < 0) return "";
@@ -480,6 +531,7 @@ export async function pass2CompanyAnalyzersV2(params: {
       title: t.title,
     })),
   });
+  const catalyst_ranked = buildRankedCatalysts({ calendar: catalyst_calendar });
 
   const sec = pickSecFixture(params.evidence);
   if (!sec?.raw_text_ref) {
@@ -494,6 +546,7 @@ export async function pass2CompanyAnalyzersV2(params: {
       accounting_flags,
       catalyst_candidates,
       catalyst_calendar,
+      catalyst_ranked,
       numeric_facts,
       kpi_table,
     };
@@ -513,6 +566,7 @@ export async function pass2CompanyAnalyzersV2(params: {
       accounting_flags,
       catalyst_candidates,
       catalyst_calendar,
+      catalyst_ranked,
       numeric_facts,
       kpi_table,
     };
@@ -584,6 +638,7 @@ export async function pass2CompanyAnalyzersV2(params: {
     accounting_flags,
     catalyst_candidates,
     catalyst_calendar,
+    catalyst_ranked,
     numeric_facts,
     kpi_table,
   };
