@@ -1,0 +1,301 @@
+{
+  "cik": "0000320193",
+  "entityName": "Apple Inc.",
+  "generatedAt": "2026-02-06T00:53:04.010Z",
+  "includeForms": [
+    "10-K",
+    "10-Q",
+    "20-F",
+    "40-F"
+  ],
+  "series": [
+    {
+      "key": "us-gaap:Assets",
+      "taxonomy": "us-gaap",
+      "concept": "Assets",
+      "label": "Assets",
+      "points": [
+        {
+          "taxonomy": "us-gaap",
+          "concept": "Assets",
+          "label": "Assets",
+          "unit": "USD",
+          "value": 359241000000,
+          "end": "2025-09-27",
+          "filed": "2026-01-30",
+          "form": "10-Q",
+          "accn": "0000320193-26-000006",
+          "fy": 2026,
+          "fp": "Q1",
+          "frame": "CY2025Q3I"
+        },
+        {
+          "taxonomy": "us-gaap",
+          "concept": "Assets",
+          "label": "Assets",
+          "unit": "USD",
+          "value": 379297000000,
+          "end": "2025-12-27",
+          "filed": "2026-01-30",
+          "form": "10-Q",
+          "accn": "0000320193-26-000006",
+          "fy": 2026,
+          "fp": "Q1",
+          "frame": "CY2025Q4I"
+        }
+      ]
+    },
+    {
+      "key": "us-gaap:EarningsPerShareDiluted",
+      "taxonomy": "us-gaap",
+      "concept": "EarningsPerShareDiluted",
+      "label": "Earnings Per Share, Diluted",
+      "points": [
+        {
+          "taxonomy": "us-gaap",
+          "concept": "EarningsPerShareDiluted",
+          "label": "Earnings Per Share, Diluted",
+          "unit": "USD/shares",
+          "value": 7.46,
+          "end": "2025-09-27",
+          "filed": "2025-10-31",
+          "form": "10-K",
+          "accn": "0000320193-25-000079",
+          "fy": 2025,
+          "fp": "FY",
+          "frame": "CY2025"
+        },
+        {
+          "taxonomy": "us-gaap",
+          "concept": "EarningsPerShareDiluted",
+          "label": "Earnings Per Share, Diluted",
+          "unit": "USD/shares",
+          "value": 2.84,
+          "end": "2025-12-27",
+          "filed": "2026-01-30",
+          "form": "10-Q",
+          "accn": "0000320193-26-000006",
+          "fy": 2026,
+          "fp": "Q1",
+          "frame": "CY2025Q4"
+        }
+      ]
+    },
+    {
+      "key": "us-gaap:Liabilities",
+      "taxonomy": "us-gaap",
+      "concept": "Liabilities",
+      "label": "Liabilities",
+      "points": [
+        {
+          "taxonomy": "us-gaap",
+          "concept": "Liabilities",
+          "label": "Liabilities",
+          "unit": "USD",
+          "value": 285508000000,
+          "end": "2025-09-27",
+          "filed": "2026-01-30",
+          "form": "10-Q",
+          "accn": "0000320193-26-000006",
+          "fy": 2026,
+          "fp": "Q1",
+          "frame": "CY2025Q3I"
+        },
+        {
+          "taxonomy": "us-gaap",
+          "concept": "Liabilities",
+          "label": "Liabilities",
+          "unit": "USD",
+          "value": 291107000000,
+          "end": "2025-12-27",
+          "filed": "2026-01-30",
+          "form": "10-Q",
+          "accn": "0000320193-26-000006",
+          "fy": 2026,
+          "fp": "Q1",
+          "frame": "CY2025Q4I"
+        }
+      ]
+    },
+    {
+      "key": "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+      "taxonomy": "us-gaap",
+      "concept": "NetCashProvidedByUsedInOperatingActivities",
+      "label": "Net Cash Provided by (Used in) Operating Activities",
+      "points": [
+        {
+          "taxonomy": "us-gaap",
+          "concept": "NetCashProvidedByUsedInOperatingActivities",
+          "label": "Net Cash Provided by (Used in) Operating Activities",
+          "unit": "USD",
+          "value": 111482000000,
+          "end": "2025-09-27",
+          "filed": "2025-10-31",
+          "form": "10-K",
+          "accn": "0000320193-25-000079",
+          "fy": 2025,
+          "fp": "FY",
+          "frame": "CY2025"
+        },
+        {
+          "taxonomy": "us-gaap",
+          "concept": "NetCashProvidedByUsedInOperatingActivities",
+          "label": "Net Cash Provided by (Used in) Operating Activities",
+          "unit": "USD",
+          "value": 53925000000,
+          "end": "2025-12-27",
+          "filed": "2026-01-30",
+          "form": "10-Q",
+          "accn": "0000320193-26-000006",
+          "fy": 2026,
+          "fp": "Q1",
+          "frame": "CY2025Q4"
+        }
+      ]
+    },
+    {
+      "key": "us-gaap:NetIncomeLoss",
+      "taxonomy": "us-gaap",
+      "concept": "NetIncomeLoss",
+      "label": "Net Income (Loss) Attributable to Parent",
+      "points": [
+        {
+          "taxonomy": "us-gaap",
+          "concept": "NetIncomeLoss",
+          "label": "Net Income (Loss) Attributable to Parent",
+          "unit": "USD",
+          "value": 112010000000,
+          "end": "2025-09-27",
+          "filed": "2025-10-31",
+          "form": "10-K",
+          "accn": "0000320193-25-000079",
+          "fy": 2025,
+          "fp": "FY",
+          "frame": "CY2025"
+        },
+        {
+          "taxonomy": "us-gaap",
+          "concept": "NetIncomeLoss",
+          "label": "Net Income (Loss) Attributable to Parent",
+          "unit": "USD",
+          "value": 42097000000,
+          "end": "2025-12-27",
+          "filed": "2026-01-30",
+          "form": "10-Q",
+          "accn": "0000320193-26-000006",
+          "fy": 2026,
+          "fp": "Q1",
+          "frame": "CY2025Q4"
+        }
+      ]
+    },
+    {
+      "key": "us-gaap:OperatingIncomeLoss",
+      "taxonomy": "us-gaap",
+      "concept": "OperatingIncomeLoss",
+      "label": "Operating Income (Loss)",
+      "points": [
+        {
+          "taxonomy": "us-gaap",
+          "concept": "OperatingIncomeLoss",
+          "label": "Operating Income (Loss)",
+          "unit": "USD",
+          "value": 133050000000,
+          "end": "2025-09-27",
+          "filed": "2025-10-31",
+          "form": "10-K",
+          "accn": "0000320193-25-000079",
+          "fy": 2025,
+          "fp": "FY",
+          "frame": "CY2025"
+        },
+        {
+          "taxonomy": "us-gaap",
+          "concept": "OperatingIncomeLoss",
+          "label": "Operating Income (Loss)",
+          "unit": "USD",
+          "value": 50852000000,
+          "end": "2025-12-27",
+          "filed": "2026-01-30",
+          "form": "10-Q",
+          "accn": "0000320193-26-000006",
+          "fy": 2026,
+          "fp": "Q1",
+          "frame": "CY2025Q4"
+        }
+      ]
+    },
+    {
+      "key": "us-gaap:Revenues",
+      "taxonomy": "us-gaap",
+      "concept": "Revenues",
+      "label": "Revenues",
+      "points": [
+        {
+          "taxonomy": "us-gaap",
+          "concept": "Revenues",
+          "label": "Revenues",
+          "unit": "USD",
+          "value": 265595000000,
+          "end": "2018-09-29",
+          "filed": "2018-11-05",
+          "form": "10-K",
+          "accn": "0000320193-18-000145",
+          "fy": 2018,
+          "fp": "FY",
+          "frame": "CY2018"
+        },
+        {
+          "taxonomy": "us-gaap",
+          "concept": "Revenues",
+          "label": "Revenues",
+          "unit": "USD",
+          "value": 62900000000,
+          "end": "2018-09-29",
+          "filed": "2018-11-05",
+          "form": "10-K",
+          "accn": "0000320193-18-000145",
+          "fy": 2018,
+          "fp": "FY",
+          "frame": "CY2018Q3"
+        }
+      ]
+    },
+    {
+      "key": "us-gaap:StockholdersEquity",
+      "taxonomy": "us-gaap",
+      "concept": "StockholdersEquity",
+      "label": "Stockholders' Equity Attributable to Parent",
+      "points": [
+        {
+          "taxonomy": "us-gaap",
+          "concept": "StockholdersEquity",
+          "label": "Stockholders' Equity Attributable to Parent",
+          "unit": "USD",
+          "value": 73733000000,
+          "end": "2025-09-27",
+          "filed": "2026-01-30",
+          "form": "10-Q",
+          "accn": "0000320193-26-000006",
+          "fy": 2026,
+          "fp": "Q1",
+          "frame": "CY2025Q3I"
+        },
+        {
+          "taxonomy": "us-gaap",
+          "concept": "StockholdersEquity",
+          "label": "Stockholders' Equity Attributable to Parent",
+          "unit": "USD",
+          "value": 88190000000,
+          "end": "2025-12-27",
+          "filed": "2026-01-30",
+          "form": "10-Q",
+          "accn": "0000320193-26-000006",
+          "fy": 2026,
+          "fp": "Q1",
+          "frame": "CY2025Q4I"
+        }
+      ]
+    }
+  ]
+}
