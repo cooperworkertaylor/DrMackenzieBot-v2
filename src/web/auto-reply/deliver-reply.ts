@@ -11,6 +11,13 @@ import { formatError } from "../session.js";
 import { whatsappOutboundLog } from "./loggers.js";
 import { elide } from "./util.js";
 
+const isPdfDocument = (p: { fileName?: string | null; contentType?: string | null }): boolean => {
+  const fileName = (p.fileName ?? "").trim().toLowerCase();
+  if (fileName.endsWith(".pdf")) return true;
+  const contentType = (p.contentType ?? "").trim().toLowerCase();
+  return contentType === "application/pdf" || contentType.startsWith("application/pdf;");
+};
+
 export async function deliverWebReply(params: {
   replyResult: ReplyPayload;
   msg: WebInboundMsg;
@@ -97,6 +104,30 @@ export async function deliverWebReply(params: {
     const caption = index === 0 ? remainingText.shift() || undefined : undefined;
     try {
       const media = await loadWebMedia(mediaUrl, maxMediaBytes);
+      if (
+        media.kind === "document" &&
+        isPdfDocument({ fileName: media.fileName, contentType: media.contentType })
+      ) {
+        const { diagnosePdfBuffer } = await import("../../research/pdf-diagnostics.js");
+        const diag = await diagnosePdfBuffer({
+          buffer: media.buffer,
+          maxPages: 50,
+          strict: true,
+        });
+        if (diag.errors.length) {
+          const topErrors = diag.errors.slice(0, 8).join("; ");
+          const refusal = [
+            "Refused to send PDF: failed strict pre-send diagnostics.",
+            `errors=${topErrors || "unknown"}`,
+            `metrics=urlCount=${diag.metrics.urlCount} citationKeyCount=${diag.metrics.citationKeyCount} exhibitTokenCount=${diag.metrics.exhibitTokenCount} sourcesHeadingPresent=${diag.metrics.sourcesHeadingPresent ? 1 : 0} placeholderTokenCount=${diag.metrics.placeholderTokenCount} dashMojibakeDateCount=${diag.metrics.dashMojibakeDateCount} dashMojibakeStandaloneNCount=${diag.metrics.dashMojibakeStandaloneNCount}`,
+          ].join("\n");
+          whatsappOutboundLog.warn(
+            `Strict PDF diagnostics blocked delivery to ${msg.from}: ${topErrors || "unknown"}`,
+          );
+          await msg.reply(refusal);
+          continue;
+        }
+      }
       if (shouldLogVerbose()) {
         logVerbose(
           `Web auto-reply media size: ${(media.buffer.length / (1024 * 1024)).toFixed(2)}MB`,

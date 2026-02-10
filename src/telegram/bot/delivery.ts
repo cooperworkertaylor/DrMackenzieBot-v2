@@ -31,6 +31,13 @@ import {
 const PARSE_ERR_RE = /can't parse entities|parse entities|find end of the entity/i;
 const VOICE_FORBIDDEN_RE = /VOICE_MESSAGES_FORBIDDEN/;
 
+const isPdfDocument = (p: { fileName?: string | null; contentType?: string | null }): boolean => {
+  const fileName = (p.fileName ?? "").trim().toLowerCase();
+  if (fileName.endsWith(".pdf")) return true;
+  const contentType = (p.contentType ?? "").trim().toLowerCase();
+  return contentType === "application/pdf" || contentType.startsWith("application/pdf;");
+};
+
 export async function deliverReplies(params: {
   replies: ReplyPayload[];
   chatId: string;
@@ -252,6 +259,35 @@ export async function deliverReplies(params: {
           markDelivered();
         }
       } else {
+        if (kind === "document" && isPdfDocument({ fileName, contentType: media.contentType })) {
+          const { diagnosePdfBuffer } = await import("../../research/pdf-diagnostics.js");
+          const diag = await diagnosePdfBuffer({
+            buffer: media.buffer,
+            maxPages: 50,
+            strict: true,
+          });
+          if (diag.errors.length) {
+            const topErrors = diag.errors.slice(0, 8).join("; ");
+            const refusal = [
+              "Refused to send PDF: failed strict pre-send diagnostics.",
+              `errors=${topErrors || "unknown"}`,
+              `metrics=urlCount=${diag.metrics.urlCount} citationKeyCount=${diag.metrics.citationKeyCount} exhibitTokenCount=${diag.metrics.exhibitTokenCount} sourcesHeadingPresent=${diag.metrics.sourcesHeadingPresent ? 1 : 0} placeholderTokenCount=${diag.metrics.placeholderTokenCount} dashMojibakeDateCount=${diag.metrics.dashMojibakeDateCount} dashMojibakeStandaloneNCount=${diag.metrics.dashMojibakeStandaloneNCount}`,
+            ].join("\n");
+            await sendTelegramText(bot, chatId, refusal, runtime, {
+              replyToMessageId,
+              replyQuoteText,
+              thread,
+              linkPreview,
+              replyMarkup: isFirstMedia ? replyMarkup : undefined,
+              plainText: refusal,
+            });
+            markDelivered();
+            if (replyToId && !hasReplied) {
+              hasReplied = true;
+            }
+            continue;
+          }
+        }
         await withTelegramApiErrorLogging({
           operation: "sendDocument",
           runtime,

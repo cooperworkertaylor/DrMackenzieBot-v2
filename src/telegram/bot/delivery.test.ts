@@ -3,9 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { deliverReplies } from "./delivery.js";
 
 const loadWebMedia = vi.fn();
+const diagnosePdfBuffer = vi.fn();
 
 vi.mock("../../web/media.js", () => ({
   loadWebMedia: (...args: unknown[]) => loadWebMedia(...args),
+}));
+
+vi.mock("../../research/pdf-diagnostics.js", () => ({
+  diagnosePdfBuffer: (...args: unknown[]) => diagnosePdfBuffer(...args),
 }));
 
 vi.mock("grammy", () => ({
@@ -23,6 +28,7 @@ vi.mock("grammy", () => ({
 describe("deliverReplies", () => {
   beforeEach(() => {
     loadWebMedia.mockReset();
+    diagnosePdfBuffer.mockReset();
   });
 
   it("skips audioAsVoice-only payloads without logging an error", async () => {
@@ -136,6 +142,48 @@ describe("deliverReplies", () => {
         link_preview_options: { is_disabled: true },
       }),
     );
+  });
+
+  it("blocks PDFs that fail strict diagnostics and sends refusal text instead", async () => {
+    const runtime = { error: vi.fn(), log: vi.fn() };
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 11, chat: { id: "123" } });
+    const sendDocument = vi.fn().mockResolvedValue({ message_id: 12, chat: { id: "123" } });
+    const bot = { api: { sendMessage, sendDocument } } as unknown as Bot;
+
+    loadWebMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("%PDF-1.7"),
+      contentType: "application/pdf",
+      fileName: "report.pdf",
+    });
+    diagnosePdfBuffer.mockResolvedValueOnce({
+      metrics: {
+        markdownHeadingTokens: 0,
+        markdownFenceTokens: 0,
+        urlCount: 0,
+        citationKeyCount: 0,
+        exhibitTokenCount: 0,
+        sourcesHeadingPresent: false,
+        dashMojibakeDateCount: 0,
+        dashMojibakeStandaloneNCount: 0,
+        placeholderTokenCount: 1,
+        extractedChars: 100,
+      },
+      errors: ["missing_citation_keys: citationKeyCount=0 (min=1)"],
+    });
+
+    await deliverReplies({
+      replies: [{ mediaUrl: "https://example.com/report.pdf", text: "caption" }],
+      chatId: "123",
+      token: "tok",
+      runtime,
+      bot,
+      replyToMode: "off",
+      textLimit: 4000,
+    });
+
+    expect(sendDocument).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(String(sendMessage.mock.calls[0]?.[1] ?? "")).toContain("Refused to send PDF");
   });
 
   it("keeps message_thread_id=1 when allowed", async () => {
