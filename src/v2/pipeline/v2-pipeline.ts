@@ -1,6 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { EvidenceItem } from "../evidence/evidence-store.js";
+import {
+  ingestExpectations,
+  ingestFilings,
+  ingestFundamentals,
+  ingestPrices,
+} from "../../research/ingest.js";
+import { ingestDefaultMacroFactors } from "../../research/macro-factors.js";
+import { syncEmbeddings } from "../../research/vector-search.js";
 import { buildPlanCompanyV2, buildPlanThemeV2, type ResearchPlanV2 } from "./passes/pass0-plan.js";
 import { pass1EvidenceCompanyV2, pass1EvidenceThemeV2 } from "./passes/pass1-evidence.js";
 import { pass2CompanyAnalyzersV2 } from "./passes/pass2-analyzers-company.js";
@@ -20,6 +28,62 @@ const slugify = (value: string): string =>
 const runIdDefault = (prefix: string): string => {
   const ts = new Date().toISOString().replaceAll(/[:.]/g, "").replace("T", "-").replace("Z", "Z");
   return `${prefix}-${ts}`.slice(0, 96);
+};
+
+const parseBoolean = (raw: string | undefined): boolean | undefined => {
+  if (typeof raw !== "string") return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return undefined;
+};
+
+const v2HydrateEnabled = (): boolean =>
+  parseBoolean(process.env.OPENCLAW_RESEARCH_V2_HYDRATE) ?? false;
+
+const hydrateTickersIfEnabled = async (params: {
+  tickers: string[];
+  dbPath?: string;
+}): Promise<string[]> => {
+  if (!v2HydrateEnabled()) return ["disabled"];
+  const userAgent =
+    process.env.SEC_USER_AGENT?.trim() || process.env.SEC_EDGAR_USER_AGENT?.trim() || undefined;
+  const notes: string[] = [];
+  const run = async (label: string, task: () => Promise<unknown>) => {
+    try {
+      await task();
+      notes.push(`${label}=ok`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      notes.push(`${label}=skip(${message})`);
+    }
+  };
+
+  const tickers = Array.from(new Set(params.tickers.map((t) => t.trim().toUpperCase()))).filter(
+    Boolean,
+  );
+  for (const ticker of tickers) {
+    await run(`${ticker}:prices`, async () => {
+      await ingestPrices(ticker, { dbPath: params.dbPath });
+    });
+    await run(`${ticker}:fundamentals`, async () => {
+      await ingestFundamentals(ticker, { userAgent, dbPath: params.dbPath });
+    });
+    await run(`${ticker}:expectations`, async () => {
+      await ingestExpectations(ticker, { dbPath: params.dbPath });
+    });
+    await run(`${ticker}:filings`, async () => {
+      await ingestFilings(ticker, { limit: 20, userAgent, dbPath: params.dbPath });
+    });
+  }
+  await run("macro:default", async () => {
+    await ingestDefaultMacroFactors({ dbPath: params.dbPath });
+  });
+  await run("embed", async () => {
+    await syncEmbeddings(params.dbPath);
+  });
+  return notes;
 };
 
 export type PipelineRunResultV2 = {
@@ -43,6 +107,13 @@ export async function runCompanyPipelineV2(params: {
   const ticker = params.ticker.trim().toUpperCase();
   const runId = (params.runId ?? "").trim() || runIdDefault(`v2-company-${slugify(ticker)}`);
   const runDir = await ensureRunDir(runId);
+
+  const hydration = await hydrateTickersIfEnabled({ tickers: [ticker], dbPath: params.dbPath });
+  await writeRunJson({
+    runDir,
+    filename: "Hydration.json",
+    value: { enabled: v2HydrateEnabled(), notes: hydration },
+  });
 
   const plan = buildPlanCompanyV2({ runId, ticker, question: params.question });
   await writeRunJson({ runDir, filename: "ResearchPlan.json", value: plan });
@@ -119,6 +190,13 @@ export async function runThemePipelineV2(params: {
     (params.runId ?? "").trim() ||
     runIdDefault(`v2-theme-${slugify(themeName || universe.join("-") || "theme")}`);
   const runDir = await ensureRunDir(runId);
+
+  const hydration = await hydrateTickersIfEnabled({ tickers: universe, dbPath: params.dbPath });
+  await writeRunJson({
+    runDir,
+    filename: "Hydration.json",
+    value: { enabled: v2HydrateEnabled(), notes: hydration },
+  });
 
   const plan = buildPlanThemeV2({ runId, themeName, universe });
   await writeRunJson({ runDir, filename: "ResearchPlan.json", value: plan });
