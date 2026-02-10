@@ -2,7 +2,7 @@
   "version": 2,
   "kind": "theme",
   "run_id": "demo-theme-evidence-first-v2",
-  "generated_at": "2026-02-10T03:52:58.540Z",
+  "generated_at": "2026-02-10T03:58:09.512Z",
   "subject": {
     "theme_name": "Evidence-first underwriting",
     "universe": [
@@ -33,7 +33,7 @@
       "title": "Internal: v2 research contracts and quality gates",
       "publisher": "Internal",
       "date_published": "2026-02-10",
-      "accessed_at": "2026-02-10T03:52:58.539Z",
+      "accessed_at": "2026-02-10T03:58:09.511Z",
       "url": "https://example.com/internal/v2-quality-gates",
       "reliability_tier": 4,
       "excerpt_or_key_points": [
@@ -50,7 +50,7 @@
       "title": "SEC XBRL time-series (AAPL)",
       "publisher": "SEC",
       "date_published": "2026-02-10",
-      "accessed_at": "2026-02-10T03:52:58.539Z",
+      "accessed_at": "2026-02-10T03:58:09.511Z",
       "url": "https://sec.gov/edgar/search",
       "reliability_tier": 1,
       "excerpt_or_key_points": [

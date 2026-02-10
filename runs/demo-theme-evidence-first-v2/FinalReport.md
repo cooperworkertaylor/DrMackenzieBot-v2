@@ -1,7 +1,7 @@
 # Theme Memo (v2): Evidence-first underwriting
 
 - Run: demo-theme-evidence-first-v2
-- Generated at: 2026-02-10T03:52:58.540Z
+- Generated at: 2026-02-10T03:58:09.512Z
 
 ## Executive Summary (Definition + Variant + Winners/Losers)
 - **FACT:** This theme memo is constrained to collected evidence; unsupported claims are marked as assumptions or omitted. [S1]
@@ -88,6 +88,6 @@
 
 ## Sources (timestamped)
 
-- S1: tier=4 publisher=Internal date=2026-02-10 accessed_at=2026-02-10T03:52:58.539Z host=example.com | https://example.com/internal/v2-quality-gates
-- S2: tier=1 publisher=SEC date=2026-02-10 accessed_at=2026-02-10T03:52:58.539Z host=sec.gov | https://sec.gov/edgar/search
+- S1: tier=4 publisher=Internal date=2026-02-10 accessed_at=2026-02-10T03:58:09.511Z host=example.com | https://example.com/internal/v2-quality-gates
+- S2: tier=1 publisher=SEC date=2026-02-10 accessed_at=2026-02-10T03:58:09.511Z host=sec.gov | https://sec.gov/edgar/search
 

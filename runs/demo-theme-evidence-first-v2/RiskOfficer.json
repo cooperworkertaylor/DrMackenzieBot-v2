@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generated_at": "2026-02-10T03:52:58.539Z",
+  "generated_at": "2026-02-10T03:58:09.512Z",
   "kind": "theme",
   "subject": "Evidence-first underwriting",
   "premortem": [
-    "We shipped a compelling story without sufficient Tier 1/2 coverage, and the thesis failed on basic accounting or KPI reality.",
+    "We shipped a compelling story without sufficient Tier one and Tier two coverage, and the thesis failed on basic accounting or KPI reality.",
     "We anchored on one confirming source and ignored disconfirming data; contradictions accumulated silently.",
     "We sized risk before defining measurable triggers, turning research into opinion rather than a monitored system."
   ],
@@ -21,7 +21,7 @@
     {
       "statement": "The thesis remains valid only if the core value driver continues to show up in reported KPIs.",
       "trigger": "Two consecutive reporting periods with KPI deltas inconsistent with the thesis drivers.",
-      "verification_plan": "Track KPI deltas from Tier 1 filings and reconcile definitions before interpreting."
+      "verification_plan": "Track KPI deltas from Tier one filings and reconcile definitions before interpreting."
     },
     {
       "statement": "The thesis assumes durable capture mechanisms.",

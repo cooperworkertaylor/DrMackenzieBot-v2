@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import type { EvidenceItem } from "../evidence/evidence-store.js";
 import { buildPlanCompanyV2, buildPlanThemeV2, type ResearchPlanV2 } from "./passes/pass0-plan.js";
@@ -82,12 +83,13 @@ export async function runCompanyPipelineV2(params: {
   await writeRunJson({ runDir, filename: "QualityGate.json", value: compiled.gate });
 
   if (!compiled.gate.passed) {
-    const failPath = path.join(runDir, "FAILED_QUALITY_GATE.json");
     await writeRunJson({
       runDir,
-      filename: path.basename(failPath),
+      filename: "FAILED_QUALITY_GATE.json",
       value: { status: "FAILED_QUALITY_GATE", issues: compiled.gate.issues },
     });
+  } else {
+    await fs.rm(path.join(runDir, "FAILED_QUALITY_GATE.json"), { force: true });
   }
 
   return {
@@ -165,6 +167,8 @@ export async function runThemePipelineV2(params: {
       filename: "FAILED_QUALITY_GATE.json",
       value: { status: "FAILED_QUALITY_GATE", issues: compiled.gate.issues },
     });
+  } else {
+    await fs.rm(path.join(runDir, "FAILED_QUALITY_GATE.json"), { force: true });
   }
 
   return {

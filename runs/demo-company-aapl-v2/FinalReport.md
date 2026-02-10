@@ -1,7 +1,7 @@
 # Company Memo (v2): AAPL
 
 - Run: demo-company-aapl-v2
-- Generated at: 2026-02-10T03:54:29.564Z
+- Generated at: 2026-02-10T03:58:09.474Z
 
 ## Executive Summary (Base/Bull/Bear)
 - **FACT:** Anchor KPI baseline: reported metric is $265.60B. [S1] [^N1]
@@ -108,12 +108,12 @@
 
 ## Sources (timestamped)
 
-- S1: tier=1 publisher=SEC date=2026-02-10 accessed_at=2026-02-10T03:54:29.562Z host=sec.gov | https://sec.gov/edgar/search
+- S1: tier=1 publisher=SEC date=2026-02-10 accessed_at=2026-02-10T03:58:09.472Z host=sec.gov | https://sec.gov/edgar/search
 
 ## Numeric Footnotes
 
-[^N1]: N1=$265.60B unit=USD period=FY2018 FY end=2018-09-29 source=S1 accessed_at=2026-02-10T03:54:29.562Z notes=form=10-K
-[^N2]: N2=$133.05B unit=USD period=FY2025 FY end=2025-09-27 source=S1 accessed_at=2026-02-10T03:54:29.562Z notes=form=10-K
-[^N3]: N3=$112.01B unit=USD period=FY2025 FY end=2025-09-27 source=S1 accessed_at=2026-02-10T03:54:29.562Z notes=form=10-K
-[^N4]: N4=$111.48B unit=USD period=FY2025 FY end=2025-09-27 source=S1 accessed_at=2026-02-10T03:54:29.562Z notes=form=10-K
+[^N1]: N1=$265.60B unit=USD period=FY2018 FY end=2018-09-29 source=S1 accessed_at=2026-02-10T03:58:09.472Z notes=form=10-K
+[^N2]: N2=$133.05B unit=USD period=FY2025 FY end=2025-09-27 source=S1 accessed_at=2026-02-10T03:58:09.472Z notes=form=10-K
+[^N3]: N3=$112.01B unit=USD period=FY2025 FY end=2025-09-27 source=S1 accessed_at=2026-02-10T03:58:09.472Z notes=form=10-K
+[^N4]: N4=$111.48B unit=USD period=FY2025 FY end=2025-09-27 source=S1 accessed_at=2026-02-10T03:58:09.472Z notes=form=10-K
 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated_at": "2026-02-10T03:54:29.564Z",
+  "generated_at": "2026-02-10T03:58:09.474Z",
   "ticker": "AAPL",
   "notes": [],
   "numeric_facts": [
@@ -11,7 +11,7 @@
       "period": "FY2018 FY end=2018-09-29",
       "currency": "USD",
       "source_id": "S1",
-      "accessed_at": "2026-02-10T03:54:29.562Z",
+      "accessed_at": "2026-02-10T03:58:09.472Z",
       "notes": "form=10-K"
     },
     {
@@ -21,7 +21,7 @@
       "period": "FY2025 FY end=2025-09-27",
       "currency": "USD",
       "source_id": "S1",
-      "accessed_at": "2026-02-10T03:54:29.562Z",
+      "accessed_at": "2026-02-10T03:58:09.472Z",
       "notes": "form=10-K"
     },
     {
@@ -31,7 +31,7 @@
       "period": "FY2025 FY end=2025-09-27",
       "currency": "USD",
       "source_id": "S1",
-      "accessed_at": "2026-02-10T03:54:29.562Z",
+      "accessed_at": "2026-02-10T03:58:09.472Z",
       "notes": "form=10-K"
     },
     {
@@ -41,7 +41,7 @@
       "period": "FY2025 FY end=2025-09-27",
       "currency": "USD",
       "source_id": "S1",
-      "accessed_at": "2026-02-10T03:54:29.562Z",
+      "accessed_at": "2026-02-10T03:58:09.472Z",
       "notes": "form=10-K"
     }
   ],
