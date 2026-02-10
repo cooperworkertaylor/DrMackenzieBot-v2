@@ -116,6 +116,7 @@ import { searchResearch, syncEmbeddings, writeBackup } from "../research/vector-
 import { defaultRuntime } from "../runtime.js";
 import { formatDocsLink } from "../terminal/links.js";
 import { theme } from "../terminal/theme.js";
+import { runCompanyPipelineV2, runThemePipelineV2 } from "../v2/pipeline/v2-pipeline.js";
 import { runCommandWithRuntime } from "./cli-utils.js";
 
 type SecXbrlOptions = {
@@ -1949,8 +1950,52 @@ export function registerResearchCli(program: Command) {
     .option("--out <path>", "Write institutional report markdown to file")
     .option("--print-metrics", "Print quality/telemetry metrics to stdout", false)
     .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--run-id <id>", "Optional explicit run id (v2 pipeline only)")
+    .option("--v2-fixture-dir <path>", "Optional fixture directory for v2 evidence collection")
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
+        const pipeline = (process.env.RESEARCH_PIPELINE ?? "").trim().toLowerCase();
+        if (pipeline === "v2") {
+          const tickers =
+            typeof opts.tickers === "string" && opts.tickers.trim()
+              ? parseTickersOption(opts.tickers as string)
+              : [];
+          if (!tickers.length) {
+            throw new Error(
+              "v2 theme memo requires --tickers (CSV) until theme registry evidence collection is wired for v2.",
+            );
+          }
+          const result = await runThemePipelineV2({
+            themeName: opts.theme as string,
+            universe: tickers,
+            fixtureDir: (opts.v2FixtureDir as string | undefined) ?? undefined,
+            runId: (opts.runId as string | undefined) ?? undefined,
+          });
+          if (!result.passed) {
+            const reasons = result.issues
+              .filter((i) => i.severity === "error")
+              .slice(0, 12)
+              .map((i) => `${i.code}${i.path ? `@${i.path}` : ""}: ${i.message}`)
+              .join("; ");
+            throw new Error(
+              `v2 quality gate failed (run_id=${result.runId}): ${reasons || "unknown"}`,
+            );
+          }
+          if (opts.out) {
+            const outPath = path.resolve(opts.out as string);
+            await fs.writeFile(
+              outPath,
+              await fs.readFile(result.reportMarkdownPath, "utf8"),
+              "utf8",
+            );
+            defaultRuntime.log(`v2 theme memo written to ${outPath}`);
+            defaultRuntime.log(`v2 run dir: ${result.runDir}`);
+          } else {
+            defaultRuntime.log(await fs.readFile(result.reportMarkdownPath, "utf8"));
+          }
+          return;
+        }
+
         const tickers =
           typeof opts.tickers === "string" && opts.tickers.trim()
             ? parseTickersOption(opts.tickers as string)
@@ -3292,6 +3337,8 @@ export function registerResearchCli(program: Command) {
     .requiredOption("--ticker <symbol>", "Ticker symbol")
     .requiredOption("--question <text>", "Research question")
     .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--run-id <id>", "Optional explicit run id (v2 pipeline only)")
+    .option("--v2-fixture-dir <path>", "Optional fixture directory for v2 evidence collection")
     .option("--out <path>", "Write memo markdown to file")
     .option("--print-metrics", "Print quality/telemetry metrics to stdout", false)
     .option("--allow-draft", "Allow output even if institutional quality gate fails", false)
@@ -3299,6 +3346,41 @@ export function registerResearchCli(program: Command) {
     .option("--quality-attempts <n>", "Quality refinement attempts before hard fail", "4")
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
+        const pipeline = (process.env.RESEARCH_PIPELINE ?? "").trim().toLowerCase();
+        if (pipeline === "v2") {
+          const result = await runCompanyPipelineV2({
+            ticker: opts.ticker as string,
+            question: opts.question as string,
+            fixtureDir: (opts.v2FixtureDir as string | undefined) ?? undefined,
+            runId: (opts.runId as string | undefined) ?? undefined,
+          });
+
+          if (!result.passed) {
+            const reasons = result.issues
+              .filter((i) => i.severity === "error")
+              .slice(0, 12)
+              .map((i) => `${i.code}${i.path ? `@${i.path}` : ""}: ${i.message}`)
+              .join("; ");
+            throw new Error(
+              `v2 quality gate failed (run_id=${result.runId}): ${reasons || "unknown"}`,
+            );
+          }
+
+          if (opts.out) {
+            const outPath = path.resolve(opts.out as string);
+            await fs.writeFile(
+              outPath,
+              await fs.readFile(result.reportMarkdownPath, "utf8"),
+              "utf8",
+            );
+            defaultRuntime.log(`v2 memo written to ${outPath}`);
+            defaultRuntime.log(`v2 run dir: ${result.runDir}`);
+          } else {
+            defaultRuntime.log(await fs.readFile(result.reportMarkdownPath, "utf8"));
+          }
+          return;
+        }
+
         const qualityAttempts = Math.max(1, parseOptionalNumber(opts["qualityAttempts"]) ?? 4);
         const strictMode = !Boolean(opts.allowDraft);
         const baseQuestion = (opts.question as string).trim();
