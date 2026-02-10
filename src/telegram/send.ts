@@ -429,12 +429,36 @@ export async function sendMessageTelegram(
         });
       }
     } else {
-      result = await requestWithDiag(
-        () => api.sendDocument(chatId, file, mediaParams),
-        "document",
-      ).catch((err) => {
-        throw wrapChatNotFound(err);
-      });
+      try {
+        result = await requestWithDiag(
+          () => api.sendDocument(chatId, file, mediaParams),
+          "document",
+        ).catch((err) => {
+          throw wrapChatNotFound(err);
+        });
+      } catch (err) {
+        const errText = formatErrorMessage(err);
+        const refusal = [
+          "❌ Telegram failed sending document attachment.",
+          `fileName=${fileName}`,
+          `bytes=${media.buffer.length}`,
+          `error=${errText}`,
+        ].join("\n");
+        const textParams =
+          hasThreadParams || replyMarkup
+            ? {
+                ...threadParams,
+                ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+              }
+            : undefined;
+        const res = await sendTelegramText(refusal, textParams, refusal).catch((err2) => {
+          throw wrapChatNotFound(err2);
+        });
+        return {
+          messageId: String(res?.message_id ?? "unknown"),
+          chatId: String(res?.chat?.id ?? chatId),
+        };
+      }
     }
     const mediaMessageId = String(result?.message_id ?? "unknown");
     const resolvedChatId = String(result?.chat?.id ?? chatId);

@@ -34,6 +34,32 @@
         "universe": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
+        },
+        "universe_entities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "type", "label"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "equity",
+                  "crypto_asset",
+                  "protocol",
+                  "private_company",
+                  "index",
+                  "other"
+                ]
+              },
+              "label": { "type": "string", "minLength": 1 },
+              "symbol": { "type": "string", "minLength": 1 },
+              "urls": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+              "notes": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+            }
+          }
         }
       }
     },

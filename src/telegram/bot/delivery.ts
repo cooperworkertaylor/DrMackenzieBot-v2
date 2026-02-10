@@ -288,12 +288,35 @@ export async function deliverReplies(params: {
             continue;
           }
         }
-        await withTelegramApiErrorLogging({
-          operation: "sendDocument",
-          runtime,
-          fn: () => bot.api.sendDocument(chatId, file, { ...mediaParams }),
-        });
-        markDelivered();
+        try {
+          await withTelegramApiErrorLogging({
+            operation: "sendDocument",
+            runtime,
+            fn: () => bot.api.sendDocument(chatId, file, { ...mediaParams }),
+          });
+          markDelivered();
+        } catch (err) {
+          const errText = formatErrorMessage(err);
+          const refusal = [
+            "❌ Telegram failed sending document attachment.",
+            `fileName=${fileName}`,
+            `bytes=${media.buffer.length}`,
+            `error=${errText}`,
+          ].join("\n");
+          await sendTelegramText(bot, chatId, refusal, runtime, {
+            replyToMessageId,
+            replyQuoteText,
+            thread,
+            linkPreview,
+            replyMarkup: isFirstMedia ? replyMarkup : undefined,
+            plainText: refusal,
+          });
+          markDelivered();
+          if (replyToId && !hasReplied) {
+            hasReplied = true;
+          }
+          continue;
+        }
       }
       if (replyToId && !hasReplied) {
         hasReplied = true;

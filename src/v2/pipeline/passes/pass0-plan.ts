@@ -1,4 +1,5 @@
 import type { ReportKindV2 } from "../../quality/types.js";
+import type { ThemeUniverseEntityV2 } from "../../quality/types.js";
 
 export type ResearchPlanV2 = {
   version: 1;
@@ -27,6 +28,7 @@ export type ResearchPlanV2 = {
     query: string;
     priority: "primary" | "secondary";
   }>;
+  universe_entities?: ThemeUniverseEntityV2[];
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -99,6 +101,7 @@ export function buildPlanThemeV2(params: {
   runId: string;
   themeName: string;
   universe: string[];
+  universeEntities?: ThemeUniverseEntityV2[];
   horizon?: string;
   timeboxMinutes?: number;
 }): ResearchPlanV2 {
@@ -148,5 +151,6 @@ export function buildPlanThemeV2(params: {
         priority: "secondary" as const,
       })),
     ],
+    ...(params.universeEntities?.length ? { universe_entities: params.universeEntities } : {}),
   };
 }

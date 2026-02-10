@@ -311,6 +311,13 @@ async function maybeHandleQuickResearchPdfRequest(params: {
       scanned_docs: number;
       inferred_tickers: string[];
       inferred_domains: string[];
+      inferred_entities?: Array<{
+        id: string;
+        type: "equity" | "crypto_asset" | "protocol" | "private_company" | "index" | "other";
+        label: string;
+        symbol?: string;
+        urls?: string[];
+      }>;
     } | null = null;
     let themeRes: { tickers: string[] } | undefined;
     try {
@@ -344,6 +351,10 @@ async function maybeHandleQuickResearchPdfRequest(params: {
     const result = await runThemePipelineV2({
       themeName: req.theme,
       universe,
+      universeEntities:
+        inferredUniverse?.inferred_entities && inferredUniverse.inferred_entities.length
+          ? inferredUniverse.inferred_entities
+          : undefined,
       timeboxMinutes: req.minutes,
     });
     if (!result.passed) {

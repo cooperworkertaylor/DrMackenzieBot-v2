@@ -237,6 +237,7 @@ export async function runCompanyPipelineV2(params: {
 export async function runThemePipelineV2(params: {
   themeName: string;
   universe: string[];
+  universeEntities?: import("../quality/types.js").ThemeUniverseEntityV2[];
   fixtureDir?: string;
   runId?: string;
   timeboxMinutes?: number;
@@ -261,6 +262,7 @@ export async function runThemePipelineV2(params: {
     themeName,
     universe,
     timeboxMinutes: params.timeboxMinutes,
+    universeEntities: params.universeEntities,
   });
   await writeRunJson({ runDir, filename: "ResearchPlan.json", value: plan });
 
@@ -268,6 +270,7 @@ export async function runThemePipelineV2(params: {
     runDir,
     themeName,
     universe,
+    universeEntities: params.universeEntities,
     fixtureDir: params.fixtureDir,
     dbPath: params.dbPath,
   });
@@ -325,6 +328,7 @@ export async function runThemePipelineV2(params: {
   const analyzers = await pass2ThemeAnalyzersV2({
     themeName,
     universe,
+    universeEntities: params.universeEntities,
     evidence: evidencePass.evidence,
   });
   await writeRunJson({ runDir, filename: "Analyzers.theme.json", value: analyzers });
@@ -335,7 +339,7 @@ export async function runThemePipelineV2(params: {
   const compiled = await pass4CompileReportV2({
     kind: "theme",
     runId,
-    subject: { themeName, universe },
+    subject: { themeName, universe, universeEntities: params.universeEntities },
     plan,
     evidence: evidencePass.evidence,
     analyzers,
