@@ -71,11 +71,85 @@ const collectDbEvidenceForTicker = async (params: {
 }): Promise<void> => {
   const ticker = params.ticker.trim().toUpperCase();
   const db = openResearchDb(params.dbPath);
+  const collectExternalDocuments = async (): Promise<void> => {
+    const docs = db
+      .prepare(
+        `SELECT id, source_type, provider, sender, title, subject, url, published_at, received_at, content, fetched_at
+         FROM external_documents
+         WHERE upper(ticker)=?
+         ORDER BY received_at DESC, fetched_at DESC
+         LIMIT 12`,
+      )
+      .all(ticker) as Array<{
+      id: number;
+      source_type?: string;
+      provider?: string;
+      sender?: string;
+      title?: string;
+      subject?: string;
+      url?: string;
+      published_at?: string;
+      received_at?: string;
+      content?: string;
+      fetched_at: number;
+    }>;
+
+    for (const row of docs) {
+      const fetchedAt =
+        typeof row.fetched_at === "number" ? row.fetched_at : Math.floor(Date.now() / 1000);
+      const published =
+        (row.published_at ?? row.received_at ?? "").slice(0, 10) ||
+        toYmd(new Date(fetchedAt * 1000));
+      const accessedAt = new Date(fetchedAt * 1000).toISOString();
+      const url =
+        (row.url ?? "").trim() || `https://local.openclaw.ai/external_documents/${row.id}`;
+      const publisher = (row.provider ?? "").trim() || "External";
+      const title =
+        (row.title ?? "").trim() ||
+        (row.subject ?? "").trim() ||
+        `External research (${publisher})`;
+
+      const baseInsert = {
+        title,
+        publisher,
+        date_published: published,
+        accessed_at: accessedAt,
+        url,
+        reliability_tier: 4,
+        excerpt_or_key_points: [
+          `source_type=${(row.source_type ?? "").trim() || "unknown"}`,
+          (row.sender ?? "").trim() ? `sender=${(row.sender ?? "").trim()}` : "sender=unknown",
+          (row.provider ?? "").trim()
+            ? `provider=${(row.provider ?? "").trim()}`
+            : "provider=unknown",
+        ],
+        tags: [
+          `company:${ticker}`,
+          "type:external_document",
+          row.source_type ? `source_type:${row.source_type}` : "",
+          row.provider ? `provider:${row.provider}` : "",
+        ].filter(Boolean),
+      } as const;
+
+      const evidence = params.store.add(baseInsert);
+      if ((row.content ?? "").trim()) {
+        const rawRef = await writeTextIntoRun({
+          runDir: params.runDir,
+          evidenceId: evidence.id,
+          text: row.content ?? "",
+        });
+        params.store.add({ ...baseInsert, raw_text_ref: rawRef });
+      }
+    }
+  };
   const instrument = db.prepare("SELECT id FROM instruments WHERE ticker=?").get(ticker) as
     | { id?: number }
     | undefined;
   const instrumentId = instrument?.id;
-  if (typeof instrumentId !== "number") return;
+  if (typeof instrumentId !== "number") {
+    await collectExternalDocuments();
+    return;
+  }
 
   const filings = db
     .prepare(
@@ -198,6 +272,8 @@ const collectDbEvidenceForTicker = async (params: {
       });
     }
   }
+
+  await collectExternalDocuments();
 };
 
 export async function pass1EvidenceCompanyV2(params: {
