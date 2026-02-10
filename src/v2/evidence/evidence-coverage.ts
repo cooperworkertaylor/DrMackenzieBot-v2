@@ -65,6 +65,14 @@ export function evaluateEvidenceCoverage(params: {
           hasTag(s.tags, `company:${ticker}`) &&
           (hasTag(s.tags, "source:sec") || hasTag(s.tags, "type:filing")),
       );
+      const secTaggedWithRawText = countBy(
+        sources,
+        (s) =>
+          s.reliability_tier === 1 &&
+          hasTag(s.tags, `company:${ticker}`) &&
+          (hasTag(s.tags, "source:sec") || hasTag(s.tags, "type:filing")) &&
+          Boolean((s.raw_text_ref ?? "").trim()),
+      );
 
       if (companyTaggedTier12 < 1) {
         issues.push({
@@ -82,6 +90,15 @@ export function evaluateEvidenceCoverage(params: {
           path: "/sources",
           message: `Missing SEC filing evidence for ${ticker} (need at least one Tier 1 SEC source).`,
           fix: "Ingest recent SEC filings and include them as Tier 1 evidence in the library.",
+        });
+      }
+      if (secTagged >= 1 && secTaggedWithRawText < 1) {
+        issues.push({
+          severity: "error",
+          code: "evidence_missing_company_sec_raw_text",
+          path: "/sources",
+          message: `SEC filing sources exist for ${ticker}, but none have raw_text_ref available (needed for extraction).`,
+          fix: "Ensure filing text is ingested/stored (filings.text) and exported into runs/<run_id>/sources via PASS 1.",
         });
       }
     }
@@ -109,6 +126,37 @@ export function evaluateEvidenceCoverage(params: {
           path: "/subject/universe",
           message: `Theme universe missing Tier 1/2 evidence coverage for: ${missing.join(", ")}.`,
           fix: "Ingest at least one Tier 1/2 source per universe ticker, or remove tickers until covered.",
+        });
+      }
+
+      // Warn (for now) when we have Tier 1 SEC evidence but no raw text to extract.
+      const missingRaw: string[] = [];
+      for (const ticker of universe) {
+        const secTagged = countBy(
+          sources,
+          (s) =>
+            s.reliability_tier === 1 &&
+            hasTag(s.tags, `company:${ticker}`) &&
+            (hasTag(s.tags, "source:sec") || hasTag(s.tags, "type:filing")),
+        );
+        if (secTagged < 1) continue;
+        const secWithText = countBy(
+          sources,
+          (s) =>
+            s.reliability_tier === 1 &&
+            hasTag(s.tags, `company:${ticker}`) &&
+            (hasTag(s.tags, "source:sec") || hasTag(s.tags, "type:filing")) &&
+            Boolean((s.raw_text_ref ?? "").trim()),
+        );
+        if (secWithText < 1) missingRaw.push(ticker);
+      }
+      if (missingRaw.length > 0) {
+        issues.push({
+          severity: "warn",
+          code: "evidence_missing_universe_sec_raw_text",
+          path: "/sources",
+          message: `Universe has SEC sources but missing raw_text_ref for: ${missingRaw.join(", ")}.`,
+          fix: "Ensure filings.text is stored and exported into run sources for extraction-driven analyzers.",
         });
       }
     } else if (tier12 < 1) {

@@ -17,12 +17,29 @@ const firstSourceId = (evidence: EvidenceItem[]): string => evidence[0]?.id ?? "
 const companySectionTemplate = (params: {
   evidence: EvidenceItem[];
   numericFacts: NumericFact[];
+  filingKeywordSummary?: { business: string[]; risks: string[]; sourceIds: string[] };
+  transcriptKeywordSummary?: { keywords: string[]; sourceIds: string[] };
   risk: RiskOfficerOutputV2;
 }): Array<{ key: string; title: string; blocks: any[] }> => {
   const sid = firstSourceId(params.evidence);
   const n1 = params.numericFacts[0]?.id;
   const n1Text = n1 ? `{{${n1}}}` : "N/A";
   const n1Refs = n1 ? [n1] : [];
+  const filingFacts =
+    params.filingKeywordSummary && params.filingKeywordSummary.sourceIds.length
+      ? {
+          business: params.filingKeywordSummary.business.slice(0, 10).join(", "),
+          risks: params.filingKeywordSummary.risks.slice(0, 10).join(", "),
+          source_ids: params.filingKeywordSummary.sourceIds,
+        }
+      : null;
+  const transcriptFacts =
+    params.transcriptKeywordSummary && params.transcriptKeywordSummary.sourceIds.length
+      ? {
+          keywords: params.transcriptKeywordSummary.keywords.slice(0, 12).join(", "),
+          source_ids: params.transcriptKeywordSummary.sourceIds,
+        }
+      : null;
 
   return [
     {
@@ -94,12 +111,17 @@ const companySectionTemplate = (params: {
       blocks: [
         {
           tag: "FACT",
-          text: "Primary source coverage is captured in the evidence library, including publisher, timestamps, and raw text references when available.",
-          source_ids: [sid],
+          text: filingFacts
+            ? `Filing-derived business keywords: ${filingFacts.business}.`
+            : "Primary filing keyword extraction is not available in this run.",
+          source_ids: filingFacts ? filingFacts.source_ids : [sid],
         },
         {
           tag: "INTERPRETATION",
-          text: "Decision-relevant overview should be limited to drivers we can verify and monitor, not generic company description.",
+          text: transcriptFacts
+            ? `Transcript-derived keywords suggest management emphasis on: ${transcriptFacts.keywords}.`
+            : "Decision-relevant overview should be limited to drivers we can verify and monitor, not generic company description.",
+          source_ids: transcriptFacts ? transcriptFacts.source_ids : undefined,
         },
         {
           tag: "ASSUMPTION",
@@ -170,7 +192,7 @@ const companySectionTemplate = (params: {
       blocks: [
         {
           tag: "FACT",
-          text: "No dated catalyst sources are included in this run; catalysts are treated as unknown until sourced.",
+          text: "Catalyst identification requires dated, source-backed events (filings, press releases, or transcripts). If absent, treat catalysts as unknown.",
           source_ids: [sid],
         },
         {
@@ -245,9 +267,38 @@ const buildCompanyReportV2 = (params: {
     notes: fact.notes,
   }));
 
+  const filingExtracts = (params.analyzers as any).extracts?.filings as
+    | Array<{
+        source_id: string;
+        extracted: { business_keywords: string[]; risk_keywords: string[] };
+      }>
+    | undefined;
+  const transcriptExtracts = (params.analyzers as any).extracts?.transcripts as
+    | Array<{ source_id: string; extracted: { keywords: string[] } }>
+    | undefined;
+  const filingKeywordSummary =
+    filingExtracts && filingExtracts.length
+      ? {
+          business: Array.from(
+            new Set(filingExtracts.flatMap((f) => f.extracted.business_keywords)),
+          ),
+          risks: Array.from(new Set(filingExtracts.flatMap((f) => f.extracted.risk_keywords))),
+          sourceIds: Array.from(new Set(filingExtracts.map((f) => f.source_id))),
+        }
+      : undefined;
+  const transcriptKeywordSummary =
+    transcriptExtracts && transcriptExtracts.length
+      ? {
+          keywords: Array.from(new Set(transcriptExtracts.flatMap((t) => t.extracted.keywords))),
+          sourceIds: Array.from(new Set(transcriptExtracts.map((t) => t.source_id))),
+        }
+      : undefined;
+
   const sections = companySectionTemplate({
     evidence: params.evidence,
     numericFacts: params.analyzers.numeric_facts,
+    filingKeywordSummary,
+    transcriptKeywordSummary,
     risk: params.risk,
   });
 
@@ -307,7 +358,7 @@ const buildCompanyReportV2 = (params: {
       title: "Scenario Drivers (Scenario driver)",
       question: "Which variables drive scenario outcomes?",
       data_summary: [
-        "Key drivers to quantify: mix, margins, cash conversion, and capital returns (sources pending).",
+        "Key drivers to quantify: mix, margins, cash conversion, and capital returns (requires additional time-series evidence).",
       ],
       takeaway: "Takeaway: Explicit drivers prevent narrative drift.",
       source_ids: [sid],
@@ -575,7 +626,7 @@ const buildThemeReportV2 = (params: {
       title: "Catalyst Calendar (Catalyst calendar)",
       question: "What dated events can change scenario weights?",
       data_summary: [
-        "Earnings cycles, major product releases, and regulatory deadlines (sources pending).",
+        "Earnings cycles, major product releases, and regulatory deadlines (detailed sources should be included in the evidence library).",
       ],
       takeaway: "Takeaway: A calendar is only as good as its dated sources.",
       source_ids: [sid],
