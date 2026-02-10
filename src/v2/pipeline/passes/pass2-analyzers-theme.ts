@@ -1,4 +1,5 @@
 import type { EvidenceItem } from "../../evidence/evidence-store.js";
+import type { ThemeUniverseEntityV2 } from "../../quality/types.js";
 
 export type ThemeAnalyzerOutputV2 = {
   version: 1;
@@ -35,6 +36,7 @@ const nowIso = (): string => new Date().toISOString();
 export async function pass2ThemeAnalyzersV2(params: {
   themeName: string;
   universe: string[];
+  universeEntities?: ThemeUniverseEntityV2[];
   evidence: EvidenceItem[];
 }): Promise<ThemeAnalyzerOutputV2> {
   const themeName = params.themeName.trim();

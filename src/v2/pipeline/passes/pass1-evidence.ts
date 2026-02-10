@@ -568,6 +568,7 @@ export async function pass1EvidenceThemeV2(params: {
   runDir: string;
   themeName: string;
   universe: string[];
+  universeEntities?: import("../../quality/types.js").ThemeUniverseEntityV2[];
   fixtureDir?: string;
   dbPath?: string;
 }): Promise<EvidencePassV2Result> {
@@ -626,6 +627,140 @@ export async function pass1EvidenceThemeV2(params: {
       fixturePath,
     });
     store.add({ ...baseInsert, raw_text_ref: rawRef });
+  }
+
+  // Theme entities (protocols/assets/private cos): collect external_documents evidence by keyword/domain match.
+  const entities = params.universeEntities ?? [];
+  if (entities.length) {
+    const db = openResearchDb(params.dbPath);
+    const localFallbackUrl = (id: number) => `https://local.openclaw.ai/external_documents/${id}`;
+    for (const entity of entities) {
+      if (entity.type === "equity") {
+        // Equity evidence is handled via the ticker universe.
+        continue;
+      }
+      const keys = Array.from(
+        new Set(
+          [entity.label, entity.symbol ?? "", ...(entity.urls ?? [])]
+            .map((v) => String(v ?? "").trim())
+            .filter(Boolean)
+            .flatMap((v) => {
+              if (/^https?:\/\//i.test(v)) {
+                try {
+                  const host = new URL(v).hostname.replace(/^www\./i, "");
+                  return [v, host];
+                } catch {
+                  return [v];
+                }
+              }
+              return [v];
+            }),
+        ),
+      )
+        .filter(Boolean)
+        .slice(0, 6);
+      if (!keys.length) continue;
+
+      const like = (k: string) => `%${k.toLowerCase()}%`;
+      const rowsById = new Map<
+        number,
+        {
+          id: number;
+          source_type?: string;
+          provider?: string;
+          sender?: string;
+          title?: string;
+          subject?: string;
+          url?: string;
+          published_at?: string;
+          received_at?: string;
+          content?: string;
+          fetched_at: number;
+        }
+      >();
+
+      const stmt = db.prepare(
+        `SELECT id, source_type, provider, sender, title, subject, url, published_at, received_at, content, fetched_at
+         FROM external_documents
+         WHERE (
+           lower(coalesce(title,'')) LIKE ?
+           OR lower(coalesce(subject,'')) LIKE ?
+           OR lower(coalesce(url,'')) LIKE ?
+           OR lower(coalesce(content,'')) LIKE ?
+         )
+         ORDER BY received_at DESC, fetched_at DESC
+         LIMIT 8`,
+      );
+
+      for (const key of keys) {
+        const fetched = stmt.all(like(key), like(key), like(key), like(key)) as Array<{
+          id: number;
+          source_type?: string;
+          provider?: string;
+          sender?: string;
+          title?: string;
+          subject?: string;
+          url?: string;
+          published_at?: string;
+          received_at?: string;
+          content?: string;
+          fetched_at: number;
+        }>;
+        for (const row of fetched) {
+          rowsById.set(row.id, row);
+        }
+      }
+
+      const rows = Array.from(rowsById.values()).slice(0, 12);
+      for (const row of rows) {
+        const fetchedAt =
+          typeof row.fetched_at === "number" ? row.fetched_at : Math.floor(Date.now() / 1000);
+        const published =
+          (row.published_at ?? row.received_at ?? "").slice(0, 10) ||
+          toYmd(new Date(fetchedAt * 1000));
+        const accessedAt = new Date(fetchedAt * 1000).toISOString();
+        const url = (row.url ?? "").trim() || localFallbackUrl(row.id);
+        const publisher = (row.provider ?? "").trim() || "External";
+        const title =
+          (row.title ?? "").trim() ||
+          (row.subject ?? "").trim() ||
+          `External research (${publisher})`;
+
+        const baseInsert: EvidenceInsert = {
+          title,
+          publisher,
+          date_published: published,
+          accessed_at: accessedAt,
+          url,
+          reliability_tier: undefined,
+          excerpt_or_key_points: [
+            `entity_id=${entity.id}`,
+            `entity_type=${entity.type}`,
+            entity.symbol ? `symbol=${entity.symbol}` : "symbol=NA",
+            `source_type=${(row.source_type ?? "").trim() || "unknown"}`,
+            (row.sender ?? "").trim() ? `sender=${(row.sender ?? "").trim()}` : "sender=unknown",
+          ],
+          tags: [
+            `theme:${params.themeName}`,
+            "type:external_document",
+            `entity_id:${entity.id}`,
+            `entity_type:${entity.type}`,
+            entity.symbol ? `symbol:${entity.symbol}` : "",
+            row.source_type ? `source_type:${row.source_type}` : "",
+            row.provider ? `provider:${row.provider}` : "",
+          ].filter(Boolean),
+        };
+        const evidence = store.add(baseInsert);
+        if ((row.content ?? "").trim()) {
+          const rawRef = await writeTextIntoRun({
+            runDir: params.runDir,
+            evidenceId: evidence.id,
+            text: row.content ?? "",
+          });
+          store.add({ ...baseInsert, raw_text_ref: rawRef });
+        }
+      }
+    }
   }
 
   return {

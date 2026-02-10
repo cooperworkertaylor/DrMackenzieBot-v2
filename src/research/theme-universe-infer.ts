@@ -104,8 +104,42 @@ export type InferredThemeUniverse = {
   scanned_docs: number;
   inferred_tickers: string[];
   inferred_domains: string[];
+  inferred_entities: Array<{
+    id: string;
+    type: "equity" | "crypto_asset" | "protocol" | "private_company" | "index" | "other";
+    label: string;
+    symbol?: string;
+    urls?: string[];
+    notes?: string[];
+  }>;
   note: string;
 };
+
+const slugify = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, "-")
+    .replaceAll(/(^-+|-+$)/g, "")
+    .slice(0, 64) || "entity";
+
+const CRYPTO_ASSET_ALIASES: Array<{ symbol: string; label: string; aliases: string[] }> = [
+  { symbol: "BTC", label: "Bitcoin", aliases: ["BTC", "Bitcoin"] },
+  { symbol: "ETH", label: "Ethereum", aliases: ["ETH", "Ethereum"] },
+  { symbol: "SOL", label: "Solana", aliases: ["SOL", "Solana"] },
+  { symbol: "USDC", label: "USD Coin", aliases: ["USDC", "USD Coin"] },
+  { symbol: "USDT", label: "Tether", aliases: ["USDT", "Tether"] },
+  { symbol: "DAI", label: "DAI", aliases: ["DAI"] },
+];
+
+const PROTOCOL_DOMAIN_HINTS: Array<{ re: RegExp; label: string; urls?: string[] }> = [
+  { re: /\buniswap\b/i, label: "Uniswap", urls: ["https://uniswap.org"] },
+  { re: /\baave\b/i, label: "Aave", urls: ["https://aave.com"] },
+  { re: /\bjup\.ag\b/i, label: "Jupiter", urls: ["https://jup.ag"] },
+  { re: /\blido\b/i, label: "Lido", urls: ["https://lido.fi"] },
+  { re: /\bcoinbase\b/i, label: "Coinbase", urls: ["https://www.coinbase.com"] },
+  { re: /\bstripe\b/i, label: "Stripe", urls: ["https://stripe.com"] },
+];
 
 export function inferThemeUniverseFromDb(params: {
   theme: string;
@@ -149,6 +183,8 @@ export function inferThemeUniverseFromDb(params: {
 
   const tickerCounts = new Map<string, number>();
   const domainCounts = new Map<string, number>();
+  const cryptoAssetCounts = new Map<string, number>();
+  const protocolCounts = new Map<string, number>();
 
   for (const row of rows) {
     const combined = normalizeSpaces(
@@ -159,6 +195,17 @@ export function inferThemeUniverseFromDb(params: {
     }
     for (const d of extractDomains(combined)) {
       domainCounts.set(d, (domainCounts.get(d) ?? 0) + 1);
+    }
+    const lowered = combined.toLowerCase();
+    for (const asset of CRYPTO_ASSET_ALIASES) {
+      if (asset.aliases.some((a) => lowered.includes(a.toLowerCase()))) {
+        cryptoAssetCounts.set(asset.symbol, (cryptoAssetCounts.get(asset.symbol) ?? 0) + 1);
+      }
+    }
+    for (const hint of PROTOCOL_DOMAIN_HINTS) {
+      if (hint.re.test(combined)) {
+        protocolCounts.set(hint.label, (protocolCounts.get(hint.label) ?? 0) + 1);
+      }
     }
   }
 
@@ -171,11 +218,55 @@ export function inferThemeUniverseFromDb(params: {
     .map(([d]) => d)
     .slice(0, maxDomains);
 
+  const inferred_entities: InferredThemeUniverse["inferred_entities"] = [];
+  for (const t of inferred_tickers) {
+    inferred_entities.push({
+      id: `equity:${t}`,
+      type: "equity",
+      label: t,
+      symbol: t,
+      notes: ["inferred from evidence DB keyword match"],
+    });
+  }
+  for (const symbol of Array.from(cryptoAssetCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([s]) => s)
+    .slice(0, 10)) {
+    const meta = CRYPTO_ASSET_ALIASES.find((a) => a.symbol === symbol);
+    inferred_entities.push({
+      id: `crypto_asset:${symbol}`,
+      type: "crypto_asset",
+      label: meta?.label ?? symbol,
+      symbol,
+      urls:
+        symbol === "BTC"
+          ? ["https://bitcoin.org"]
+          : symbol === "ETH"
+            ? ["https://ethereum.org"]
+            : undefined,
+      notes: ["inferred from evidence DB keyword match"],
+    });
+  }
+  for (const label of Array.from(protocolCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([l]) => l)
+    .slice(0, 15)) {
+    const hint = PROTOCOL_DOMAIN_HINTS.find((h) => h.label === label);
+    inferred_entities.push({
+      id: `protocol:${slugify(label)}`,
+      type: "protocol",
+      label,
+      urls: hint?.urls,
+      notes: ["inferred from evidence DB keyword/domain match"],
+    });
+  }
+
   return {
     theme,
     scanned_docs: rows.length,
     inferred_tickers,
     inferred_domains,
+    inferred_entities,
     note: "Universe inferred from external_documents by keyword match; confirm/override with 'tickers: ...' for better coverage.",
   };
 }

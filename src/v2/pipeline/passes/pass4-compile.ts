@@ -1,5 +1,6 @@
 import type { EvidenceItem } from "../../evidence/evidence-store.js";
 import type { QualityGateResult, ReportKindV2 } from "../../quality/types.js";
+import type { ThemeUniverseEntityV2 } from "../../quality/types.js";
 import type { ResearchPlanV2 } from "./pass0-plan.js";
 import type { CompanyAnalyzerOutputV2 } from "./pass2-analyzers-company.js";
 import type { ThemeAnalyzerOutputV2 } from "./pass2-analyzers-theme.js";
@@ -502,13 +503,41 @@ const themeSectionsTemplate = (params: {
   evidence: EvidenceItem[];
   analyzers: ThemeAnalyzerOutputV2;
   risk: RiskOfficerOutputV2;
+  universeEntities?: ThemeUniverseEntityV2[];
 }): Array<{ key: string; title: string; blocks: any[] }> => {
   const sid = firstSourceId(params.evidence);
+  const universeSummary =
+    params.universeEntities && params.universeEntities.length
+      ? (() => {
+          const grouped = new Map<string, ThemeUniverseEntityV2[]>();
+          for (const e of params.universeEntities) {
+            grouped.set(e.type, [...(grouped.get(e.type) ?? []), e]);
+          }
+          const parts: string[] = [];
+          for (const [type, items] of grouped.entries()) {
+            const labels = items
+              .slice(0, 12)
+              .map((e) => (e.symbol ? `${e.label} (${e.symbol})` : e.label))
+              .join(", ");
+            parts.push(`${type}: ${labels}${items.length > 12 ? ", ..." : ""}`);
+          }
+          return parts.join(" | ");
+        })()
+      : null;
   return [
     {
       key: "executive_summary",
       title: "Executive Summary (Definition + Variant + Winners/Losers)",
       blocks: [
+        ...(universeSummary
+          ? [
+              {
+                tag: "FACT",
+                text: `Universe entities (typed): ${universeSummary}`,
+                source_ids: [sid],
+              },
+            ]
+          : []),
         {
           tag: "FACT",
           text: "This theme memo is constrained to collected evidence; unsupported claims are marked as assumptions or omitted.",
@@ -664,6 +693,7 @@ const buildThemeReportV2 = (params: {
   generatedAt: string;
   themeName: string;
   universe: string[];
+  universeEntities?: ThemeUniverseEntityV2[];
   plan: ResearchPlanV2;
   evidence: EvidenceItem[];
   analyzers: ThemeAnalyzerOutputV2;
@@ -674,6 +704,7 @@ const buildThemeReportV2 = (params: {
     evidence: params.evidence,
     analyzers: params.analyzers,
     risk: params.risk,
+    universeEntities: params.universeEntities,
   });
   const exhibits = [
     {
@@ -737,6 +768,7 @@ const buildThemeReportV2 = (params: {
     subject: {
       theme_name: params.themeName,
       universe: params.universe,
+      ...(params.universeEntities?.length ? { universe_entities: params.universeEntities } : {}),
     },
     plan: {
       posture: params.plan.posture,
@@ -776,7 +808,13 @@ export type CompileResultV2 = {
 export async function pass4CompileReportV2(params: {
   kind: ReportKindV2;
   runId: string;
-  subject: { ticker?: string; companyName?: string; themeName?: string; universe?: string[] };
+  subject: {
+    ticker?: string;
+    companyName?: string;
+    themeName?: string;
+    universe?: string[];
+    universeEntities?: ThemeUniverseEntityV2[];
+  };
   plan: ResearchPlanV2;
   evidence: EvidenceItem[];
   analyzers: CompanyAnalyzerOutputV2 | ThemeAnalyzerOutputV2;
@@ -801,6 +839,7 @@ export async function pass4CompileReportV2(params: {
           generatedAt,
           themeName: params.subject.themeName ?? "UNKNOWN",
           universe: params.subject.universe ?? [],
+          universeEntities: params.subject.universeEntities,
           plan: params.plan,
           evidence: params.evidence,
           analyzers: params.analyzers as ThemeAnalyzerOutputV2,
