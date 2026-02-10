@@ -739,16 +739,39 @@ export async function runGatewayUpdate(opts: UpdateRunnerOptions = {}): Promise<
     );
     steps.push(uiBuildStep);
 
-    // Restore dist/control-ui/ to committed state to prevent dirty repo after update
-    // (ui:build regenerates assets with new hashes, which would block future updates)
-    const restoreUiStep = await runStep(
-      step(
-        "restore control-ui",
-        ["git", "-C", gitRoot, "checkout", "--", "dist/control-ui/"],
-        gitRoot,
-      ),
-    );
-    steps.push(restoreUiStep);
+    // Restore dist/control-ui/ to committed state to prevent dirty repo after update.
+    // Note: some installs don't track dist/ outputs at all; in that case, this is a no-op.
+    let controlUiTracked = false;
+    try {
+      const ls = await runCommand(["git", "-C", gitRoot, "ls-files", "--", "dist/control-ui/"], {
+        cwd: gitRoot,
+        timeoutMs,
+      });
+      controlUiTracked = ls.stdout.trim().length > 0;
+    } catch {
+      controlUiTracked = false;
+    }
+
+    if (controlUiTracked) {
+      const restoreUiStep = await runStep(
+        step(
+          "restore control-ui",
+          ["git", "-C", gitRoot, "checkout", "--", "dist/control-ui/"],
+          gitRoot,
+        ),
+      );
+      steps.push(restoreUiStep);
+    } else {
+      steps.push({
+        name: "restore control-ui",
+        command: "(skipped: dist/control-ui not tracked)",
+        cwd: gitRoot,
+        durationMs: 0,
+        exitCode: 0,
+        stdoutTail: null,
+        stderrTail: null,
+      });
+    }
 
     const doctorStep = await runStep(
       step(
