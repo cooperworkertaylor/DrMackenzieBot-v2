@@ -12,6 +12,7 @@ import type { TypingController } from "./typing.js";
 import { createOpenClawTools } from "../../agents/openclaw-tools.js";
 import { getChannelDock } from "../../channels/dock.js";
 import { logVerbose } from "../../globals.js";
+import { getLogger } from "../../logging/logger.js";
 import { parseQuickResearchRequest } from "../../research/quick-research-request.js";
 import { createBackgroundQueue } from "../../research/quickrun/background-queue.js";
 import { resolveGatewayMessageChannel } from "../../utils/message-channel.js";
@@ -136,11 +137,22 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   typing: TypingController;
   agentId: string;
 }): Promise<InlineActionResult | null> {
-  const channel =
+  const channelResolved =
+    resolveGatewayMessageChannel(params.ctx.OriginatingChannel) ??
     resolveGatewayMessageChannel(params.ctx.Surface) ??
     resolveGatewayMessageChannel(params.ctx.Provider) ??
     undefined;
-  if (channel !== "telegram") return null;
+  const channelRaw = String(
+    params.ctx.OriginatingChannel ?? params.ctx.Surface ?? params.ctx.Provider ?? "",
+  )
+    .trim()
+    .toLowerCase();
+
+  // IMPORTANT: do not rely solely on strict channel normalization.
+  // If this is a timeboxed “send PDF” request and we're on Telegram, we must intercept.
+  // If normalization fails for any reason, we still treat anything containing "telegram" as Telegram.
+  const isTelegram = channelResolved === "telegram" || channelRaw.includes("telegram");
+  if (!isTelegram) return null;
 
   const req = parseQuickResearchRequest(params.cleanedBody);
   if (!req) {
@@ -621,6 +633,23 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   });
 
   params.typing.cleanup();
+
+  // Always-on log: helps debug cases where the LLM is replying "Confirmed..." instead of us intercepting.
+  try {
+    getLogger().info(
+      {
+        kind: req.kind,
+        minutes: req.minutes,
+        subject: req.kind === "company" ? req.ticker : req.theme,
+        channelResolved,
+        channelRaw,
+      },
+      "quickrun: accepted",
+    );
+  } catch {
+    // ignore logging failures
+  }
+
   return {
     kind: "reply",
     reply: {
