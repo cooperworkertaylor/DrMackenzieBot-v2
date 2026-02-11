@@ -1,3 +1,5 @@
+import fsSync from "node:fs";
+import os from "node:os";
 import type { SkillCommandSpec } from "../../agents/skills.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
@@ -92,6 +94,18 @@ const formatBuiltAtEt = (dt: Date): string => {
   return `${y}-${m}-${d} ${hh}:${mm} ET`;
 };
 
+const resolveChromeExecutablePath = (): string | undefined => {
+  const env = (process.env.OPENCLAW_CHROME_PATH ?? process.env.CHROME_PATH ?? "").trim();
+  if (env && fsSync.existsSync(env)) return env;
+  if (process.platform === "darwin") {
+    const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    if (fsSync.existsSync(macChrome)) return macChrome;
+    const macCanary = "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary";
+    if (fsSync.existsSync(macCanary)) return macCanary;
+  }
+  return undefined;
+};
+
 const QUICK_RESEARCH_BG_QUEUE = createBackgroundQueue({ concurrency: 1 });
 
 const looksLikeQuickResearch = (value: string): boolean => {
@@ -162,27 +176,50 @@ async function maybeHandleQuickResearchPdfRequest(params: {
     };
   }
 
-  const hostRole = String(process.env.OPENCLAW_HOST_ROLE ?? "")
-    .trim()
-    .toLowerCase();
-  if (hostRole !== "macmini") {
+  const hostRoleRaw =
+    process.env.OPENCLAW_HOST_ROLE ??
+    process.env.OPENCLAW_AGENT_ROLE ??
+    process.env.OPENCLAW_AGENT ??
+    "";
+  const hostRole = String(hostRoleRaw).trim().toLowerCase();
+  const hostname = os.hostname().trim().toLowerCase();
+  const hostnameLooksLikeMacmini = hostname.includes("coopers") && hostname.includes("mini");
+  const isMacmini = hostRole === "macmini" || hostnameLooksLikeMacmini;
+  if (!isMacmini) {
     params.typing.cleanup();
     return {
       kind: "reply",
       reply: {
-        text: `❌ Refusing to run research+PDF outside macmini (OPENCLAW_HOST_ROLE=${hostRole || "unset"}).`,
+        text: `❌ Refusing to run research+PDF outside macmini (OPENCLAW_HOST_ROLE=${hostRole || "unset"} hostname=${hostname || "unknown"}).`,
         isError: true,
       },
     };
   }
 
-  const chromePath = (process.env.OPENCLAW_CHROME_PATH ?? "").trim();
+  const allowBrowser = (
+    process.env.OPENCLAW_ALLOW_BROWSER ??
+    process.env.OPENCLAW_ALLOW_CHROME ??
+    process.env.OPENCLAW_RENDER_PDF_ALLOWED ??
+    ""
+  ).trim();
+  if (allowBrowser !== "1") {
+    params.typing.cleanup();
+    return {
+      kind: "reply",
+      reply: {
+        text: "❌ Refusing to run research+PDF: OPENCLAW_ALLOW_BROWSER is not enabled. Set OPENCLAW_ALLOW_BROWSER=1 on macmini and restart the gateway.",
+        isError: true,
+      },
+    };
+  }
+
+  const chromePath = resolveChromeExecutablePath();
   if (!chromePath) {
     params.typing.cleanup();
     return {
       kind: "reply",
       reply: {
-        text: "❌ OPENCLAW_CHROME_PATH is not set on this agent. PDF rendering is disabled until Chrome path is configured.",
+        text: "❌ Chrome executable not found. Set OPENCLAW_CHROME_PATH on macmini and restart the gateway.",
         isError: true,
       },
     };
