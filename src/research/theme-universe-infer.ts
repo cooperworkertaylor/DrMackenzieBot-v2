@@ -9,6 +9,18 @@ const normalizeTicker = (value: string): string =>
     .replaceAll(/[^A-Z0-9.]/g, "")
     .slice(0, 10);
 
+const TICKER_ALIAS_MAP: Record<string, string> = {
+  TSMC: "TSM",
+  TAIWANSEMICONDUCTOR: "TSM",
+  FACEBOOK: "META",
+};
+
+const NON_TICKER_NOISE = new Set(
+  ["CMOS", "SILICONPHOTONICS", "FOUNDRY", "OPTICALNETWORKING", "PHOTONICS", "DATACENTER"].map((t) =>
+    t.toUpperCase(),
+  ),
+);
+
 const STOP_TOKENS = new Set(
   [
     "A",
@@ -65,6 +77,70 @@ const STOP_TOKENS = new Set(
     "CFO",
   ].map((t) => t.toUpperCase()),
 );
+
+const canonicalizeTickerCandidate = (value: string): string => {
+  const normalized = normalizeTicker(value);
+  if (!normalized) return "";
+  const mapped = TICKER_ALIAS_MAP[normalized] ?? normalized;
+  if (!mapped) return "";
+  if (STOP_TOKENS.has(mapped)) return "";
+  if (NON_TICKER_NOISE.has(mapped)) return "";
+  if (/^\d+$/.test(mapped)) return "";
+  return mapped;
+};
+
+const listKnownInstrumentTickers = (
+  db: ReturnType<typeof openResearchDb>,
+  tickers: string[],
+): Set<string> => {
+  if (!tickers.length) return new Set();
+  const placeholders = tickers.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT UPPER(TRIM(ticker)) AS ticker
+       FROM instruments
+       WHERE UPPER(TRIM(ticker)) IN (${placeholders})`,
+    )
+    .all(...tickers) as Array<{ ticker?: string }>;
+  return new Set(rows.map((row) => normalizeTicker(String(row.ticker ?? ""))).filter(Boolean));
+};
+
+const normalizeThemeTickerUniverseWithDb = (params: {
+  db: ReturnType<typeof openResearchDb>;
+  tickers: string[];
+  maxTickers?: number;
+}): { tickers: string[]; dropped: string[] } => {
+  const maxTickers = Math.max(1, Math.min(120, Math.round(params.maxTickers ?? 60)));
+  const normalizedCandidates: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of params.tickers ?? []) {
+    const canonical = canonicalizeTickerCandidate(raw);
+    if (!canonical || seen.has(canonical)) continue;
+    seen.add(canonical);
+    normalizedCandidates.push(canonical);
+  }
+  if (!normalizedCandidates.length) {
+    return { tickers: [], dropped: [] };
+  }
+
+  const known = listKnownInstrumentTickers(params.db, normalizedCandidates);
+  const tickers = normalizedCandidates.filter((ticker) => known.has(ticker)).slice(0, maxTickers);
+  const dropped = normalizedCandidates.filter((ticker) => !known.has(ticker));
+  return { tickers, dropped };
+};
+
+export function normalizeThemeTickerUniverse(params: {
+  tickers: string[];
+  dbPath?: string;
+  maxTickers?: number;
+}): { tickers: string[]; dropped: string[] } {
+  const db = openResearchDb(params.dbPath);
+  return normalizeThemeTickerUniverseWithDb({
+    db,
+    tickers: params.tickers,
+    maxTickers: params.maxTickers,
+  });
+}
 
 const extractTickers = (text: string): string[] => {
   const out: string[] = [];
@@ -209,10 +285,15 @@ export function inferThemeUniverseFromDb(params: {
     }
   }
 
-  const inferred_tickers = Array.from(tickerCounts.entries())
+  const rawInferredTickers = Array.from(tickerCounts.entries())
     .sort((a, b) => b[1] - a[1])
     .map(([t]) => t)
     .slice(0, maxTickers);
+  const { tickers: inferred_tickers } = normalizeThemeTickerUniverseWithDb({
+    db,
+    tickers: rawInferredTickers,
+    maxTickers,
+  });
   const inferred_domains = Array.from(domainCounts.entries())
     .sort((a, b) => b[1] - a[1])
     .map(([d]) => d)
@@ -335,6 +416,10 @@ export function inferThemeUniverseFromInstruments(params: {
     .sort((a, b) => b.score - a.score)
     .map((r) => r.ticker);
 
-  const inferred_tickers = Array.from(new Set(scored)).slice(0, maxTickers);
+  const { tickers: inferred_tickers } = normalizeThemeTickerUniverseWithDb({
+    db,
+    tickers: scored,
+    maxTickers,
+  });
   return { theme, inferred_tickers };
 }

@@ -322,8 +322,11 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         const { writeFileArtifactManifest } = await import("../../research/artifact-manifest.js");
         const { resolveStateDir } = await import("../../config/paths.js");
         const { computeThemeResearch } = await import("../../research/theme-sector.js");
-        const { inferThemeUniverseFromDb, inferThemeUniverseFromInstruments } =
-          await import("../../research/theme-universe-infer.js");
+        const {
+          inferThemeUniverseFromDb,
+          inferThemeUniverseFromInstruments,
+          normalizeThemeTickerUniverse,
+        } = await import("../../research/theme-universe-infer.js");
         const { runCompanyPipelineV2, runThemePipelineV2 } =
           await import("../../v2/pipeline/v2-pipeline.js");
 
@@ -556,7 +559,20 @@ async function maybeHandleQuickResearchPdfRequest(params: {
 
         const maxUniverse =
           req.minutes <= 10 ? 5 : req.minutes <= 30 ? 10 : req.minutes <= 60 ? 15 : 25;
-        const universe = (themeRes?.tickers ?? []).slice(0, maxUniverse);
+        let universe = normalizeThemeTickerUniverse({
+          tickers: themeRes?.tickers ?? [],
+          maxTickers: maxUniverse,
+        }).tickers;
+        if (!universe.length) {
+          const instrumentGuess = inferThemeUniverseFromInstruments({
+            theme: themeLabel,
+            maxTickers: Math.max(10, maxUniverse * 3),
+          });
+          universe = normalizeThemeTickerUniverse({
+            tickers: instrumentGuess.inferred_tickers,
+            maxTickers: maxUniverse,
+          }).tickers;
+        }
         if (!universe.length) {
           await delay(Math.max(0, deliverAtMs - Date.now()));
           await safeSend({
@@ -601,12 +617,12 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         await fs.mkdir(outDir, { recursive: true });
         const pdfPath = path.join(
           outDir,
-          `${slugify(req.theme)}-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.pdf`,
+          `${slugify(themeLabel)}-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.pdf`,
         );
         await renderPdfFromMarkdown({
           inPath: result.reportMarkdownPath,
           outPath: pdfPath,
-          title: `${req.theme} (v2)`,
+          title: `${themeLabel} (v2)`,
         });
         const pdfBuffer = await fs.readFile(pdfPath);
         const diag = await diagnosePdfBuffer({
@@ -625,7 +641,7 @@ async function maybeHandleQuickResearchPdfRequest(params: {
 
         const os = await import("node:os");
         const stateDir = resolveStateDir(process.env, os.homedir);
-        const seriesKey = `quickrun_theme_${slugify(req.theme)}`;
+        const seriesKey = `quickrun_theme_${slugify(themeLabel)}`;
         const seriesManifestPath = path.join(
           stateDir,
           "research",
