@@ -497,6 +497,8 @@ async function maybeHandleQuickResearchPdfRequest(params: {
           return;
         }
 
+        const themeLabel = sanitizeThemeLabel(req.theme);
+
         let inferredUniverse: {
           scanned_docs: number;
           inferred_tickers: string[];
@@ -572,7 +574,7 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         await renderPdfFromMarkdown({
           inPath: result.reportMarkdownPath,
           outPath: pdfPath,
-          title: `${req.theme} (v2)`,
+          title: `${themeLabel} (v2)`,
         });
         const pdfBuffer = await fs.readFile(pdfPath);
         const diag = await diagnosePdfBuffer({
