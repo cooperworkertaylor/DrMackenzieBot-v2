@@ -17,9 +17,9 @@ const stripTransportPrefix = (value: string): string => {
   // Some inbound channels prepend metadata like:
   //   "[Telegram Name id:1234567890 2026-02-10 20:46 EST] optical networking"
   // Keep this sanitizer conservative: only strip bracketed prefixes that look like transport headers.
-  let out = value.trim();
+  let out = value.replace(/^\uFEFF/, "").trim();
   for (let i = 0; i < 3; i += 1) {
-    const m = out.match(/^\[([^\]]{1,220})\]\s*(.+)$/s);
+    const m = out.match(/^\s*\[([^\]]{1,800})\]\s*(.+)$/s);
     if (!m) break;
     const header = (m[1] ?? "").toLowerCase();
     if (
@@ -29,6 +29,7 @@ const stripTransportPrefix = (value: string): string => {
       header.includes("discord") ||
       header.includes("slack") ||
       header.includes(" id:") ||
+      header.match(/\+\s*\d{1,3}\s*m\b/) ||
       header.includes(" est") ||
       header.includes(" et") ||
       header.match(/\b\d{4}-\d{2}-\d{2}\b/) ||

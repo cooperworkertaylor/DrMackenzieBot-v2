@@ -95,6 +95,32 @@ const formatBuiltAtEt = (dt: Date): string => {
   return `${y}-${m}-${d} ${hh}:${mm} ET`;
 };
 
+const sanitizeThemeLabel = (value: string): string => {
+  const raw = value.trim();
+  // Be defensive: sometimes the message body includes a transport prefix like:
+  //   "[Telegram ... id:... ...] optical networking"
+  // If it looks like that, strip the bracketed prefix.
+  const m = raw.match(/^\s*\[([^\]]{1,800})\]\s*(.+)$/s);
+  if (!m) return raw;
+  const header = (m[1] ?? "").toLowerCase();
+  if (
+    header.includes("telegram") ||
+    header.includes("whatsapp") ||
+    header.includes("signal") ||
+    header.includes("discord") ||
+    header.includes("slack") ||
+    header.includes(" id:") ||
+    header.includes(" est") ||
+    header.includes(" et") ||
+    header.match(/\+\s*\d{1,3}\s*m\b/) ||
+    header.match(/\b\d{4}-\d{2}-\d{2}\b/) ||
+    header.match(/\b\d{2}:\d{2}\b/)
+  ) {
+    return (m[2] ?? "").trim();
+  }
+  return raw;
+};
+
 const resolveChromeExecutablePath = (): string | undefined => {
   const env = (process.env.OPENCLAW_CHROME_PATH ?? process.env.CHROME_PATH ?? "").trim();
   if (env && fsSync.existsSync(env)) return env;
@@ -487,6 +513,7 @@ async function maybeHandleQuickResearchPdfRequest(params: {
           return;
         }
 
+        const themeLabel = sanitizeThemeLabel(req.theme);
         let inferredUniverse: {
           scanned_docs: number;
           inferred_tickers: string[];
@@ -501,20 +528,20 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         } | null = null;
         let themeRes: { tickers: string[] } | undefined;
         try {
-          themeRes = computeThemeResearch({ theme: req.theme });
+          themeRes = computeThemeResearch({ theme: themeLabel });
         } catch {
-          const inferred = inferThemeUniverseFromDb({ theme: req.theme });
+          const inferred = inferThemeUniverseFromDb({ theme: themeLabel });
           inferredUniverse = inferred;
 
           let tickers = inferred.inferred_tickers;
           if (!tickers.length) {
-            const instrumentGuess = inferThemeUniverseFromInstruments({ theme: req.theme });
+            const instrumentGuess = inferThemeUniverseFromInstruments({ theme: themeLabel });
             tickers = instrumentGuess.inferred_tickers;
           }
 
           if (tickers.length) {
             themeRes = computeThemeResearch({
-              theme: req.theme,
+              theme: themeLabel,
               tickers,
             });
           }
@@ -533,7 +560,7 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         }
 
         const result = await runThemePipelineV2({
-          themeName: req.theme,
+          themeName: themeLabel,
           universe,
           universeEntities:
             inferredUniverse?.inferred_entities && inferredUniverse.inferred_entities.length
