@@ -32,6 +32,51 @@ export function supportsTemperatureForResearchV2Model(params: {
   return true;
 }
 
+const appendStrictJsonRetryInstruction = (prompt: string): string =>
+  [
+    prompt.trim(),
+    "",
+    "RETRY INSTRUCTION:",
+    "Return exactly one JSON object and nothing else.",
+    "Do not return markdown fences, explanation, or blank output.",
+    "If uncertain, return the best schema-conforming JSON with nulls/empty arrays.",
+  ].join("\n");
+
+const extractBestEffortAssistantText = (message: unknown): string => {
+  const primary = extractAssistantText(
+    message as Parameters<typeof extractAssistantText>[0],
+  ).trim();
+  if (primary) return primary;
+  const blocks = (message as { content?: unknown })?.content;
+  if (!Array.isArray(blocks)) return "";
+  const parts = blocks
+    .map((block) => {
+      if (!block || typeof block !== "object") return "";
+      const rec = block as Record<string, unknown>;
+      if (typeof rec.text === "string") return rec.text.trim();
+      if (typeof rec.content === "string") return rec.content.trim();
+      return "";
+    })
+    .filter(Boolean);
+  return parts.join("\n").trim();
+};
+
+const summarizeAssistantMessage = (message: unknown): string => {
+  const stopReason = String((message as { stopReason?: unknown })?.stopReason ?? "");
+  const content = (message as { content?: unknown })?.content;
+  const types = Array.isArray(content)
+    ? content
+        .map((block) => {
+          if (!block || typeof block !== "object") return typeof block;
+          const rec = block as Record<string, unknown>;
+          return typeof rec.type === "string" ? rec.type : "unknown";
+        })
+        .slice(0, 8)
+    : [];
+  const err = String((message as { errorMessage?: unknown })?.errorMessage ?? "").trim();
+  return `stopReason=${stopReason || "unknown"} contentTypes=[${types.join(",")}]${err ? ` error=${err}` : ""}`;
+};
+
 function extractJsonCandidate(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) {
@@ -136,15 +181,6 @@ export async function completeJsonWithResearchV2Model(params: {
   const apiKey = requireApiKey(apiKeyInfo, model.provider);
   authStorage.setRuntimeApiKey(model.provider, apiKey);
 
-  const context: Context = {
-    messages: [
-      {
-        role: "user",
-        content: [{ type: "text", text: params.prompt }],
-        timestamp: Date.now(),
-      },
-    ],
-  };
   const completeParams: Parameters<typeof complete>[2] = {
     apiKey,
     maxTokens: params.maxTokens ?? 2400,
@@ -157,17 +193,40 @@ export async function completeJsonWithResearchV2Model(params: {
   ) {
     completeParams.temperature = params.temperature ?? 0.2;
   }
-  const message = await complete(model, context, completeParams);
-  const stop = message.stopReason;
-  const err = message.errorMessage?.trim();
-  if (stop === "error" || stop === "aborted") {
-    throw new Error(err ? `LLM failed (${model.provider}/${model.id}): ${err}` : "LLM failed.");
-  }
-  if (err) {
-    throw new Error(`LLM failed (${model.provider}/${model.id}): ${err}`);
+  const completeOnce = async (prompt: string) => {
+    const context: Context = {
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: prompt }],
+          timestamp: Date.now(),
+        },
+      ],
+    };
+    const message = await complete(model, context, completeParams);
+    const stop = message.stopReason;
+    const err = message.errorMessage?.trim();
+    if (stop === "error" || stop === "aborted") {
+      throw new Error(err ? `LLM failed (${model.provider}/${model.id}): ${err}` : "LLM failed.");
+    }
+    if (err) {
+      throw new Error(`LLM failed (${model.provider}/${model.id}): ${err}`);
+    }
+    return message;
+  };
+
+  const firstMessage = await completeOnce(params.prompt);
+  let text = extractBestEffortAssistantText(firstMessage);
+  if (!text) {
+    const retryMessage = await completeOnce(appendStrictJsonRetryInstruction(params.prompt));
+    text = extractBestEffortAssistantText(retryMessage);
+    if (!text) {
+      throw new Error(
+        `Model returned empty text; expected JSON. (${summarizeAssistantMessage(retryMessage)})`,
+      );
+    }
   }
 
-  const text = extractAssistantText(message).trim();
   const jsonText = extractJsonCandidate(text);
   try {
     return JSON.parse(jsonText) as unknown;
