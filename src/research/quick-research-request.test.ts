@@ -21,6 +21,23 @@ describe("parseQuickResearchRequest", () => {
     expect(res).toEqual({ kind: "theme", minutes: 5, theme: "optical networking" });
   });
 
+  it("strips inbound transport envelopes and preserves theme", () => {
+    const res = parseQuickResearchRequest(
+      "[Telegram Cooper Taylor id:8276065209 +10m 2026-02-10 21:11 EST] optical networking 5",
+    );
+    expect(res).toEqual({ kind: "theme", minutes: 5, theme: "optical networking" });
+  });
+
+  it("parses explicit theme universe tickers override", () => {
+    const res = parseQuickResearchRequest("optical networking tickers: CIEN, LITE, COHR 5");
+    expect(res).toEqual({
+      kind: "theme",
+      minutes: 5,
+      theme: "optical networking",
+      tickers: ["CIEN", "LITE", "COHR"],
+    });
+  });
+
   it("parses company request when subject looks like a ticker", () => {
     const res = parseQuickResearchRequest("give me a 10 min research run on PLTR and send the pdf");
     expect(res?.kind).toBe("company");

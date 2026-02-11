@@ -95,15 +95,30 @@ const formatBuiltAtEt = (dt: Date): string => {
   return `${y}-${m}-${d} ${hh}:${mm} ET`;
 };
 
-const sanitizeThemeLabel = (value: string): string =>
-  value.replace(/^\s*\[[^\]]{1,800}\]\s*/, "").trim();
-
-const fallbackUniverseForTheme = (theme: string): string[] => {
-  const t = theme.toLowerCase();
-  if (t.includes("optical") || t.includes("networking") || t.includes("fiber")) {
-    return ["ANET", "CIEN", "LITE", "COHR", "INFN"];
+const sanitizeThemeLabel = (value: string): string => {
+  const raw = value.trim();
+  // Be defensive: sometimes the message body includes a transport prefix like:
+  //   "[Telegram ... id:... ...] optical networking"
+  // If it looks like that, strip the bracketed prefix.
+  const m = raw.match(/^\s*\[([^\]]{1,800})\]\s*(.+)$/s);
+  if (!m) return raw;
+  const header = (m[1] ?? "").toLowerCase();
+  if (
+    header.includes("telegram") ||
+    header.includes("whatsapp") ||
+    header.includes("signal") ||
+    header.includes("discord") ||
+    header.includes("slack") ||
+    header.includes(" id:") ||
+    header.includes(" est") ||
+    header.includes(" et") ||
+    header.match(/\+\s*\d{1,3}\s*m\b/) ||
+    header.match(/\b\d{4}-\d{2}-\d{2}\b/) ||
+    header.match(/\b\d{2}:\d{2}\b/)
+  ) {
+    return (m[2] ?? "").trim();
   }
-  return [];
+  return raw;
 };
 
 const resolveChromeExecutablePath = (): string | undefined => {
@@ -307,7 +322,11 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         const { writeFileArtifactManifest } = await import("../../research/artifact-manifest.js");
         const { resolveStateDir } = await import("../../config/paths.js");
         const { computeThemeResearch } = await import("../../research/theme-sector.js");
-        const { inferThemeUniverseFromDb } = await import("../../research/theme-universe-infer.js");
+        const {
+          inferThemeUniverseFromDb,
+          inferThemeUniverseFromInstruments,
+          normalizeThemeTickerUniverse,
+        } = await import("../../research/theme-universe-infer.js");
         const { runCompanyPipelineV2, runThemePipelineV2 } =
           await import("../../v2/pipeline/v2-pipeline.js");
 
@@ -498,7 +517,9 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         }
 
         const themeLabel = sanitizeThemeLabel(req.theme);
-
+        const explicitUniverse = Array.from(
+          new Set((req.tickers ?? []).map((t) => t.trim().toUpperCase()).filter(Boolean)),
+        ).slice(0, 60);
         let inferredUniverse: {
           scanned_docs: number;
           inferred_tickers: string[];
@@ -512,29 +533,56 @@ async function maybeHandleQuickResearchPdfRequest(params: {
           }>;
         } | null = null;
         let themeRes: { tickers: string[] } | undefined;
-        try {
-          const themeLabel = sanitizeThemeLabel(req.theme);
-          themeRes = computeThemeResearch({ theme: themeLabel });
-        } catch {
-          const inferred = inferThemeUniverseFromDb({ theme: themeLabel });
-          inferredUniverse = inferred;
-          if (inferred.inferred_tickers.length) {
-            themeRes = computeThemeResearch({
-              theme: req.theme,
-              tickers: inferred.inferred_tickers.length
-                ? inferred.inferred_tickers
-                : fallbackUniverseForTheme(themeLabel),
-            });
+        if (explicitUniverse.length) {
+          themeRes = computeThemeResearch({ theme: themeLabel, tickers: explicitUniverse });
+        } else {
+          try {
+            themeRes = computeThemeResearch({ theme: themeLabel });
+          } catch {
+            const inferred = inferThemeUniverseFromDb({ theme: themeLabel });
+            inferredUniverse = inferred;
+
+            let tickers = inferred.inferred_tickers;
+            if (!tickers.length) {
+              const instrumentGuess = inferThemeUniverseFromInstruments({ theme: themeLabel });
+              tickers = instrumentGuess.inferred_tickers;
+            }
+
+            if (tickers.length) {
+              themeRes = computeThemeResearch({
+                theme: themeLabel,
+                tickers,
+              });
+            }
           }
         }
 
         const maxUniverse =
           req.minutes <= 10 ? 5 : req.minutes <= 30 ? 10 : req.minutes <= 60 ? 15 : 25;
-        const universe = (themeRes?.tickers ?? []).slice(0, maxUniverse);
+        let universe = normalizeThemeTickerUniverse({
+          tickers: themeRes?.tickers ?? [],
+          maxTickers: maxUniverse,
+        }).tickers;
+        if (!universe.length) {
+          const instrumentGuess = inferThemeUniverseFromInstruments({
+            theme: themeLabel,
+            maxTickers: Math.max(10, maxUniverse * 3),
+          });
+          universe = normalizeThemeTickerUniverse({
+            tickers: instrumentGuess.inferred_tickers,
+            maxTickers: maxUniverse,
+          }).tickers;
+        }
         if (!universe.length) {
           await delay(Math.max(0, deliverAtMs - Date.now()));
           await safeSend({
-            text: `❌ Could not resolve a ticker universe for theme="${themeLabel}". Reply with: "tickers: SHOP, COIN, SQ, ...".`,
+            text: [
+              `❌ Could not resolve a ticker universe for theme="${themeLabel}".`,
+              "",
+              "Re-run with an explicit universe list, e.g.:",
+              `- "${themeLabel} tickers: CIEN, LITE, COHR, INFN, ANET 5"`,
+              `- "${themeLabel} universe: NVDA, AVGO, ANET 10"`,
+            ].join("\n"),
             isError: true,
           });
           return;

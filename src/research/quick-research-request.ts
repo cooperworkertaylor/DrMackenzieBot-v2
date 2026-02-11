@@ -3,6 +3,7 @@ export type QuickResearchRequest =
       kind: "theme";
       minutes: number;
       theme: string;
+      tickers?: string[];
     }
   | {
       kind: "company";
@@ -20,10 +21,63 @@ const normalizeTicker = (value: string): string =>
     .replaceAll(/[^A-Z0-9.]/g, "")
     .slice(0, 10);
 
+const extractTickersFromList = (value: string): string[] => {
+  const tokens = value.match(/\$?[A-Za-z][A-Za-z0-9.]{0,15}/g) ?? [];
+  const out: string[] = [];
+  for (const token of tokens) {
+    const t = normalizeTicker(token.replace(/^\$/g, ""));
+    if (!t) continue;
+    out.push(t);
+  }
+  return Array.from(new Set(out)).slice(0, 80);
+};
+
+const stripTickersSpec = (value: string): string =>
+  value
+    // Remove parenthetical forms: "theme (tickers: A, B)"
+    .replace(/\(\s*(?:tickers|universe)\s*:\s*[^)]*\)\s*/gi, " ")
+    // Remove inline tickers/universe spec from theme name: "theme tickers: A, B, C"
+    .replace(/\b(?:tickers|universe)\s*:\s*[\s\S]+$/gi, "")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+
+const stripTransportPrefix = (value: string): string => {
+  // Some inbound channels prepend metadata like:
+  //   "[Telegram Name id:1234567890 2026-02-10 20:46 EST] optical networking"
+  // Keep this sanitizer conservative: only strip bracketed prefixes that look like transport headers.
+  let out = value.replace(/^\uFEFF/, "").trim();
+  for (let i = 0; i < 3; i += 1) {
+    const m = out.match(/^\s*\[([^\]]{1,800})\]\s*(.+)$/s);
+    if (!m) break;
+    const header = (m[1] ?? "").toLowerCase();
+    if (
+      header.includes("telegram") ||
+      header.includes("whatsapp") ||
+      header.includes("signal") ||
+      header.includes("discord") ||
+      header.includes("slack") ||
+      header.includes(" id:") ||
+      header.match(/\+\s*\d{1,3}\s*m\b/) ||
+      header.includes(" est") ||
+      header.includes(" et") ||
+      header.match(/\b\d{4}-\d{2}-\d{2}\b/) ||
+      header.match(/\b\d{2}:\d{2}\b/)
+    ) {
+      out = (m[2] ?? "").trim();
+      continue;
+    }
+    break;
+  }
+  return out;
+};
+
 export function parseQuickResearchRequest(raw: string): QuickResearchRequest | null {
   const text = normalizeSpaces(raw);
   if (!text) return null;
   const lowered = text.toLowerCase();
+
+  const tickersMatch = text.match(/\b(?:tickers|universe)\s*:\s*([\s\S]+)$/i);
+  const tickers = tickersMatch?.[1] ? extractTickersFromList(tickersMatch[1]) : [];
 
   const actionOk =
     /\b(research|reserach|reasearch|snapshot|memo|report|write[- ]?up|update|deep\s*dive|run)\b/.test(
@@ -92,6 +146,11 @@ export function parseQuickResearchRequest(raw: string): QuickResearchRequest | n
     return null;
   }
 
+  subject = normalizeSpaces(stripTransportPrefix(subject));
+  if (!subject) return null;
+  subject = stripTickersSpec(subject);
+  if (!subject) return null;
+
   // Shorthand safety: if we triggered only on a trailing number, require a non-trivial topic.
   if (!actionOk && !mentionsPdf && !hasTPlus) {
     const tokens = subject.split(" ").filter(Boolean);
@@ -111,5 +170,5 @@ export function parseQuickResearchRequest(raw: string): QuickResearchRequest | n
     };
   }
 
-  return { kind: "theme", minutes, theme: subject };
+  return { kind: "theme", minutes, theme: subject, ...(tickers.length ? { tickers } : {}) };
 }
