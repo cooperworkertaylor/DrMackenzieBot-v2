@@ -20,6 +20,18 @@ const parseModelRef = (raw: string): ModelRef | null => {
   return { provider, model };
 };
 
+export function supportsTemperatureForResearchV2Model(params: {
+  provider: string;
+  model: string;
+}): boolean {
+  const provider = params.provider.trim().toLowerCase();
+  const model = params.model.trim().toLowerCase();
+  if (!provider || !model) return true;
+  // OpenAI GPT-5 family rejects temperature in this execution path.
+  if (provider === "openai" && /^gpt-5(?:$|[.\-])/.test(model)) return false;
+  return true;
+}
+
 function extractJsonCandidate(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) {
@@ -133,11 +145,19 @@ export async function completeJsonWithResearchV2Model(params: {
       },
     ],
   };
-  const message = await complete(model, context, {
+  const completeParams: Parameters<typeof complete>[2] = {
     apiKey,
     maxTokens: params.maxTokens ?? 2400,
-    temperature: params.temperature ?? 0.2,
-  });
+  };
+  if (
+    supportsTemperatureForResearchV2Model({
+      provider: model.provider,
+      model: model.id,
+    })
+  ) {
+    completeParams.temperature = params.temperature ?? 0.2;
+  }
+  const message = await complete(model, context, completeParams);
   const stop = message.stopReason;
   const err = message.errorMessage?.trim();
   if (stop === "error" || stop === "aborted") {
