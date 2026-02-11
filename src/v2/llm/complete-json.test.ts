@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractBestEffortAssistantText,
+  resolveResearchV2FallbackModelRefs,
   resolveResearchV2ModelRef,
   supportsTemperatureForResearchV2Model,
   tryRepairTruncatedJson,
@@ -85,5 +86,46 @@ describe("extractBestEffortAssistantText", () => {
       content: [{ type: "thinking", thinking: '{"ok":true}' }],
     };
     expect(extractBestEffortAssistantText(msg)).toBe('{"ok":true}');
+  });
+});
+
+describe("resolveResearchV2FallbackModelRefs", () => {
+  it("includes primary, env fallbacks, and cfg fallbacks in order without duplicates", () => {
+    const refs = resolveResearchV2FallbackModelRefs({
+      primary: "openai/gpt-5.2",
+      purpose: "writer",
+      env: {
+        OPENCLAW_RESEARCH_V2_WRITER_FALLBACK_MODEL: "anthropic/claude-opus-4-5",
+        OPENCLAW_RESEARCH_V2_FALLBACK_MODELS: "openai/gpt-5.2, google/gemini-3-pro-preview",
+      } as NodeJS.ProcessEnv,
+      cfg: {
+        agents: {
+          defaults: {
+            model: {
+              fallbacks: ["openai/gpt-5.2-mini", "google/gemini-3-pro-preview"],
+            },
+          },
+        },
+      } as unknown as ReturnType<typeof import("../../config/config.js").loadConfig>,
+    });
+    expect(refs).toEqual([
+      "openai/gpt-5.2",
+      "anthropic/claude-opus-4-5",
+      "google/gemini-3-pro-preview",
+      "openai/gpt-5.2-mini",
+      "openai-codex/gpt-5.2-codex",
+    ]);
+  });
+
+  it("adds automatic OpenAI fallback for gpt-5 codex primary", () => {
+    const refs = resolveResearchV2FallbackModelRefs({
+      primary: "openai-codex/gpt-5.2-codex",
+      purpose: "analyzer",
+      env: {} as NodeJS.ProcessEnv,
+      cfg: { agents: { defaults: { model: {} } } } as unknown as ReturnType<
+        typeof import("../../config/config.js").loadConfig
+      >,
+    });
+    expect(refs).toEqual(["openai-codex/gpt-5.2-codex", "openai/gpt-5.2"]);
   });
 });
