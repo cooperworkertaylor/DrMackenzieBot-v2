@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   resolveResearchV2ModelRef,
   supportsTemperatureForResearchV2Model,
+  tryRepairTruncatedJson,
 } from "./complete-json.js";
 
 describe("resolveResearchV2ModelRef", () => {
@@ -58,5 +59,21 @@ describe("supportsTemperatureForResearchV2Model", () => {
         model: "claude-opus-4-5",
       }),
     ).toBe(true);
+  });
+});
+
+describe("tryRepairTruncatedJson", () => {
+  it("repairs truncated objects and arrays", () => {
+    expect(tryRepairTruncatedJson('{"a":1,"b":[1,2')).toBe('{"a":1,"b":[1,2]}');
+    expect(tryRepairTruncatedJson('[{"a":1},{"b":2}')).toBe('[{"a":1},{"b":2}]');
+  });
+
+  it("repairs unclosed JSON strings", () => {
+    expect(tryRepairTruncatedJson('{"name":"optic')).toBe('{"name":"optic"}');
+  });
+
+  it("returns null for non-json or malformed close order", () => {
+    expect(tryRepairTruncatedJson("not json")).toBeNull();
+    expect(tryRepairTruncatedJson('{"a":[1,2}}')).toBeNull();
   });
 });

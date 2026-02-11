@@ -105,10 +105,90 @@ function extractJsonCandidate(text: string): string {
   const endArr = unfenced.lastIndexOf("]");
   const end = Math.max(endObj, endArr);
   if (end <= start) {
-    throw new Error("Model output contained an incomplete JSON fragment.");
+    return unfenced.slice(start).trim();
   }
   return unfenced.slice(start, end + 1);
 }
+
+export function tryRepairTruncatedJson(candidate: string): string | null {
+  const input = candidate.trim();
+  if (!input) return null;
+  if (!(input.startsWith("{") || input.startsWith("["))) return null;
+
+  let out = "";
+  const closeStack: string[] = [];
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i]!;
+    out += ch;
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      closeStack.push("}");
+      continue;
+    }
+    if (ch === "[") {
+      closeStack.push("]");
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      const expected = closeStack.pop();
+      if (expected !== ch) return null;
+    }
+  }
+
+  if (inString) {
+    if (escape) out += "\\";
+    out += '"';
+  }
+  while (closeStack.length > 0) {
+    out += closeStack.pop();
+  }
+  return out;
+}
+
+const parseJsonFromModelText = (text: string): unknown => {
+  const jsonText = extractJsonCandidate(text);
+  try {
+    return JSON.parse(jsonText) as unknown;
+  } catch (e) {
+    const repaired = tryRepairTruncatedJson(jsonText);
+    if (repaired) {
+      return JSON.parse(repaired) as unknown;
+    }
+    throw e;
+  }
+};
+
+const appendJsonRepairInstruction = (params: {
+  prompt: string;
+  previous: string;
+  parseError: string;
+}) =>
+  [
+    appendStrictJsonRetryInstruction(params.prompt),
+    "",
+    "The previous answer was invalid JSON. Return a corrected full JSON object only.",
+    `Parse error: ${params.parseError}`,
+    "Previous invalid response:",
+    "```",
+    params.previous.slice(0, 12000),
+    "```",
+  ].join("\n");
 
 export function resolveResearchV2ModelRef(params: {
   purpose: "writer" | "analyzer" | "seed";
@@ -227,9 +307,28 @@ export async function completeJsonWithResearchV2Model(params: {
     }
   }
 
-  const jsonText = extractJsonCandidate(text);
+  let parseErrorMessage = "";
   try {
-    return JSON.parse(jsonText) as unknown;
+    return parseJsonFromModelText(text);
+  } catch (e) {
+    parseErrorMessage = e instanceof Error ? e.message : String(e);
+  }
+
+  const repairMessage = await completeOnce(
+    appendJsonRepairInstruction({
+      prompt: params.prompt,
+      previous: text,
+      parseError: parseErrorMessage,
+    }),
+  );
+  const repairedText = extractBestEffortAssistantText(repairMessage);
+  if (!repairedText) {
+    throw new Error(
+      `Model returned empty text during JSON repair; expected JSON. (${summarizeAssistantMessage(repairMessage)})`,
+    );
+  }
+  try {
+    return parseJsonFromModelText(repairedText);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     throw new Error(`Failed to parse model JSON: ${msg}`);
