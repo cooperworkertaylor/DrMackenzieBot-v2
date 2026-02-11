@@ -95,6 +95,17 @@ const formatBuiltAtEt = (dt: Date): string => {
   return `${y}-${m}-${d} ${hh}:${mm} ET`;
 };
 
+const sanitizeThemeLabel = (value: string): string =>
+  value.replace(/^\s*\[[^\]]{1,800}\]\s*/, "").trim();
+
+const fallbackUniverseForTheme = (theme: string): string[] => {
+  const t = theme.toLowerCase();
+  if (t.includes("optical") || t.includes("networking") || t.includes("fiber")) {
+    return ["ANET", "CIEN", "LITE", "COHR", "INFN"];
+  }
+  return [];
+};
+
 const resolveChromeExecutablePath = (): string | undefined => {
   const env = (process.env.OPENCLAW_CHROME_PATH ?? process.env.CHROME_PATH ?? "").trim();
   if (env && fsSync.existsSync(env)) return env;
@@ -500,14 +511,17 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         } | null = null;
         let themeRes: { tickers: string[] } | undefined;
         try {
-          themeRes = computeThemeResearch({ theme: req.theme });
+          const themeLabel = sanitizeThemeLabel(req.theme);
+          themeRes = computeThemeResearch({ theme: themeLabel });
         } catch {
-          const inferred = inferThemeUniverseFromDb({ theme: req.theme });
+          const inferred = inferThemeUniverseFromDb({ theme: themeLabel });
           inferredUniverse = inferred;
           if (inferred.inferred_tickers.length) {
             themeRes = computeThemeResearch({
               theme: req.theme,
-              tickers: inferred.inferred_tickers,
+              tickers: inferred.inferred_tickers.length
+                ? inferred.inferred_tickers
+                : fallbackUniverseForTheme(themeLabel),
             });
           }
         }
@@ -518,14 +532,14 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         if (!universe.length) {
           await delay(Math.max(0, deliverAtMs - Date.now()));
           await safeSend({
-            text: `❌ Could not resolve a ticker universe for theme="${req.theme}". Reply with: "tickers: SHOP, COIN, SQ, ...".`,
+            text: `❌ Could not resolve a ticker universe for theme="${themeLabel}". Reply with: "tickers: SHOP, COIN, SQ, ...".`,
             isError: true,
           });
           return;
         }
 
         const result = await runThemePipelineV2({
-          themeName: req.theme,
+          themeName: themeLabel,
           universe,
           universeEntities:
             inferredUniverse?.inferred_entities && inferredUniverse.inferred_entities.length
@@ -553,7 +567,7 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         await fs.mkdir(outDir, { recursive: true });
         const pdfPath = path.join(
           outDir,
-          `${slugify(req.theme)}-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.pdf`,
+          `${slugify(themeLabel)}-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.pdf`,
         );
         await renderPdfFromMarkdown({
           inPath: result.reportMarkdownPath,
@@ -577,7 +591,7 @@ async function maybeHandleQuickResearchPdfRequest(params: {
 
         const os = await import("node:os");
         const stateDir = resolveStateDir(process.env, os.homedir);
-        const seriesKey = `quickrun_theme_${slugify(req.theme)}`;
+        const seriesKey = `quickrun_theme_${slugify(themeLabel)}`;
         const seriesManifestPath = path.join(
           stateDir,
           "research",
