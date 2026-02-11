@@ -13,6 +13,35 @@ export type QuickResearchRequest =
 
 const normalizeSpaces = (value: string): string => value.replaceAll(/\s+/g, " ").trim();
 
+const stripTransportPrefix = (value: string): string => {
+  // Some inbound channels prepend metadata like:
+  //   "[Telegram Name id:1234567890 2026-02-10 20:46 EST] optical networking"
+  // Keep this sanitizer conservative: only strip bracketed prefixes that look like transport headers.
+  let out = value.trim();
+  for (let i = 0; i < 3; i += 1) {
+    const m = out.match(/^\[([^\]]{1,220})\]\s*(.+)$/s);
+    if (!m) break;
+    const header = (m[1] ?? "").toLowerCase();
+    if (
+      header.includes("telegram") ||
+      header.includes("whatsapp") ||
+      header.includes("signal") ||
+      header.includes("discord") ||
+      header.includes("slack") ||
+      header.includes(" id:") ||
+      header.includes(" est") ||
+      header.includes(" et") ||
+      header.match(/\b\d{4}-\d{2}-\d{2}\b/) ||
+      header.match(/\b\d{2}:\d{2}\b/)
+    ) {
+      out = (m[2] ?? "").trim();
+      continue;
+    }
+    break;
+  }
+  return out;
+};
+
 const normalizeTicker = (value: string): string =>
   value
     .trim()
@@ -91,6 +120,9 @@ export function parseQuickResearchRequest(raw: string): QuickResearchRequest | n
   if (!subject) {
     return null;
   }
+
+  subject = normalizeSpaces(stripTransportPrefix(subject));
+  if (!subject) return null;
 
   // Shorthand safety: if we triggered only on a trailing number, require a non-trivial topic.
   if (!actionOk && !mentionsPdf && !hasTPlus) {

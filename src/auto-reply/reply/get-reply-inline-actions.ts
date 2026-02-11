@@ -296,7 +296,8 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         const { writeFileArtifactManifest } = await import("../../research/artifact-manifest.js");
         const { resolveStateDir } = await import("../../config/paths.js");
         const { computeThemeResearch } = await import("../../research/theme-sector.js");
-        const { inferThemeUniverseFromDb } = await import("../../research/theme-universe-infer.js");
+        const { inferThemeUniverseFromDb, inferThemeUniverseFromInstruments } =
+          await import("../../research/theme-universe-infer.js");
         const { runCompanyPipelineV2, runThemePipelineV2 } =
           await import("../../v2/pipeline/v2-pipeline.js");
 
@@ -504,10 +505,17 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         } catch {
           const inferred = inferThemeUniverseFromDb({ theme: req.theme });
           inferredUniverse = inferred;
-          if (inferred.inferred_tickers.length) {
+
+          let tickers = inferred.inferred_tickers;
+          if (!tickers.length) {
+            const instrumentGuess = inferThemeUniverseFromInstruments({ theme: req.theme });
+            tickers = instrumentGuess.inferred_tickers;
+          }
+
+          if (tickers.length) {
             themeRes = computeThemeResearch({
               theme: req.theme,
-              tickers: inferred.inferred_tickers,
+              tickers,
             });
           }
         }

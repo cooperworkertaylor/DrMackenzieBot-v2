@@ -270,3 +270,71 @@ export function inferThemeUniverseFromDb(params: {
     note: "Universe inferred from external_documents by keyword match; confirm/override with 'tickers: ...' for better coverage.",
   };
 }
+
+export function inferThemeUniverseFromInstruments(params: {
+  theme: string;
+  dbPath?: string;
+  maxTickers?: number;
+}): { theme: string; inferred_tickers: string[] } {
+  const theme = normalizeSpaces(params.theme);
+  const maxTickers = Math.max(5, Math.min(80, Math.round(params.maxTickers ?? 25)));
+  const db = openResearchDb(params.dbPath);
+
+  // Tokenize the theme and use as keyword probes over the instruments table.
+  const tokens = Array.from(
+    new Set(
+      theme
+        .toLowerCase()
+        .split(/[^a-z0-9]+/g)
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 3)
+        .filter((t) => !STOP_TOKENS.has(t.toUpperCase())),
+    ),
+  ).slice(0, 8);
+
+  if (!tokens.length) {
+    return { theme, inferred_tickers: [] };
+  }
+
+  // Pull a small candidate set then score in JS (SQLite FTS isn't guaranteed here).
+  const ors = tokens.map(() => "lower(coalesce(name,'')) LIKE '%' || ? || '%'").join(" OR ");
+  const rows = db
+    .prepare(
+      `SELECT ticker, name, sector, industry
+       FROM instruments
+       WHERE trim(coalesce(ticker,'')) <> ''
+         AND (${ors}
+              OR ${tokens.map(() => "lower(coalesce(sector,'')) LIKE '%' || ? || '%'").join(" OR ")}
+              OR ${tokens
+                .map(() => "lower(coalesce(industry,'')) LIKE '%' || ? || '%'")
+                .join(" OR ")})
+       LIMIT 600`,
+    )
+    .all(...tokens, ...tokens, ...tokens) as Array<{
+    ticker: string;
+    name?: string;
+    sector?: string;
+    industry?: string;
+  }>;
+
+  const scored = rows
+    .map((row) => {
+      const blob = normalizeSpaces(
+        [row.ticker ?? "", row.name ?? "", row.sector ?? "", row.industry ?? ""].join(" "),
+      ).toLowerCase();
+      let hits = 0;
+      for (const t of tokens) {
+        if (blob.includes(t)) hits += 1;
+      }
+      // Prefer more specific matches (more hits) and shorter tickers (avoid weird tokens).
+      const ticker = normalizeTicker(row.ticker ?? "");
+      const score = hits + (ticker.length <= 5 ? 0.2 : 0);
+      return { ticker, score };
+    })
+    .filter((r) => r.ticker && !STOP_TOKENS.has(r.ticker))
+    .sort((a, b) => b.score - a.score)
+    .map((r) => r.ticker);
+
+  const inferred_tickers = Array.from(new Set(scored)).slice(0, maxTickers);
+  return { theme, inferred_tickers };
+}
