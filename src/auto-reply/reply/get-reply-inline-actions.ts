@@ -514,6 +514,9 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         }
 
         const themeLabel = sanitizeThemeLabel(req.theme);
+        const explicitUniverse = Array.from(
+          new Set((req.tickers ?? []).map((t) => t.trim().toUpperCase()).filter(Boolean)),
+        ).slice(0, 60);
         let inferredUniverse: {
           scanned_docs: number;
           inferred_tickers: string[];
@@ -527,23 +530,27 @@ async function maybeHandleQuickResearchPdfRequest(params: {
           }>;
         } | null = null;
         let themeRes: { tickers: string[] } | undefined;
-        try {
-          themeRes = computeThemeResearch({ theme: themeLabel });
-        } catch {
-          const inferred = inferThemeUniverseFromDb({ theme: themeLabel });
-          inferredUniverse = inferred;
+        if (explicitUniverse.length) {
+          themeRes = computeThemeResearch({ theme: themeLabel, tickers: explicitUniverse });
+        } else {
+          try {
+            themeRes = computeThemeResearch({ theme: themeLabel });
+          } catch {
+            const inferred = inferThemeUniverseFromDb({ theme: themeLabel });
+            inferredUniverse = inferred;
 
-          let tickers = inferred.inferred_tickers;
-          if (!tickers.length) {
-            const instrumentGuess = inferThemeUniverseFromInstruments({ theme: themeLabel });
-            tickers = instrumentGuess.inferred_tickers;
-          }
+            let tickers = inferred.inferred_tickers;
+            if (!tickers.length) {
+              const instrumentGuess = inferThemeUniverseFromInstruments({ theme: themeLabel });
+              tickers = instrumentGuess.inferred_tickers;
+            }
 
-          if (tickers.length) {
-            themeRes = computeThemeResearch({
-              theme: themeLabel,
-              tickers,
-            });
+            if (tickers.length) {
+              themeRes = computeThemeResearch({
+                theme: themeLabel,
+                tickers,
+              });
+            }
           }
         }
 
@@ -553,7 +560,13 @@ async function maybeHandleQuickResearchPdfRequest(params: {
         if (!universe.length) {
           await delay(Math.max(0, deliverAtMs - Date.now()));
           await safeSend({
-            text: `❌ Could not resolve a ticker universe for theme="${req.theme}". Reply with: "tickers: SHOP, COIN, SQ, ...".`,
+            text: [
+              `❌ Could not resolve a ticker universe for theme="${themeLabel}".`,
+              "",
+              "Re-run with an explicit universe list, e.g.:",
+              `- "${themeLabel} tickers: CIEN, LITE, COHR, INFN, ANET 5"`,
+              `- "${themeLabel} universe: NVDA, AVGO, ANET 10"`,
+            ].join("\n"),
             isError: true,
           });
           return;

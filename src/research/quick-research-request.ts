@@ -3,6 +3,7 @@ export type QuickResearchRequest =
       kind: "theme";
       minutes: number;
       theme: string;
+      tickers?: string[];
     }
   | {
       kind: "company";
@@ -12,6 +13,33 @@ export type QuickResearchRequest =
     };
 
 const normalizeSpaces = (value: string): string => value.replaceAll(/\s+/g, " ").trim();
+
+const normalizeTicker = (value: string): string =>
+  value
+    .trim()
+    .toUpperCase()
+    .replaceAll(/[^A-Z0-9.]/g, "")
+    .slice(0, 10);
+
+const extractTickersFromList = (value: string): string[] => {
+  const tokens = value.match(/\$?[A-Za-z][A-Za-z0-9.]{0,15}/g) ?? [];
+  const out: string[] = [];
+  for (const token of tokens) {
+    const t = normalizeTicker(token.replace(/^\$/g, ""));
+    if (!t) continue;
+    out.push(t);
+  }
+  return Array.from(new Set(out)).slice(0, 80);
+};
+
+const stripTickersSpec = (value: string): string =>
+  value
+    // Remove parenthetical forms: "theme (tickers: A, B)"
+    .replace(/\(\s*(?:tickers|universe)\s*:\s*[^)]*\)\s*/gi, " ")
+    // Remove inline tickers/universe spec from theme name: "theme tickers: A, B, C"
+    .replace(/\b(?:tickers|universe)\s*:\s*[\s\S]+$/gi, "")
+    .replaceAll(/\s+/g, " ")
+    .trim();
 
 const stripTransportPrefix = (value: string): string => {
   // Some inbound channels prepend metadata like:
@@ -43,17 +71,13 @@ const stripTransportPrefix = (value: string): string => {
   return out;
 };
 
-const normalizeTicker = (value: string): string =>
-  value
-    .trim()
-    .toUpperCase()
-    .replaceAll(/[^A-Z0-9.]/g, "")
-    .slice(0, 10);
-
 export function parseQuickResearchRequest(raw: string): QuickResearchRequest | null {
   const text = normalizeSpaces(raw);
   if (!text) return null;
   const lowered = text.toLowerCase();
+
+  const tickersMatch = text.match(/\b(?:tickers|universe)\s*:\s*([\s\S]+)$/i);
+  const tickers = tickersMatch?.[1] ? extractTickersFromList(tickersMatch[1]) : [];
 
   const actionOk =
     /\b(research|reserach|reasearch|snapshot|memo|report|write[- ]?up|update|deep\s*dive|run)\b/.test(
@@ -124,6 +148,8 @@ export function parseQuickResearchRequest(raw: string): QuickResearchRequest | n
 
   subject = normalizeSpaces(stripTransportPrefix(subject));
   if (!subject) return null;
+  subject = stripTickersSpec(subject);
+  if (!subject) return null;
 
   // Shorthand safety: if we triggered only on a trailing number, require a non-trivial topic.
   if (!actionOk && !mentionsPdf && !hasTPlus) {
@@ -144,5 +170,5 @@ export function parseQuickResearchRequest(raw: string): QuickResearchRequest | n
     };
   }
 
-  return { kind: "theme", minutes, theme: subject };
+  return { kind: "theme", minutes, theme: subject, ...(tickers.length ? { tickers } : {}) };
 }
