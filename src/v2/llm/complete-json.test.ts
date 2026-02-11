@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  extractBestEffortAssistantText,
   resolveResearchV2ModelRef,
   supportsTemperatureForResearchV2Model,
   tryRepairTruncatedJson,
@@ -75,5 +76,14 @@ describe("tryRepairTruncatedJson", () => {
   it("returns null for non-json or malformed close order", () => {
     expect(tryRepairTruncatedJson("not json")).toBeNull();
     expect(tryRepairTruncatedJson('{"a":[1,2}}')).toBeNull();
+  });
+});
+
+describe("extractBestEffortAssistantText", () => {
+  it("falls back to thinking content when text is missing", () => {
+    const msg = {
+      content: [{ type: "thinking", thinking: '{"ok":true}' }],
+    };
+    expect(extractBestEffortAssistantText(msg)).toBe('{"ok":true}');
   });
 });
