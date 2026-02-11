@@ -14,6 +14,36 @@ function isIndexSegment(raw: string): boolean {
   return /^[0-9]+$/.test(raw);
 }
 
+function isEnvVarLeafPath(path: PathSegment[]): boolean {
+  // Many config "env" blocks are string->string maps (env vars). Users commonly set values like "1"
+  // which JSON5 parses as a number; that then fails config validation (expects string).
+  //
+  // Treat leaf assignments under `env.*` as raw strings unless --json is explicitly used.
+  const n = path.length;
+  if (n < 2) return false;
+
+  // Root-level OpenClaw env block.
+  if (path[0] === "env") {
+    if (n === 2) {
+      return path[1] !== "shellEnv" && path[1] !== "vars";
+    }
+    if (n === 3 && path[1] === "vars") {
+      return true;
+    }
+    return false;
+  }
+
+  // Nested env maps (e.g., agents.defaults.env.FOO).
+  if (path[n - 2] === "env") {
+    return path[n - 1] !== "shellEnv" && path[n - 1] !== "vars";
+  }
+  if (n >= 3 && path[n - 3] === "env" && path[n - 2] === "vars") {
+    return true;
+  }
+
+  return false;
+}
+
 function parsePath(raw: string): PathSegment[] {
   const trimmed = raw.trim();
   if (!trimmed) {
@@ -66,7 +96,7 @@ function parsePath(raw: string): PathSegment[] {
   return parts.map((part) => part.trim()).filter(Boolean);
 }
 
-function parseValue(raw: string, opts: { json?: boolean }): unknown {
+function parseValue(raw: string, opts: { json?: boolean }, path?: PathSegment[]): unknown {
   const trimmed = raw.trim();
   if (opts.json) {
     try {
@@ -74,6 +104,11 @@ function parseValue(raw: string, opts: { json?: boolean }): unknown {
     } catch (err) {
       throw new Error(`Failed to parse JSON5 value: ${String(err)}`, { cause: err });
     }
+  }
+
+  // Special-case env var maps: always store as strings unless --json is used.
+  if (path && isEnvVarLeafPath(path)) {
+    return raw;
   }
 
   try {
@@ -304,7 +339,7 @@ export function registerConfigCli(program: Command) {
         if (parsedPath.length === 0) {
           throw new Error("Path is empty.");
         }
-        const parsedValue = parseValue(value, opts);
+        const parsedValue = parseValue(value, opts, parsedPath);
         const snapshot = await loadValidConfig();
         const next = snapshot.config as Record<string, unknown>;
         setAtPath(next, parsedPath, parsedValue);
