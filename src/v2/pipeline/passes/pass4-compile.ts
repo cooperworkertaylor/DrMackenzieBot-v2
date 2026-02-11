@@ -821,6 +821,400 @@ const v2WriterLlmEnabled = (): boolean =>
     .toLowerCase() === "macmini" &&
     parseBoolean(process.env.OPENCLAW_RESEARCH_V2_LLM) !== false);
 
+const REQUIRED_SECTION_KEYS_BY_KIND: Record<ReportKindV2, string[]> = {
+  company: [
+    "executive_summary",
+    "variant_perception",
+    "thesis",
+    "business_overview",
+    "moat_competition",
+    "financial_quality",
+    "valuation_scenarios",
+    "catalysts",
+    "risks_premortem",
+    "change_mind_triggers",
+  ],
+  theme: [
+    "executive_summary",
+    "what_it_is_isnt_why_now",
+    "value_chain",
+    "capture_ledger",
+    "beneficiaries_vs_left_behind",
+    "catalysts_timeline",
+    "risks_falsifiers",
+    "portfolio_posture",
+  ],
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const toRecord = (value: unknown): Record<string, unknown> => (isRecord(value) ? value : {});
+const toArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+const toString = (value: unknown): string => (typeof value === "string" ? value : "");
+const toNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+};
+const dedupe = (values: string[]): string[] => Array.from(new Set(values.filter(Boolean)));
+const toStringArray = (value: unknown): string[] =>
+  dedupe(
+    toArray(value)
+      .map(toString)
+      .map((v) => v.trim()),
+  );
+
+const normalizeTicker = (value: string): string | null => {
+  const t = value.trim().toUpperCase();
+  if (!/^[A-Z0-9.]{1,10}$/.test(t)) return null;
+  return t;
+};
+
+const normalizeIso = (value: unknown, fallback: string): string => {
+  const raw = toString(value).trim();
+  if (!raw) return fallback;
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return new Date(parsed).toISOString();
+};
+
+const unwrapReportCandidate = (raw: unknown): Record<string, unknown> => {
+  const root = toRecord(raw);
+  const nestedKeys = ["report", "report_json", "final_report", "output", "result"];
+  for (const key of nestedKeys) {
+    const nested = root[key];
+    if (isRecord(nested)) return nested;
+  }
+  return root;
+};
+
+const normalizeTextBlock = (params: {
+  block: unknown;
+  fallbackSid: string;
+  sourceSet: Set<string>;
+  numericIdSet: Set<string>;
+}): Record<string, unknown> => {
+  const block = toRecord(params.block);
+  const tagRaw = toString(block.tag).trim().toUpperCase();
+  const tag =
+    tagRaw === "FACT" || tagRaw === "INTERPRETATION" || tagRaw === "ASSUMPTION"
+      ? tagRaw
+      : "INTERPRETATION";
+  let text =
+    toString(block.text).trim() ||
+    "N/A because the model did not provide source-grounded content for this block.";
+  let sourceIds = toStringArray(block.source_ids).filter((id) => params.sourceSet.has(id));
+  const numericRefs = toStringArray(block.numeric_refs).filter((id) => params.numericIdSet.has(id));
+  const placeholderIds = Array.from(text.matchAll(/\{\{\s*(N\d+)\s*\}\}/g))
+    .map((m) => m[1] ?? "")
+    .filter((id) => params.numericIdSet.has(id));
+  const finalNumericRefs = dedupe([...numericRefs, ...placeholderIds]);
+  text = text.replaceAll(/\{\{\s*(N\d+)\s*\}\}/g, (_all, id: string) =>
+    params.numericIdSet.has(id) ? `{{${id}}}` : "N/A",
+  );
+  if (tag === "FACT" && sourceIds.length === 0) {
+    sourceIds = [params.fallbackSid];
+  }
+  const out: Record<string, unknown> = { tag, text };
+  if (sourceIds.length > 0) out.source_ids = sourceIds;
+  if (finalNumericRefs.length > 0) out.numeric_refs = finalNumericRefs;
+  return out;
+};
+
+const normalizeSections = (params: {
+  kind: ReportKindV2;
+  candidate: unknown;
+  fallback: unknown;
+  fallbackSid: string;
+  sourceSet: Set<string>;
+  numericIdSet: Set<string>;
+}): Record<string, unknown>[] => {
+  const expected = REQUIRED_SECTION_KEYS_BY_KIND[params.kind];
+  const fallbackSections = toArray(params.fallback).map(toRecord);
+  const fallbackByKey = new Map(
+    fallbackSections.map((s) => [toString(s.key).trim(), s] as const).filter(([k]) => Boolean(k)),
+  );
+  const candidateSections = toArray(params.candidate).map(toRecord);
+  const candidateByKey = new Map<string, Record<string, unknown>>();
+  for (const section of candidateSections) {
+    const key = toString(section.key).trim();
+    if (!expected.includes(key)) continue;
+    if (candidateByKey.has(key)) continue;
+    candidateByKey.set(key, section);
+  }
+  return expected.map((key) => {
+    const source = candidateByKey.get(key) ?? fallbackByKey.get(key) ?? {};
+    const title =
+      toString(source.title).trim() || toString(fallbackByKey.get(key)?.title).trim() || key;
+    const rawBlocks = toArray(source.blocks);
+    const blocks =
+      rawBlocks.length > 0
+        ? rawBlocks.map((b) =>
+            normalizeTextBlock({
+              block: b,
+              fallbackSid: params.fallbackSid,
+              sourceSet: params.sourceSet,
+              numericIdSet: params.numericIdSet,
+            }),
+          )
+        : toArray(fallbackByKey.get(key)?.blocks).map((b) =>
+            normalizeTextBlock({
+              block: b,
+              fallbackSid: params.fallbackSid,
+              sourceSet: params.sourceSet,
+              numericIdSet: params.numericIdSet,
+            }),
+          );
+    return {
+      key,
+      title,
+      blocks: blocks.length
+        ? blocks
+        : [
+            {
+              tag: "ASSUMPTION",
+              text: "N/A because model output did not provide this required section.",
+            },
+          ],
+    };
+  });
+};
+
+const normalizeExhibits = (params: {
+  candidate: unknown;
+  fallback: unknown;
+  fallbackSid: string;
+  sourceSet: Set<string>;
+  numericIdSet: Set<string>;
+}): Record<string, unknown>[] => {
+  const candidate = toArray(params.candidate);
+  const fallback = toArray(params.fallback).map(toRecord);
+  const picked = candidate.length ? candidate : fallback;
+  const normalized = picked.map(toRecord).map((row, idx) => {
+    const sourceIds = toStringArray(row.source_ids).filter((id) => params.sourceSet.has(id));
+    const numericRefs = toStringArray(row.numeric_refs).filter((id) => params.numericIdSet.has(id));
+    const dataSummary = toStringArray(row.data_summary);
+    const out: Record<string, unknown> = {
+      id: toString(row.id).trim() || `X${idx + 1}`,
+      title: toString(row.title).trim() || `Exhibit ${idx + 1}`,
+      question: toString(row.question).trim() || "What does this exhibit test?",
+      data_summary: dataSummary.length ? dataSummary : ["N/A"],
+      takeaway: toString(row.takeaway).trim() || "Takeaway: evidence coverage is incomplete.",
+      source_ids: sourceIds.length ? sourceIds : [params.fallbackSid],
+    };
+    if (numericRefs.length > 0) out.numeric_refs = numericRefs;
+    return out;
+  });
+  return normalized.length > 0
+    ? normalized
+    : [
+        {
+          id: "X1",
+          title: "Exhibit 1",
+          question: "What does this exhibit test?",
+          data_summary: ["N/A"],
+          takeaway: "Takeaway: evidence coverage is incomplete.",
+          source_ids: [params.fallbackSid],
+        },
+      ];
+};
+
+const normalizeAppendix = (params: {
+  candidate: unknown;
+  fallback: unknown;
+  fallbackSid: string;
+  sourceSet: Set<string>;
+}): Record<string, unknown> => {
+  const candidate = toRecord(params.candidate);
+  const fallback = toRecord(params.fallback);
+  const evidenceRows = toArray(candidate.evidence_table)
+    .map(toRecord)
+    .map((row) => {
+      const sourceIds = toStringArray(row.source_ids).filter((id) => params.sourceSet.has(id));
+      const evidenceIds = toStringArray(row.evidence_ids).filter((id) => params.sourceSet.has(id));
+      return {
+        claim: toString(row.claim).trim() || "N/A",
+        evidence_ids: evidenceIds.length
+          ? evidenceIds
+          : sourceIds.length
+            ? sourceIds
+            : [params.fallbackSid],
+        source_ids: sourceIds.length ? sourceIds : [params.fallbackSid],
+      };
+    })
+    .filter((row) => row.claim.trim().length > 0);
+  const fallbackRows = toArray(fallback.evidence_table).map(toRecord);
+  const finalRows = evidenceRows.length
+    ? evidenceRows
+    : fallbackRows.length
+      ? fallbackRows
+      : [
+          {
+            claim: "N/A",
+            evidence_ids: [params.fallbackSid],
+            source_ids: [params.fallbackSid],
+          },
+        ];
+  const whatsMissing = toStringArray(candidate.whats_missing);
+  const fallbackMissing = toStringArray(fallback.whats_missing);
+  return {
+    evidence_table: finalRows,
+    whats_missing: whatsMissing.length ? whatsMissing : fallbackMissing,
+  };
+};
+
+export function normalizeLlmReportCandidateV2(params: {
+  kind: ReportKindV2;
+  candidate: unknown;
+  fallbackReport: unknown;
+  now?: string;
+}): unknown {
+  const fallback = toRecord(params.fallbackReport);
+  const root = unwrapReportCandidate(params.candidate);
+  const now = params.now ?? nowIso();
+  const fallbackSources = toArray(fallback.sources).map(toRecord);
+  const sourceSet = new Set(
+    fallbackSources.map((s) => toString(s.id).trim()).filter((id): id is string => Boolean(id)),
+  );
+  const fallbackSid = toString(fallbackSources[0]?.id).trim() || "S1";
+
+  const candidatePlan = toRecord(root.plan);
+  const fallbackPlan = toRecord(fallback.plan);
+  const plan = {
+    posture: "long-only",
+    horizon:
+      toString(candidatePlan.horizon).trim() ||
+      toString(fallbackPlan.horizon).trim() ||
+      "12-36 months",
+    timebox_minutes: (() => {
+      const value =
+        toNumber(candidatePlan.timebox_minutes) ?? toNumber(fallbackPlan.timebox_minutes) ?? 60;
+      return Math.max(1, Math.min(600, Math.round(value)));
+    })(),
+    key_questions: (() => {
+      const value = toStringArray(candidatePlan.key_questions);
+      const fallbackValue = toStringArray(fallbackPlan.key_questions);
+      return value.length
+        ? value
+        : fallbackValue.length
+          ? fallbackValue
+          : ["What is the primary underwriting edge?"];
+    })(),
+    required_exhibits: (() => {
+      const value = toStringArray(candidatePlan.required_exhibits);
+      const fallbackValue = toStringArray(fallbackPlan.required_exhibits);
+      return value.length ? value : fallbackValue.length ? fallbackValue : ["evidence_table"];
+    })(),
+  };
+
+  const fallbackSubject = toRecord(fallback.subject);
+  const rootSubject = toRecord(root.subject);
+  const subject =
+    params.kind === "company"
+      ? {
+          ticker:
+            normalizeTicker(toString(rootSubject.ticker)) ??
+            normalizeTicker(toString(root.ticker)) ??
+            normalizeTicker(toString(fallbackSubject.ticker)) ??
+            "UNKNOWN",
+          ...(toString(rootSubject.company_name).trim()
+            ? { company_name: toString(rootSubject.company_name).trim() }
+            : toString(rootSubject.companyName).trim()
+              ? { company_name: toString(rootSubject.companyName).trim() }
+              : toString(fallbackSubject.company_name).trim()
+                ? { company_name: toString(fallbackSubject.company_name).trim() }
+                : {}),
+        }
+      : {
+          theme_name:
+            toString(rootSubject.theme_name).trim() ||
+            toString(root.theme_name).trim() ||
+            toString(fallbackSubject.theme_name).trim() ||
+            "UNKNOWN",
+          universe: (() => {
+            const fromSubject = toStringArray(rootSubject.universe).map((t) => t.toUpperCase());
+            const fromRoot = toStringArray(root.universe).map((t) => t.toUpperCase());
+            const fromFallback = toStringArray(fallbackSubject.universe).map((t) =>
+              t.toUpperCase(),
+            );
+            return fromSubject.length ? fromSubject : fromRoot.length ? fromRoot : fromFallback;
+          })(),
+          ...(toArray(rootSubject.universe_entities).length
+            ? { universe_entities: toArray(rootSubject.universe_entities).map(toRecord) }
+            : toArray(fallbackSubject.universe_entities).length
+              ? { universe_entities: toArray(fallbackSubject.universe_entities).map(toRecord) }
+              : {}),
+        };
+
+  const fallbackNumericFacts = toArray(fallback.numeric_facts).map(toRecord);
+  const candidateNumericFacts = toArray(root.numeric_facts).map(toRecord);
+  const normalizedNumericFacts = candidateNumericFacts
+    .map((fact) => {
+      const id = toString(fact.id).trim();
+      const value = toNumber(fact.value);
+      const unit = toString(fact.unit).trim();
+      const period = toString(fact.period).trim();
+      if (!/^N\d+$/.test(id) || value === null || !unit || !period) return null;
+      const sourceIdRaw = toString(fact.source_id).trim();
+      const sourceId = sourceSet.has(sourceIdRaw) ? sourceIdRaw : fallbackSid;
+      return {
+        id,
+        value,
+        unit,
+        period,
+        ...(toString(fact.currency).trim() ? { currency: toString(fact.currency).trim() } : {}),
+        source_id: sourceId,
+        accessed_at: normalizeIso(fact.accessed_at, now),
+        ...(toString(fact.notes).trim() ? { notes: toString(fact.notes).trim() } : {}),
+      };
+    })
+    .filter((row) => row !== null);
+  const numericFacts = normalizedNumericFacts.length
+    ? normalizedNumericFacts
+    : fallbackNumericFacts;
+  const numericIdSet = new Set(numericFacts.map((row) => toString(row.id).trim()).filter(Boolean));
+
+  const sections = normalizeSections({
+    kind: params.kind,
+    candidate: root.sections,
+    fallback: fallback.sections,
+    fallbackSid,
+    sourceSet,
+    numericIdSet,
+  });
+  const exhibits = normalizeExhibits({
+    candidate: root.exhibits,
+    fallback: fallback.exhibits,
+    fallbackSid,
+    sourceSet,
+    numericIdSet,
+  });
+  const appendix = normalizeAppendix({
+    candidate: root.appendix,
+    fallback: fallback.appendix,
+    fallbackSid,
+    sourceSet,
+  });
+
+  return {
+    version: 2,
+    kind: params.kind,
+    run_id: toString(root.run_id).trim() || toString(fallback.run_id).trim() || "run-v2",
+    generated_at: normalizeIso(root.generated_at, now),
+    subject,
+    plan,
+    sources: fallbackSources,
+    numeric_facts: numericFacts,
+    sections,
+    exhibits,
+    appendix,
+  };
+}
+
 export async function pass4CompileReportV2(params: {
   kind: ReportKindV2;
   runId: string;
@@ -838,6 +1232,29 @@ export async function pass4CompileReportV2(params: {
   repairModel?: V2RepairModel;
 }): Promise<CompileResultV2> {
   const generatedAt = nowIso();
+  const deterministicReport =
+    params.kind === "company"
+      ? buildCompanyReportV2({
+          runId: params.runId,
+          generatedAt,
+          ticker: params.subject.ticker ?? "UNKNOWN",
+          companyName: params.subject.companyName,
+          plan: params.plan,
+          evidence: params.evidence,
+          analyzers: params.analyzers as CompanyAnalyzerOutputV2,
+          risk: params.risk,
+        })
+      : buildThemeReportV2({
+          runId: params.runId,
+          generatedAt,
+          themeName: params.subject.themeName ?? "UNKNOWN",
+          universe: params.subject.universe ?? [],
+          universeEntities: params.subject.universeEntities,
+          plan: params.plan,
+          evidence: params.evidence,
+          analyzers: params.analyzers as ThemeAnalyzerOutputV2,
+          risk: params.risk,
+        });
 
   if (v2WriterLlmEnabled()) {
     const { completeJsonWithResearchV2Model } = await import("../../llm/complete-json.js");
@@ -1010,22 +1427,32 @@ export async function pass4CompileReportV2(params: {
         .join("\n");
     };
 
-    const draft = await completeJsonWithResearchV2Model({
+    const draftRaw = await completeJsonWithResearchV2Model({
       purpose: "writer",
       prompt: mkPrompt("write"),
       maxTokens: 3600,
       temperature: 0.2,
       profileId: process.env.OPENCLAW_RESEARCH_V2_PROFILE?.trim() || undefined,
     });
+    const draft = normalizeLlmReportCandidateV2({
+      kind: params.kind,
+      candidate: draftRaw,
+      fallbackReport: deterministicReport,
+    });
 
     const repairModel: V2RepairModel = {
       repair: async ({ issues, report }) => {
-        return await completeJsonWithResearchV2Model({
+        const repairedRaw = await completeJsonWithResearchV2Model({
           purpose: "writer",
           prompt: mkPrompt("repair", report, issues),
           maxTokens: 3600,
           temperature: 0.2,
           profileId: process.env.OPENCLAW_RESEARCH_V2_PROFILE?.trim() || undefined,
+        });
+        return normalizeLlmReportCandidateV2({
+          kind: params.kind,
+          candidate: repairedRaw,
+          fallbackReport: deterministicReport,
         });
       },
     };
@@ -1036,33 +1463,31 @@ export async function pass4CompileReportV2(params: {
       repairModel,
       maxAttempts: 2,
     });
+    if (
+      !repaired.gate.passed &&
+      repaired.gate.issues.some((issue) => issue.code === "schema_invalid")
+    ) {
+      const fallbackGate = runV2QualityGate({
+        kind: params.kind,
+        report: deterministicReport,
+      });
+      if (fallbackGate.passed) {
+        const fallbackMarkdown = renderV2ReportMarkdown({
+          kind: params.kind,
+          report: deterministicReport,
+        });
+        return {
+          reportJson: deterministicReport,
+          reportMarkdown: fallbackMarkdown,
+          gate: fallbackGate,
+        };
+      }
+    }
     const reportMarkdown = renderV2ReportMarkdown({ kind: params.kind, report: repaired.report });
     return { reportJson: repaired.report, reportMarkdown, gate: repaired.gate };
   }
 
-  const reportJson =
-    params.kind === "company"
-      ? buildCompanyReportV2({
-          runId: params.runId,
-          generatedAt,
-          ticker: params.subject.ticker ?? "UNKNOWN",
-          companyName: params.subject.companyName,
-          plan: params.plan,
-          evidence: params.evidence,
-          analyzers: params.analyzers as CompanyAnalyzerOutputV2,
-          risk: params.risk,
-        })
-      : buildThemeReportV2({
-          runId: params.runId,
-          generatedAt,
-          themeName: params.subject.themeName ?? "UNKNOWN",
-          universe: params.subject.universe ?? [],
-          universeEntities: params.subject.universeEntities,
-          plan: params.plan,
-          evidence: params.evidence,
-          analyzers: params.analyzers as ThemeAnalyzerOutputV2,
-          risk: params.risk,
-        });
+  const reportJson = deterministicReport;
 
   // Fail closed: schema + gates must pass. Optionally attempt bounded repair.
   let gate: QualityGateResult;
