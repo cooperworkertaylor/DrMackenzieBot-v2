@@ -42,7 +42,7 @@ const appendStrictJsonRetryInstruction = (prompt: string): string =>
     "If uncertain, return the best schema-conforming JSON with nulls/empty arrays.",
   ].join("\n");
 
-const extractBestEffortAssistantText = (message: unknown): string => {
+export const extractBestEffortAssistantText = (message: unknown): string => {
   const primary = extractAssistantText(
     message as Parameters<typeof extractAssistantText>[0],
   ).trim();
@@ -55,6 +55,7 @@ const extractBestEffortAssistantText = (message: unknown): string => {
       const rec = block as Record<string, unknown>;
       if (typeof rec.text === "string") return rec.text.trim();
       if (typeof rec.content === "string") return rec.content.trim();
+      if (typeof rec.thinking === "string") return rec.thinking.trim();
       return "";
     })
     .filter(Boolean);
