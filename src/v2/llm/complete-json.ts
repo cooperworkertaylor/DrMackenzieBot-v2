@@ -1,5 +1,5 @@
 import type { Api, Context, Model } from "@mariozechner/pi-ai";
-import { complete } from "@mariozechner/pi-ai";
+import { complete, completeSimple } from "@mariozechner/pi-ai";
 import { resolveOpenClawAgentDir } from "../../agents/agent-paths.js";
 import { getApiKeyForModel, requireApiKey } from "../../agents/model-auth.js";
 import { ensureOpenClawModelsJson } from "../../agents/models-config.js";
@@ -30,6 +30,69 @@ export function supportsTemperatureForResearchV2Model(params: {
   // OpenAI GPT-5 family rejects temperature in this execution path.
   if (provider === "openai" && /^gpt-5(?:$|[.\-])/.test(model)) return false;
   return true;
+}
+
+const isGpt5Family = (params: { provider: string; model: string }): boolean => {
+  const provider = params.provider.trim().toLowerCase();
+  const model = params.model.trim().toLowerCase();
+  if (!provider || !model) return false;
+  if (!(provider === "openai" || provider === "openai-codex")) return false;
+  return /^gpt-5(?:$|[.\-])/.test(model);
+};
+
+const parseCsvModelRefs = (raw: string | undefined): string[] =>
+  String(raw ?? "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+
+export function resolveResearchV2FallbackModelRefs(params: {
+  primary: string;
+  purpose: "writer" | "analyzer" | "seed";
+  env?: NodeJS.ProcessEnv;
+  cfg?: ReturnType<typeof loadConfig>;
+}): string[] {
+  const env = params.env ?? process.env;
+  const cfg = params.cfg ?? loadConfig();
+  const pickedPrimary = params.primary.trim();
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (raw: string) => {
+    const modelRef = raw.trim();
+    if (!modelRef) return;
+    if (seen.has(modelRef)) return;
+    seen.add(modelRef);
+    out.push(modelRef);
+  };
+
+  if (pickedPrimary) add(pickedPrimary);
+
+  const purposeKey = params.purpose.toUpperCase();
+  const purposeSingle = env[`OPENCLAW_RESEARCH_V2_${purposeKey}_FALLBACK_MODEL`];
+  const purposeMany = env[`OPENCLAW_RESEARCH_V2_${purposeKey}_FALLBACK_MODELS`];
+  add(String(purposeSingle ?? ""));
+  for (const modelRef of parseCsvModelRefs(purposeMany)) add(modelRef);
+
+  add(String(env.OPENCLAW_RESEARCH_V2_FALLBACK_MODEL ?? ""));
+  for (const modelRef of parseCsvModelRefs(env.OPENCLAW_RESEARCH_V2_FALLBACK_MODELS)) {
+    add(modelRef);
+  }
+
+  const cfgModel = cfg.agents?.defaults?.model as { fallbacks?: string[] } | string | undefined;
+  if (cfgModel && typeof cfgModel === "object" && Array.isArray(cfgModel.fallbacks)) {
+    for (const modelRef of cfgModel.fallbacks) add(String(modelRef ?? ""));
+  }
+
+  const parsedPrimary = parseModelRef(pickedPrimary);
+  if (parsedPrimary && isGpt5Family(parsedPrimary)) {
+    if (parsedPrimary.provider.trim().toLowerCase() === "openai") {
+      add("openai-codex/gpt-5.2-codex");
+    } else if (parsedPrimary.provider.trim().toLowerCase() === "openai-codex") {
+      add("openai/gpt-5.2");
+    }
+  }
+
+  return out;
 }
 
 const appendStrictJsonRetryInstruction = (prompt: string): string =>
@@ -238,100 +301,141 @@ export async function completeJsonWithResearchV2Model(params: {
   const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
   await ensureOpenClawModelsJson(cfg, agentDir);
 
-  const modelRefRaw =
+  const selectedModelRef =
     (params.modelRefOverride ?? "").trim() ||
     resolveResearchV2ModelRef({ purpose: params.purpose, env: process.env, cfg });
-  const ref = parseModelRef(modelRefRaw);
-  if (!ref) {
-    throw new Error(`Invalid model ref ${JSON.stringify(modelRefRaw)} (expected provider/model).`);
-  }
 
   const authStorage = discoverAuthStorage(agentDir);
   const modelRegistry = discoverModels(authStorage, agentDir);
-  const model = modelRegistry.find(ref.provider, ref.model) as Model<Api> | null;
-  if (!model) {
-    throw new Error(`Unknown model: ${ref.provider}/${ref.model}`);
-  }
-
-  const apiKeyInfo = await getApiKeyForModel({
-    model,
+  const modelRefCandidates = resolveResearchV2FallbackModelRefs({
+    primary: selectedModelRef,
+    purpose: params.purpose,
+    env: process.env,
     cfg,
-    agentDir,
-    profileId: params.profileId,
   });
-  const apiKey = requireApiKey(apiKeyInfo, model.provider);
-  authStorage.setRuntimeApiKey(model.provider, apiKey);
-
-  const completeParams: Parameters<typeof complete>[2] = {
-    apiKey,
-    maxTokens: params.maxTokens ?? 2400,
-  };
-  if (
-    supportsTemperatureForResearchV2Model({
-      provider: model.provider,
-      model: model.id,
-    })
-  ) {
-    completeParams.temperature = params.temperature ?? 0.2;
+  if (!modelRefCandidates.length) {
+    throw new Error("No candidate model refs resolved for v2 JSON completion.");
   }
-  const completeOnce = async (prompt: string) => {
-    const context: Context = {
-      messages: [
-        {
-          role: "user",
-          content: [{ type: "text", text: prompt }],
-          timestamp: Date.now(),
-        },
-      ],
-    };
-    const message = await complete(model, context, completeParams);
-    const stop = message.stopReason;
-    const err = message.errorMessage?.trim();
-    if (stop === "error" || stop === "aborted") {
-      throw new Error(err ? `LLM failed (${model.provider}/${model.id}): ${err}` : "LLM failed.");
-    }
-    if (err) {
-      throw new Error(`LLM failed (${model.provider}/${model.id}): ${err}`);
-    }
-    return message;
-  };
 
-  const firstMessage = await completeOnce(params.prompt);
-  let text = extractBestEffortAssistantText(firstMessage);
-  if (!text) {
-    const retryMessage = await completeOnce(appendStrictJsonRetryInstruction(params.prompt));
-    text = extractBestEffortAssistantText(retryMessage);
-    if (!text) {
-      throw new Error(
-        `Model returned empty text; expected JSON. (${summarizeAssistantMessage(retryMessage)})`,
+  const attemptErrors: string[] = [];
+  for (const candidateRef of modelRefCandidates) {
+    const ref = parseModelRef(candidateRef);
+    if (!ref) {
+      attemptErrors.push(`invalid model ref ${JSON.stringify(candidateRef)}`);
+      continue;
+    }
+    const model = modelRegistry.find(ref.provider, ref.model) as Model<Api> | null;
+    if (!model) {
+      attemptErrors.push(`unknown model ${ref.provider}/${ref.model}`);
+      continue;
+    }
+
+    try {
+      const apiKeyInfo = await getApiKeyForModel({
+        model,
+        cfg,
+        agentDir,
+        profileId: params.profileId,
+      });
+      const apiKey = requireApiKey(apiKeyInfo, model.provider);
+      authStorage.setRuntimeApiKey(model.provider, apiKey);
+
+      const baseParams: Parameters<typeof complete>[2] = {
+        apiKey,
+        maxTokens: params.maxTokens ?? 2400,
+      };
+      if (
+        supportsTemperatureForResearchV2Model({
+          provider: model.provider,
+          model: model.id,
+        })
+      ) {
+        baseParams.temperature = params.temperature ?? 0.2;
+      }
+
+      const runCompletion = async (prompt: string, mode: "default" | "simple" = "default") => {
+        const context: Context = {
+          messages: [
+            {
+              role: "user",
+              content: [{ type: "text", text: prompt }],
+              timestamp: Date.now(),
+            },
+          ],
+        };
+        const message =
+          mode === "simple"
+            ? await completeSimple(model, context, {
+                ...baseParams,
+                reasoning: "minimal",
+              })
+            : await complete(model, context, baseParams);
+        const stop = message.stopReason;
+        const err = message.errorMessage?.trim();
+        if (stop === "error" || stop === "aborted") {
+          throw new Error(
+            err ? `LLM failed (${model.provider}/${model.id}): ${err}` : "LLM failed.",
+          );
+        }
+        if (err) {
+          throw new Error(`LLM failed (${model.provider}/${model.id}): ${err}`);
+        }
+        return message;
+      };
+
+      const getJsonTextWithRetries = async (prompt: string, phase: "initial" | "repair") => {
+        const firstMessage = await runCompletion(prompt);
+        let text = extractBestEffortAssistantText(firstMessage);
+        if (text) return text;
+
+        const strictPrompt = appendStrictJsonRetryInstruction(prompt);
+        const retryMessage = await runCompletion(strictPrompt);
+        text = extractBestEffortAssistantText(retryMessage);
+        if (text) return text;
+
+        if (isGpt5Family({ provider: model.provider, model: model.id })) {
+          const simpleRetryMessage = await runCompletion(strictPrompt, "simple");
+          text = extractBestEffortAssistantText(simpleRetryMessage);
+          if (text) return text;
+          throw new Error(
+            `Model returned empty text ${phase === "repair" ? "during JSON repair " : ""}; expected JSON. (${summarizeAssistantMessage(simpleRetryMessage)})`,
+          );
+        }
+
+        throw new Error(
+          `Model returned empty text ${phase === "repair" ? "during JSON repair " : ""}; expected JSON. (${summarizeAssistantMessage(retryMessage)})`,
+        );
+      };
+
+      const text = await getJsonTextWithRetries(params.prompt, "initial");
+      let parseErrorMessage = "";
+      try {
+        return parseJsonFromModelText(text);
+      } catch (e) {
+        parseErrorMessage = e instanceof Error ? e.message : String(e);
+      }
+
+      const repairedText = await getJsonTextWithRetries(
+        appendJsonRepairInstruction({
+          prompt: params.prompt,
+          previous: text,
+          parseError: parseErrorMessage,
+        }),
+        "repair",
       );
+      try {
+        return parseJsonFromModelText(repairedText);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new Error(`Failed to parse model JSON: ${msg}`);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      attemptErrors.push(`${ref.provider}/${ref.model}: ${msg}`);
     }
   }
 
-  let parseErrorMessage = "";
-  try {
-    return parseJsonFromModelText(text);
-  } catch (e) {
-    parseErrorMessage = e instanceof Error ? e.message : String(e);
-  }
-
-  const repairMessage = await completeOnce(
-    appendJsonRepairInstruction({
-      prompt: params.prompt,
-      previous: text,
-      parseError: parseErrorMessage,
-    }),
+  throw new Error(
+    `All v2 JSON model attempts failed (${attemptErrors.length}). ${attemptErrors.join(" | ")}`,
   );
-  const repairedText = extractBestEffortAssistantText(repairMessage);
-  if (!repairedText) {
-    throw new Error(
-      `Model returned empty text during JSON repair; expected JSON. (${summarizeAssistantMessage(repairMessage)})`,
-    );
-  }
-  try {
-    return parseJsonFromModelText(repairedText);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`Failed to parse model JSON: ${msg}`);
-  }
 }
