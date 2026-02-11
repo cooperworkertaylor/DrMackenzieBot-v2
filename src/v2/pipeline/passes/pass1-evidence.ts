@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { DEFAULT_CONCEPTS } from "../../../agents/sec-xbrl-timeseries.js";
 import { openResearchDb } from "../../../research/db.js";
 import {
   EvidenceStore,
@@ -9,6 +10,17 @@ import {
 
 const toYmd = (date: Date): string => date.toISOString().slice(0, 10);
 
+const epochMsFromSecondsOrMs = (value: number): number =>
+  // 10-digit epoch values are almost certainly seconds; 13-digit are ms.
+  value < 10_000_000_000 ? value * 1000 : value;
+
+const resolveEpochMs = (value: unknown): number => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return epochMsFromSecondsOrMs(value);
+  }
+  return Date.now();
+};
+
 const safeMkdir = async (dir: string): Promise<void> => {
   await fs.mkdir(dir, { recursive: true });
 };
@@ -17,10 +29,13 @@ const writeTextIntoRun = async (params: {
   runDir: string;
   evidenceId: string;
   text: string;
+  ext?: string;
 }): Promise<string> => {
   const sourcesDir = path.join(params.runDir, "sources");
   await safeMkdir(sourcesDir);
-  const dest = path.join(sourcesDir, `${params.evidenceId}.txt`);
+  const ext = (params.ext ?? ".txt").trim();
+  const normalizedExt = ext.startsWith(".") ? ext : `.${ext}`;
+  const dest = path.join(sourcesDir, `${params.evidenceId}${normalizedExt}`);
   await fs.writeFile(dest, params.text, "utf8");
   return dest;
 };
@@ -60,6 +75,185 @@ const findCompanyFixture = async (params: {
     }
   }
   return null;
+};
+
+const csvEscape = (value: unknown): string => {
+  const s = value == null ? "" : String(value);
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replaceAll('"', '""')}"`;
+  }
+  return s;
+};
+
+const buildSecXbrlTimeSeriesCsv = (
+  rows: Array<{
+    cik?: string;
+    entity_name?: string;
+    taxonomy: string;
+    concept: string;
+    label?: string;
+    unit?: string;
+    period_end?: string;
+    filing_date?: string;
+    form?: string;
+    fiscal_year?: number;
+    fiscal_period?: string;
+    frame?: string;
+    value?: number;
+    accession?: string;
+  }>,
+): string => {
+  const header = [
+    "cik",
+    "entityName",
+    "seriesKey",
+    "label",
+    "taxonomy",
+    "concept",
+    "unit",
+    "end",
+    "filed",
+    "form",
+    "fy",
+    "fp",
+    "frame",
+    "value",
+    "accn",
+  ];
+  const lines = [header.join(",")];
+  for (const row of rows) {
+    const cik = String(row.cik ?? "").trim();
+    const entityName = String(row.entity_name ?? "").trim();
+    const taxonomy = String(row.taxonomy ?? "").trim();
+    const concept = String(row.concept ?? "").trim();
+    const seriesKey = taxonomy && concept ? `${taxonomy}:${concept}` : "";
+    const label = String(row.label ?? "").trim();
+    const unit = String(row.unit ?? "").trim();
+    const end = String(row.period_end ?? "").slice(0, 10);
+    const filed = String(row.filing_date ?? "").slice(0, 10);
+    const form = String(row.form ?? "").trim();
+    const fy = typeof row.fiscal_year === "number" && row.fiscal_year > 0 ? row.fiscal_year : "";
+    const fp = String(row.fiscal_period ?? "").trim();
+    const frame = String(row.frame ?? "").trim();
+    const value = typeof row.value === "number" && Number.isFinite(row.value) ? row.value : "";
+    const accn = String(row.accession ?? "").trim();
+    lines.push(
+      [
+        cik,
+        entityName,
+        seriesKey,
+        label,
+        taxonomy,
+        concept,
+        unit,
+        end,
+        filed,
+        form,
+        fy,
+        fp,
+        frame,
+        value,
+        accn,
+      ]
+        .map(csvEscape)
+        .join(","),
+    );
+  }
+  return `${lines.join("\n")}\n`;
+};
+
+const maybeAddSecXbrlTimeSeriesFromDb = async (params: {
+  runDir: string;
+  ticker: string;
+  instrumentId?: number;
+  dbPath?: string;
+  store: EvidenceStore;
+  now: Date;
+}): Promise<boolean> => {
+  if (typeof params.instrumentId !== "number") return false;
+
+  const ticker = params.ticker.trim().toUpperCase();
+  const parsedConcepts = DEFAULT_CONCEPTS.map((raw) => raw.trim())
+    .filter(Boolean)
+    .map((raw) => {
+      const [taxonomy, concept] = raw.split(":");
+      return { taxonomy: (taxonomy ?? "").trim(), concept: (concept ?? "").trim() };
+    })
+    .filter((item) => item.taxonomy.toLowerCase() === "us-gaap" && item.concept);
+  const conceptList = Array.from(new Set(parsedConcepts.map((c) => c.concept)));
+  if (!conceptList.length) return false;
+
+  const db = openResearchDb(params.dbPath);
+  const placeholders = conceptList.map(() => "?").join(", ");
+  const facts = db
+    .prepare(
+      `SELECT cik, entity_name, taxonomy, concept, label, unit, value, period_end, filing_date, form, fiscal_year, fiscal_period, frame, accession, fetched_at
+       FROM fundamental_facts
+       WHERE instrument_id=?
+         AND is_latest=1
+         AND lower(taxonomy)='us-gaap'
+         AND concept IN (${placeholders})
+       ORDER BY period_end ASC, filing_date ASC`,
+    )
+    .all(params.instrumentId, ...conceptList) as Array<{
+    cik?: string;
+    entity_name?: string;
+    taxonomy: string;
+    concept: string;
+    label?: string;
+    unit?: string;
+    value?: number;
+    period_end?: string;
+    filing_date?: string;
+    form?: string;
+    fiscal_year?: number;
+    fiscal_period?: string;
+    frame?: string;
+    accession?: string;
+    fetched_at?: number;
+  }>;
+  if (!facts.length) return false;
+
+  const cik = String(facts.find((r) => (r.cik ?? "").trim())?.cik ?? "").trim();
+  const entityName = String(
+    facts.find((r) => (r.entity_name ?? "").trim())?.entity_name ?? "",
+  ).trim();
+  const maxFetchedAtMs = Math.max(
+    ...facts.map((row) => resolveEpochMs(row.fetched_at)),
+    params.now.getTime(),
+  );
+  const accessedAt = new Date(maxFetchedAtMs).toISOString();
+  const datePublished = toYmd(new Date(maxFetchedAtMs));
+  const url = cik
+    ? `https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`
+    : "https://www.sec.gov/edgar/search/";
+
+  const baseInsert: EvidenceInsert = {
+    title: `SEC XBRL time-series (${ticker})`,
+    publisher: "SEC",
+    date_published: datePublished,
+    accessed_at: accessedAt,
+    url,
+    reliability_tier: 1,
+    excerpt_or_key_points: [
+      `instrument_id=${params.instrumentId}`,
+      entityName ? `entity=${entityName}` : "entity=?",
+      `concepts=${conceptList.length}`,
+      `rows=${facts.length}`,
+    ],
+    tags: [`company:${ticker}`, "source:sec", "type:sec-xbrl-timeseries", "db:fundamental_facts"],
+  };
+
+  const evidence = params.store.add(baseInsert);
+  const csv = buildSecXbrlTimeSeriesCsv(facts);
+  const rawRef = await writeTextIntoRun({
+    runDir: params.runDir,
+    evidenceId: evidence.id,
+    text: csv,
+    ext: ".csv",
+  });
+  params.store.add({ ...baseInsert, raw_text_ref: rawRef });
+  return true;
 };
 
 export type EvidencePassV2Result = {
@@ -209,12 +403,10 @@ const collectDbEvidenceForTicker = async (params: {
     ).slice(0, 16);
 
     for (const row of docs) {
-      const fetchedAt =
-        typeof row.fetched_at === "number" ? row.fetched_at : Math.floor(Date.now() / 1000);
+      const fetchedAt = resolveEpochMs(row.fetched_at);
       const published =
-        (row.published_at ?? row.received_at ?? "").slice(0, 10) ||
-        toYmd(new Date(fetchedAt * 1000));
-      const accessedAt = new Date(fetchedAt * 1000).toISOString();
+        (row.published_at ?? row.received_at ?? "").slice(0, 10) || toYmd(new Date(fetchedAt));
+      const accessedAt = new Date(fetchedAt).toISOString();
       const url = (row.url ?? "").trim() || localFallbackUrl("external_documents", row.id);
       const publisher = (row.provider ?? "").trim() || "External";
       const title =
@@ -331,10 +523,9 @@ const collectDbEvidenceForTicker = async (params: {
   ).slice(0, 14);
 
   for (const row of pickedFilings) {
-    const fetchedAt =
-      typeof row.fetched_at === "number" ? row.fetched_at : Math.floor(Date.now() / 1000);
-    const filed = (row.filed ?? "").slice(0, 10) || toYmd(new Date(fetchedAt * 1000));
-    const accessedAt = new Date(fetchedAt * 1000).toISOString();
+    const fetchedAt = resolveEpochMs(row.fetched_at);
+    const filed = (row.filed ?? "").slice(0, 10) || toYmd(new Date(fetchedAt));
+    const accessedAt = new Date(fetchedAt).toISOString();
     const url =
       (row.url ?? row.source_url ?? "").trim() ||
       (typeof row.id === "number" ? localFallbackUrl("filings", row.id) : "") ||
@@ -408,10 +599,9 @@ const collectDbEvidenceForTicker = async (params: {
   counts.transcripts_available = transcripts.length;
 
   for (const row of transcripts) {
-    const fetchedAt =
-      typeof row.fetched_at === "number" ? row.fetched_at : Math.floor(Date.now() / 1000);
-    const published = (row.event_date ?? "").slice(0, 10) || toYmd(new Date(fetchedAt * 1000));
-    const accessedAt = new Date(fetchedAt * 1000).toISOString();
+    const fetchedAt = resolveEpochMs(row.fetched_at);
+    const published = (row.event_date ?? "").slice(0, 10) || toYmd(new Date(fetchedAt));
+    const accessedAt = new Date(fetchedAt).toISOString();
     const url =
       (row.url ?? "").trim() ||
       (typeof row.id === "number" ? localFallbackUrl("transcripts", row.id) : "") ||
@@ -489,10 +679,22 @@ export async function pass1EvidenceCompanyV2(params: {
     store,
   });
 
-  const fixturePath = await findCompanyFixture({
-    fixtureDir: params.fixtureDir,
-    ticker: params.ticker,
+  const hasDbTimeSeries = await maybeAddSecXbrlTimeSeriesFromDb({
+    runDir: params.runDir,
+    ticker,
+    instrumentId: dbCoverage.instrumentId,
+    dbPath: params.dbPath,
+    store,
+    now,
   });
+
+  const fixturePath = hasDbTimeSeries
+    ? null
+    : await findCompanyFixture({
+        fixtureDir: params.fixtureDir,
+        ticker: params.ticker,
+      });
+  const hasFixtureTimeSeries = Boolean(fixturePath);
   if (fixturePath) {
     const baseInsert: EvidenceInsert = {
       title: `SEC XBRL time-series (${params.ticker.toUpperCase()})`,
@@ -504,7 +706,12 @@ export async function pass1EvidenceCompanyV2(params: {
       excerpt_or_key_points: [
         "Fixture: time-series extract representing SEC XBRL submissions (for offline demo).",
       ],
-      tags: [`company:${params.ticker.toUpperCase()}`, "source:sec", "fixture:sec-xbrl-timeseries"],
+      tags: [
+        `company:${params.ticker.toUpperCase()}`,
+        "source:sec",
+        "type:sec-xbrl-timeseries",
+        "fixture:sec-xbrl-timeseries",
+      ],
     };
     const evidence = store.add(baseInsert);
     const rawRef = await copySourceIntoRun({
@@ -513,40 +720,22 @@ export async function pass1EvidenceCompanyV2(params: {
       fixturePath,
     });
     store.add({ ...baseInsert, raw_text_ref: rawRef });
-    return {
-      evidence: store.all(),
-      claim_backlog: [
-        {
-          id: "C1",
-          claim:
-            "Build a KPI baseline from SEC-derived time-series (revenue, operating income, cash from ops).",
-          status: "open",
-        },
-      ],
-      coverage: {
-        kind: "company",
-        tickers: [ticker],
-        per_ticker: [
-          {
-            ticker,
-            instrument_id: dbCoverage.instrumentId,
-            counts: dbCoverage.counts,
-            selected: dbCoverage.selected,
-          },
-        ],
-      },
-    };
   }
 
+  const hasTimeSeries = hasDbTimeSeries || hasFixtureTimeSeries;
   return {
     evidence: store.all(),
     claim_backlog: [
       {
         id: "C1",
         claim:
-          "No evidence available. Ingest filings/transcripts into the research DB or provide --v2-fixture-dir.",
+          "Build a KPI baseline from SEC-derived time-series (revenue, operating income, cash from ops).",
         status: "open",
-        note: "Fail closed at compile if sources are missing.",
+        ...(hasTimeSeries
+          ? {}
+          : {
+              note: "Missing SEC XBRL time-series evidence. Ensure OPENCLAW_RESEARCH_V2_HYDRATE is enabled on macmini (or run `openclaw research ingest fundamentals <TICKER>`).",
+            }),
       },
     ],
     coverage: {
@@ -593,6 +782,7 @@ export async function pass1EvidenceThemeV2(params: {
   });
 
   const perTicker: EvidenceCoverageV2["per_ticker"] = [];
+  const maxTimeSeriesTickers = 10;
   for (const ticker of universe) {
     const row = await collectDbEvidenceForTicker({
       runDir: params.runDir,
@@ -606,7 +796,21 @@ export async function pass1EvidenceThemeV2(params: {
       counts: row.counts,
       selected: row.selected,
     });
-    const fixturePath = await findCompanyFixture({ fixtureDir: params.fixtureDir, ticker });
+    const shouldTryTimeSeries = perTicker.length <= maxTimeSeriesTickers;
+    const hasDbTimeSeries = shouldTryTimeSeries
+      ? await maybeAddSecXbrlTimeSeriesFromDb({
+          runDir: params.runDir,
+          ticker,
+          instrumentId: row.instrumentId,
+          dbPath: params.dbPath,
+          store,
+          now,
+        })
+      : false;
+
+    const fixturePath = hasDbTimeSeries
+      ? null
+      : await findCompanyFixture({ fixtureDir: params.fixtureDir, ticker });
     if (!fixturePath) continue;
     const baseInsert: EvidenceInsert = {
       title: `SEC XBRL time-series (${ticker.toUpperCase()})`,
@@ -618,7 +822,12 @@ export async function pass1EvidenceThemeV2(params: {
       excerpt_or_key_points: [
         "Fixture: time-series extract representing SEC XBRL submissions (for offline demo).",
       ],
-      tags: [`company:${ticker.toUpperCase()}`, "source:sec", "fixture:sec-xbrl-timeseries"],
+      tags: [
+        `company:${ticker.toUpperCase()}`,
+        "source:sec",
+        "type:sec-xbrl-timeseries",
+        "fixture:sec-xbrl-timeseries",
+      ],
     };
     const evidence = store.add(baseInsert);
     const rawRef = await copySourceIntoRun({
@@ -713,12 +922,10 @@ export async function pass1EvidenceThemeV2(params: {
 
       const rows = Array.from(rowsById.values()).slice(0, 12);
       for (const row of rows) {
-        const fetchedAt =
-          typeof row.fetched_at === "number" ? row.fetched_at : Math.floor(Date.now() / 1000);
+        const fetchedAt = resolveEpochMs(row.fetched_at);
         const published =
-          (row.published_at ?? row.received_at ?? "").slice(0, 10) ||
-          toYmd(new Date(fetchedAt * 1000));
-        const accessedAt = new Date(fetchedAt * 1000).toISOString();
+          (row.published_at ?? row.received_at ?? "").slice(0, 10) || toYmd(new Date(fetchedAt));
+        const accessedAt = new Date(fetchedAt).toISOString();
         const url = (row.url ?? "").trim() || localFallbackUrl(row.id);
         const publisher = (row.provider ?? "").trim() || "External";
         const title =
