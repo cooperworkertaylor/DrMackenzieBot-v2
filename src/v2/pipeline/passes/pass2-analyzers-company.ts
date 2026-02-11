@@ -420,10 +420,34 @@ const parseCsv = (csv: string): CsvRow[] => {
   return rows;
 };
 
-const pickSecFixture = (evidence: EvidenceItem[]): EvidenceItem | undefined =>
-  evidence.find(
-    (item) => (item.publisher ?? "").toLowerCase() === "sec" && Boolean(item.raw_text_ref),
-  );
+const pickSecTimeSeriesEvidence = (evidence: EvidenceItem[]): EvidenceItem | undefined => {
+  const isSec = (item: EvidenceItem) => (item.publisher ?? "").trim().toLowerCase() === "sec";
+  const hasRaw = (item: EvidenceItem) => Boolean(item.raw_text_ref);
+  const isTimeSeries = (item: EvidenceItem) =>
+    (item.tags ?? []).includes("type:sec-xbrl-timeseries") ||
+    (item.tags ?? []).includes("fixture:sec-xbrl-timeseries");
+  const isCsv = (item: EvidenceItem) =>
+    String(item.raw_text_ref ?? "")
+      .trim()
+      .toLowerCase()
+      .endsWith(".csv");
+
+  const pickLatest = (items: EvidenceItem[]) =>
+    [...items].sort((a, b) =>
+      String(b.accessed_at ?? "").localeCompare(String(a.accessed_at ?? "")),
+    )[0];
+
+  const tagged = evidence.filter((item) => isSec(item) && hasRaw(item) && isTimeSeries(item));
+  const taggedCsv = tagged.filter(isCsv);
+  if (taggedCsv.length) return pickLatest(taggedCsv);
+  if (tagged.length) return pickLatest(tagged);
+
+  // Fallback: sometimes callers only have a raw CSV without tags.
+  const anyCsv = evidence.filter((item) => isSec(item) && hasRaw(item) && isCsv(item));
+  if (anyCsv.length) return pickLatest(anyCsv);
+
+  return undefined;
+};
 
 const toFinite = (value: string): number | undefined => {
   const n = Number.parseFloat((value ?? "").trim());
@@ -533,9 +557,9 @@ export async function pass2CompanyAnalyzersV2(params: {
   });
   const catalyst_ranked = buildRankedCatalysts({ calendar: catalyst_calendar });
 
-  const sec = pickSecFixture(params.evidence);
+  const sec = pickSecTimeSeriesEvidence(params.evidence);
   if (!sec?.raw_text_ref) {
-    notes.push("No SEC time-series fixture present; numeric_facts are empty.");
+    notes.push("No SEC time-series evidence present; numeric_facts are empty.");
     return {
       version: 1,
       generated_at: nowIso(),

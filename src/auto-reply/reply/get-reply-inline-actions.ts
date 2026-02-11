@@ -1,3 +1,5 @@
+import fsSync from "node:fs";
+import os from "node:os";
 import type { SkillCommandSpec } from "../../agents/skills.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
@@ -11,6 +13,7 @@ import { createOpenClawTools } from "../../agents/openclaw-tools.js";
 import { getChannelDock } from "../../channels/dock.js";
 import { logVerbose } from "../../globals.js";
 import { parseQuickResearchRequest } from "../../research/quick-research-request.js";
+import { createBackgroundQueue } from "../../research/quickrun/background-queue.js";
 import { resolveGatewayMessageChannel } from "../../utils/message-channel.js";
 import { listSkillCommandsForWorkspace, resolveSkillCommandInvocation } from "../skill-commands.js";
 import { getAbortMemory } from "./abort.js";
@@ -91,23 +94,77 @@ const formatBuiltAtEt = (dt: Date): string => {
   return `${y}-${m}-${d} ${hh}:${mm} ET`;
 };
 
+const resolveChromeExecutablePath = (): string | undefined => {
+  const env = (process.env.OPENCLAW_CHROME_PATH ?? process.env.CHROME_PATH ?? "").trim();
+  if (env && fsSync.existsSync(env)) return env;
+  if (process.platform === "darwin") {
+    const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    if (fsSync.existsSync(macChrome)) return macChrome;
+    const macCanary = "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary";
+    if (fsSync.existsSync(macCanary)) return macCanary;
+  }
+  return undefined;
+};
+
+const QUICK_RESEARCH_BG_QUEUE = createBackgroundQueue({ concurrency: 1 });
+
+const looksLikeQuickResearch = (value: string): boolean => {
+  const s = value.trim();
+  if (!s) return false;
+  const lowered = s.toLowerCase();
+  const hasTimebox =
+    /\bt\+\s*\d{1,3}\b/.test(lowered) ||
+    /\b\d{1,3}\s*(?:[-\u2010-\u2015\u2212]\s*)?(min|mins|minute|minutes)\b/.test(lowered) ||
+    /\b\d{1,3}\b\s*[:.\u2010-\u2015\u2212]*\s*$/.test(s);
+  if (!hasTimebox) return false;
+  const hasIntent = /\b(research|reserach|reasearch|snapshot|memo|report|run|deep\s*dive)\b/.test(
+    lowered,
+  );
+  const mentionsPdfOrAttach = /\b(pdf|attach|attachment|send\s+the\s+pdf|post\s+the\s+pdf)\b/.test(
+    lowered,
+  );
+  return hasIntent || mentionsPdfOrAttach;
+};
+
 async function maybeHandleQuickResearchPdfRequest(params: {
   ctx: MsgContext;
   cleanedBody: string;
   command: Parameters<typeof handleCommands>[0]["command"];
   isGroup: boolean;
+  cfg: OpenClawConfig;
   opts?: GetReplyOptions;
   typing: TypingController;
   agentId: string;
 }): Promise<InlineActionResult | null> {
-  const req = parseQuickResearchRequest(params.cleanedBody);
-  if (!req) return null;
-
   const channel =
     resolveGatewayMessageChannel(params.ctx.Surface) ??
     resolveGatewayMessageChannel(params.ctx.Provider) ??
     undefined;
   if (channel !== "telegram") return null;
+
+  const req = parseQuickResearchRequest(params.cleanedBody);
+  if (!req) {
+    if (!looksLikeQuickResearch(params.cleanedBody)) {
+      return null;
+    }
+    // Fail closed: if it looks like a timeboxed "send PDF" research request but we can't parse it,
+    // do NOT fall through to the chat model (which tends to "confirm" without delivering).
+    params.typing.cleanup();
+    return {
+      kind: "reply",
+      reply: {
+        text: [
+          "❌ Could not parse your timeboxed research-to-PDF request (fail-closed).",
+          "",
+          "Use one of these formats:",
+          '- "optical networking 5"',
+          '- "agentic commerce T+5 pdf"',
+          '- "Run a 30 min research memo on PLTR and send the pdf"',
+        ].join("\n"),
+        isError: true,
+      },
+    };
+  }
   if (!params.command.isAuthorizedSender) {
     params.typing.cleanup();
     return {
@@ -119,71 +176,143 @@ async function maybeHandleQuickResearchPdfRequest(params: {
     };
   }
 
-  const fs = await import("node:fs/promises");
-  const path = await import("node:path");
-  const crypto = await import("node:crypto");
-  const { pathToFileURL } = await import("node:url");
-  const { chromium } = await import("playwright-core");
-  const { diagnosePdfBuffer } = await import("../../research/pdf-diagnostics.js");
-  const { writeFileArtifactManifest } = await import("../../research/artifact-manifest.js");
-  const { resolveStateDir } = await import("../../config/paths.js");
-  const { computeThemeResearch } = await import("../../research/theme-sector.js");
-  const { inferThemeUniverseFromDb } = await import("../../research/theme-universe-infer.js");
-  const { runCompanyPipelineV2, runThemePipelineV2 } =
-    await import("../../v2/pipeline/v2-pipeline.js");
-
-  const hostRole = String(process.env.OPENCLAW_HOST_ROLE ?? "")
-    .trim()
-    .toLowerCase();
-  if (hostRole !== "macmini") {
+  const hostRoleRaw =
+    process.env.OPENCLAW_HOST_ROLE ??
+    process.env.OPENCLAW_AGENT_ROLE ??
+    process.env.OPENCLAW_AGENT ??
+    "";
+  const hostRole = String(hostRoleRaw).trim().toLowerCase();
+  const hostname = os.hostname().trim().toLowerCase();
+  const hostnameLooksLikeMacmini = hostname.includes("coopers") && hostname.includes("mini");
+  const isMacmini = hostRole === "macmini" || hostnameLooksLikeMacmini;
+  if (!isMacmini) {
     params.typing.cleanup();
     return {
       kind: "reply",
       reply: {
-        text: `❌ Refusing to run research+PDF outside macmini (OPENCLAW_HOST_ROLE=${hostRole || "unset"}).`,
+        text: `❌ Refusing to run research+PDF outside macmini (OPENCLAW_HOST_ROLE=${hostRole || "unset"} hostname=${hostname || "unknown"}).`,
         isError: true,
       },
     };
   }
 
-  const chromePath = (process.env.OPENCLAW_CHROME_PATH ?? "").trim();
+  const allowBrowser = (
+    process.env.OPENCLAW_ALLOW_BROWSER ??
+    process.env.OPENCLAW_ALLOW_CHROME ??
+    process.env.OPENCLAW_RENDER_PDF_ALLOWED ??
+    ""
+  ).trim();
+  if (allowBrowser !== "1") {
+    params.typing.cleanup();
+    return {
+      kind: "reply",
+      reply: {
+        text: "❌ Refusing to run research+PDF: OPENCLAW_ALLOW_BROWSER is not enabled. Set OPENCLAW_ALLOW_BROWSER=1 on macmini and restart the gateway.",
+        isError: true,
+      },
+    };
+  }
+
+  const chromePath = resolveChromeExecutablePath();
   if (!chromePath) {
     params.typing.cleanup();
     return {
       kind: "reply",
       reply: {
-        text: "❌ OPENCLAW_CHROME_PATH is not set on this agent. PDF rendering is disabled until Chrome path is configured.",
+        text: "❌ Chrome executable not found. Set OPENCLAW_CHROME_PATH on macmini and restart the gateway.",
         isError: true,
       },
     };
   }
 
-  // Single accept message (no status spam). Only after hard gates pass.
-  if (params.opts?.onBlockReply) {
-    const { resolveCommitHash } = await import("../../infra/git-commit.js");
-    const commit = resolveCommitHash({ cwd: process.cwd(), env: process.env }) ?? "unknown";
-    await params.opts.onBlockReply({
-      text: `Run accepted: ${req.kind} v2 (${req.minutes} min target). Will deliver a PDF if (and only if) it passes strict quality + strict PDF diagnostics.\nagent_commit=${commit}`,
-    });
+  const { resolveCommitHash } = await import("../../infra/git-commit.js");
+  const commit = resolveCommitHash({ cwd: process.cwd(), env: process.env }) ?? "unknown";
+
+  const originTo = params.ctx.OriginatingTo ?? params.ctx.To;
+  const originChannel = params.ctx.OriginatingChannel ?? "telegram";
+  const originAccountId = params.ctx.AccountId ?? undefined;
+  const originThreadId = params.ctx.MessageThreadId ?? undefined;
+  const originSessionKey = params.ctx.SessionKey ?? undefined;
+  if (!originTo) {
+    params.typing.cleanup();
+    return {
+      kind: "reply",
+      reply: {
+        text: "❌ Cannot queue quick research: missing OriginatingTo/To routing target.",
+        isError: true,
+      },
+    };
   }
 
-  const now = new Date();
-  const builtAtEt = formatBuiltAtEt(now);
+  const createdAtMs = Date.now();
+  const deliverAtMs = createdAtMs + req.minutes * 60_000;
+  const deliverAtEt = formatBuiltAtEt(new Date(deliverAtMs));
 
-  const renderPdfFromMarkdown = async (p: { inPath: string; outPath: string; title: string }) => {
-    const markdown = await fs.readFile(p.inPath, "utf8");
-    const unicodeDashCount = (markdown.match(/[\u2010-\u2015\u2212]/g) ?? []).length;
-    if (unicodeDashCount > 0) {
-      throw new Error(
-        `Unicode dash characters detected in markdown (count=${unicodeDashCount}). Replace with ASCII hyphens before rendering.`,
-      );
-    }
-    const { default: MarkdownIt } = await import("markdown-it");
-    const md = new MarkdownIt({ html: true, linkify: true, breaks: false, typographer: false });
-    const bodyHtml = md.render(markdown);
-    const baseHref = pathToFileURL(path.dirname(p.inPath) + path.sep).href;
+  const crypto = await import("node:crypto");
+  const jobId = crypto.randomUUID?.() ?? `${createdAtMs}-${Math.random().toString(16).slice(2)}`;
 
-    const html = `<!doctype html>
+  QUICK_RESEARCH_BG_QUEUE.enqueue({
+    id: jobId,
+    label: `${req.kind}:${req.kind === "company" ? req.ticker : req.theme}`,
+    createdAtMs,
+    run: async () => {
+      const delay = async (ms: number) => {
+        if (ms <= 0) return;
+        await new Promise<void>((r) => setTimeout(r, ms));
+      };
+
+      const safeSend = async (payload: ReplyPayload) => {
+        const { routeReply } = await import("./route-reply.js");
+        await routeReply({
+          payload,
+          channel: originChannel,
+          to: originTo,
+          accountId: originAccountId,
+          threadId: originThreadId,
+          cfg: params.cfg,
+          sessionKey: originSessionKey,
+          mirror: false,
+        });
+      };
+
+      try {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const { pathToFileURL } = await import("node:url");
+        const { chromium } = await import("playwright-core");
+        const { diagnosePdfBuffer } = await import("../../research/pdf-diagnostics.js");
+        const { writeFileArtifactManifest } = await import("../../research/artifact-manifest.js");
+        const { resolveStateDir } = await import("../../config/paths.js");
+        const { computeThemeResearch } = await import("../../research/theme-sector.js");
+        const { inferThemeUniverseFromDb } = await import("../../research/theme-universe-infer.js");
+        const { runCompanyPipelineV2, runThemePipelineV2 } =
+          await import("../../v2/pipeline/v2-pipeline.js");
+
+        const builtAtEt = formatBuiltAtEt(new Date());
+
+        const renderPdfFromMarkdown = async (p: {
+          inPath: string;
+          outPath: string;
+          title: string;
+        }) => {
+          const markdown = await fs.readFile(p.inPath, "utf8");
+          const unicodeDashCount = (markdown.match(/[\u2010-\u2015\u2212]/g) ?? []).length;
+          if (unicodeDashCount > 0) {
+            throw new Error(
+              `Unicode dash characters detected in markdown (count=${unicodeDashCount}). Replace with ASCII hyphens before rendering.`,
+            );
+          }
+          const { default: MarkdownIt } = await import("markdown-it");
+          const md = new MarkdownIt({
+            html: true,
+            linkify: true,
+            breaks: false,
+            typographer: false,
+          });
+          const bodyHtml = md.render(markdown);
+          const baseHref = pathToFileURL(path.dirname(p.inPath) + path.sep).href;
+
+          const html = `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -232,44 +361,170 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   </body>
 </html>`;
 
-    const browser = await chromium.launch({ headless: true, executablePath: chromePath });
-    try {
-      const page = await browser.newPage();
-      await page.setContent(html, { waitUntil: "load" });
-      await page.emulateMedia({ media: "print" });
-      const headerTemplate = `<div style="font-size:8px;padding:0 24px;width:100%;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',Helvetica,Arial,sans-serif;color:#6b7280;display:flex;align-items:center;justify-content:space-between;"><span>${escapeHtml(
-        p.title,
-      )}</span><span></span></div>`;
-      const footerTemplate = `<div style="font-size:8px;padding:0 24px;width:100%;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',Helvetica,Arial,sans-serif;color:#6b7280;display:flex;align-items:center;justify-content:space-between;"><span>FOR DISCUSSION PURPOSES ONLY; NOT INVESTMENT ADVICE.</span><span>Built: ${escapeHtml(
-        builtAtEt,
-      )}</span><span>Page <span class="pageNumber"></span> / <span class="totalPages"></span></span></div>`;
-      await page.pdf({
-        path: p.outPath,
-        format: "letter",
-        printBackground: true,
-        displayHeaderFooter: true,
-        headerTemplate,
-        footerTemplate,
-        margin: { top: "0.9in", bottom: "0.9in", left: "0.9in", right: "0.9in" },
-      });
-    } finally {
-      await browser.close();
-    }
-  };
+          const browser = await chromium.launch({ headless: true, executablePath: chromePath });
+          try {
+            const page = await browser.newPage();
+            await page.setContent(html, { waitUntil: "load" });
+            await page.emulateMedia({ media: "print" });
+            const headerTemplate = `<div style="font-size:8px;padding:0 24px;width:100%;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',Helvetica,Arial,sans-serif;color:#6b7280;display:flex;align-items:center;justify-content:space-between;"><span>${escapeHtml(
+              p.title,
+            )}</span><span></span></div>`;
+            const footerTemplate = `<div style="font-size:8px;padding:0 24px;width:100%;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',Helvetica,Arial,sans-serif;color:#6b7280;display:flex;align-items:center;justify-content:space-between;"><span>FOR DISCUSSION PURPOSES ONLY; NOT INVESTMENT ADVICE.</span><span>Built: ${escapeHtml(
+              builtAtEt,
+            )}</span><span>Page <span class="pageNumber"></span> / <span class="totalPages"></span></span></div>`;
+            await page.pdf({
+              path: p.outPath,
+              format: "letter",
+              printBackground: true,
+              displayHeaderFooter: true,
+              headerTemplate,
+              footerTemplate,
+              margin: { top: "0.9in", bottom: "0.9in", left: "0.9in", right: "0.9in" },
+            });
+          } finally {
+            await browser.close();
+          }
+        };
 
-  try {
-    if (req.kind === "company") {
-      const result = await runCompanyPipelineV2({
-        ticker: req.ticker,
-        question: req.question,
-        timeboxMinutes: req.minutes,
-      });
-      if (!result.passed) {
-        params.typing.cleanup();
-        return {
-          kind: "reply",
-          reply: {
-            text: `FAILED QUALITY GATE (v2)\nrun_id=${result.runId}\nTop issues:\n- ${result.issues
+        if (req.kind === "company") {
+          const result = await runCompanyPipelineV2({
+            ticker: req.ticker,
+            question: req.question,
+            timeboxMinutes: req.minutes,
+          });
+          if (!result.passed) {
+            await delay(Math.max(0, deliverAtMs - Date.now()));
+            await safeSend({
+              text: `FAILED QUALITY GATE (v2)\njob_id=${jobId}\nrun_id=${result.runId}\nTop issues:\n- ${result.issues
+                .filter((i: { severity: string }) => i.severity === "error")
+                .slice(0, 8)
+                .map(
+                  (i: { code: string; message: string; path?: string }) =>
+                    `${i.code}${i.path ? `@${i.path}` : ""}: ${i.message}`,
+                )
+                .join("\n- ")}`,
+              isError: true,
+            });
+            return;
+          }
+          const outDir = path.join(path.dirname(result.reportMarkdownPath), "artifacts");
+          await fs.mkdir(outDir, { recursive: true });
+          const pdfPath = path.join(
+            outDir,
+            `${slugify(req.ticker)}-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.pdf`,
+          );
+          await renderPdfFromMarkdown({
+            inPath: result.reportMarkdownPath,
+            outPath: pdfPath,
+            title: `${req.ticker} (v2)`,
+          });
+          const pdfBuffer = await fs.readFile(pdfPath);
+          const diag = await diagnosePdfBuffer({
+            buffer: new Uint8Array(pdfBuffer),
+            maxPages: 50,
+            strict: true,
+          });
+          if (diag.errors.length) {
+            await delay(Math.max(0, deliverAtMs - Date.now()));
+            await safeSend({
+              text: `FAILED PDF DIAGNOSTICS (strict)\njob_id=${jobId}\nrun_id=${result.runId}\n- ${diag.errors.slice(0, 12).join("\n- ")}`,
+              isError: true,
+            });
+            return;
+          }
+
+          const os = await import("node:os");
+          const stateDir = resolveStateDir(process.env, os.homedir);
+          const seriesKey = `quickrun_company_${slugify(req.ticker)}`;
+          const seriesManifestPath = path.join(
+            stateDir,
+            "research",
+            "quickrun",
+            `${seriesKey}.artifact.json`,
+          );
+          await fs.mkdir(path.dirname(seriesManifestPath), { recursive: true, mode: 0o700 });
+          const manifestRes = await writeFileArtifactManifest({
+            kind: "memo",
+            outPath: pdfPath,
+            seriesKey,
+            seriesManifestPath,
+            markdownForMetrics: await fs.readFile(result.reportMarkdownPath, "utf8"),
+            metrics: {
+              job_id: jobId,
+              run_id: result.runId,
+              built_at_et: builtAtEt,
+              kind: "company",
+            },
+          });
+          if (manifestRes.manifest.unchangedFromPrevious) {
+            await delay(Math.max(0, deliverAtMs - Date.now()));
+            await safeSend({
+              text: `❌ Refusing to send: unchanged PDF artifact detected\njob_id=${jobId}\nrun_id=${result.runId}\nsha256=${manifestRes.manifest.sha256}`,
+              isError: true,
+            });
+            return;
+          }
+
+          const sha256 = manifestRes.manifest.sha256;
+          await delay(Math.max(0, deliverAtMs - Date.now()));
+          await safeSend({
+            text: `v2 company memo\njob_id=${jobId}\nrun_id=${result.runId}\nBuilt: ${builtAtEt}\nsha256=${sha256}\nbytes=${pdfBuffer.length}`,
+            mediaUrl: pdfPath,
+          });
+          return;
+        }
+
+        let inferredUniverse: {
+          scanned_docs: number;
+          inferred_tickers: string[];
+          inferred_domains: string[];
+          inferred_entities?: Array<{
+            id: string;
+            type: "equity" | "crypto_asset" | "protocol" | "private_company" | "index" | "other";
+            label: string;
+            symbol?: string;
+            urls?: string[];
+          }>;
+        } | null = null;
+        let themeRes: { tickers: string[] } | undefined;
+        try {
+          themeRes = computeThemeResearch({ theme: req.theme });
+        } catch {
+          const inferred = inferThemeUniverseFromDb({ theme: req.theme });
+          inferredUniverse = inferred;
+          if (inferred.inferred_tickers.length) {
+            themeRes = computeThemeResearch({
+              theme: req.theme,
+              tickers: inferred.inferred_tickers,
+            });
+          }
+        }
+
+        const maxUniverse =
+          req.minutes <= 10 ? 5 : req.minutes <= 30 ? 10 : req.minutes <= 60 ? 15 : 25;
+        const universe = (themeRes?.tickers ?? []).slice(0, maxUniverse);
+        if (!universe.length) {
+          await delay(Math.max(0, deliverAtMs - Date.now()));
+          await safeSend({
+            text: `❌ Could not resolve a ticker universe for theme="${req.theme}". Reply with: "tickers: SHOP, COIN, SQ, ...".`,
+            isError: true,
+          });
+          return;
+        }
+
+        const result = await runThemePipelineV2({
+          themeName: req.theme,
+          universe,
+          universeEntities:
+            inferredUniverse?.inferred_entities && inferredUniverse.inferred_entities.length
+              ? inferredUniverse.inferred_entities
+              : undefined,
+          timeboxMinutes: req.minutes,
+        });
+        if (!result.passed) {
+          await delay(Math.max(0, deliverAtMs - Date.now()));
+          await safeSend({
+            text: `FAILED QUALITY GATE (v2)\njob_id=${jobId}\nrun_id=${result.runId}\nTop issues:\n- ${result.issues
               .filter((i: { severity: string }) => i.severity === "error")
               .slice(0, 8)
               .map(
@@ -278,243 +533,100 @@ async function maybeHandleQuickResearchPdfRequest(params: {
               )
               .join("\n- ")}`,
             isError: true,
-          },
-        };
-      }
-      const outDir = path.join(path.dirname(result.reportMarkdownPath), "artifacts");
-      await fs.mkdir(outDir, { recursive: true });
-      const pdfPath = path.join(
-        outDir,
-        `${slugify(req.ticker)}-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.pdf`,
-      );
-      await renderPdfFromMarkdown({
-        inPath: result.reportMarkdownPath,
-        outPath: pdfPath,
-        title: `${req.ticker} (v2)`,
-      });
-      const pdfBuffer = await fs.readFile(pdfPath);
-      const diag = await diagnosePdfBuffer({
-        buffer: new Uint8Array(pdfBuffer),
-        maxPages: 50,
-        strict: true,
-      });
-      if (diag.errors.length) {
-        params.typing.cleanup();
-        return {
-          kind: "reply",
-          reply: {
-            text: `FAILED PDF DIAGNOSTICS (strict)\nrun_id=${result.runId}\n- ${diag.errors.slice(0, 12).join("\n- ")}`,
-            isError: true,
-          },
-        };
-      }
+          });
+          return;
+        }
 
-      const os = await import("node:os");
-      const stateDir = resolveStateDir(process.env, os.homedir);
-      const seriesKey = `quickrun_company_${slugify(req.ticker)}`;
-      const seriesManifestPath = path.join(
-        stateDir,
-        "research",
-        "quickrun",
-        `${seriesKey}.artifact.json`,
-      );
-      await fs.mkdir(path.dirname(seriesManifestPath), { recursive: true, mode: 0o700 });
-      const manifestRes = await writeFileArtifactManifest({
-        kind: "memo",
-        outPath: pdfPath,
-        seriesKey,
-        seriesManifestPath,
-        markdownForMetrics: await fs.readFile(result.reportMarkdownPath, "utf8"),
-        metrics: {
-          run_id: result.runId,
-          built_at_et: builtAtEt,
-          kind: "company",
-        },
-      });
-      if (manifestRes.manifest.unchangedFromPrevious) {
-        params.typing.cleanup();
-        return {
-          kind: "reply",
-          reply: {
-            text: `❌ Refusing to send: unchanged PDF artifact detected\nrun_id=${result.runId}\nsha256=${manifestRes.manifest.sha256}\nIf this is unexpected, render to a new versioned path and regenerate.`,
+        const outDir = path.join(path.dirname(result.reportMarkdownPath), "artifacts");
+        await fs.mkdir(outDir, { recursive: true });
+        const pdfPath = path.join(
+          outDir,
+          `${slugify(req.theme)}-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.pdf`,
+        );
+        await renderPdfFromMarkdown({
+          inPath: result.reportMarkdownPath,
+          outPath: pdfPath,
+          title: `${req.theme} (v2)`,
+        });
+        const pdfBuffer = await fs.readFile(pdfPath);
+        const diag = await diagnosePdfBuffer({
+          buffer: new Uint8Array(pdfBuffer),
+          maxPages: 50,
+          strict: true,
+        });
+        if (diag.errors.length) {
+          await delay(Math.max(0, deliverAtMs - Date.now()));
+          await safeSend({
+            text: `FAILED PDF DIAGNOSTICS (strict)\njob_id=${jobId}\nrun_id=${result.runId}\n- ${diag.errors.slice(0, 12).join("\n- ")}`,
             isError: true,
-          },
-        };
-      }
+          });
+          return;
+        }
 
-      const sha256 =
-        manifestRes.manifest.sha256 || crypto.createHash("sha256").update(pdfBuffer).digest("hex");
-      params.typing.cleanup();
-      return {
-        kind: "reply",
-        reply: {
-          text: `v2 company memo ready\nrun_id=${result.runId}\nBuilt: ${builtAtEt}\nsha256=${sha256}\nbytes=${pdfBuffer.length}`,
+        const os = await import("node:os");
+        const stateDir = resolveStateDir(process.env, os.homedir);
+        const seriesKey = `quickrun_theme_${slugify(req.theme)}`;
+        const seriesManifestPath = path.join(
+          stateDir,
+          "research",
+          "quickrun",
+          `${seriesKey}.artifact.json`,
+        );
+        await fs.mkdir(path.dirname(seriesManifestPath), { recursive: true, mode: 0o700 });
+        const manifestRes = await writeFileArtifactManifest({
+          kind: "theme_report",
+          outPath: pdfPath,
+          seriesKey,
+          seriesManifestPath,
+          markdownForMetrics: await fs.readFile(result.reportMarkdownPath, "utf8"),
+          metrics: { job_id: jobId, run_id: result.runId, built_at_et: builtAtEt, kind: "theme" },
+        });
+        if (manifestRes.manifest.unchangedFromPrevious) {
+          await delay(Math.max(0, deliverAtMs - Date.now()));
+          await safeSend({
+            text: `❌ Refusing to send: unchanged PDF artifact detected\njob_id=${jobId}\nrun_id=${result.runId}\nsha256=${manifestRes.manifest.sha256}`,
+            isError: true,
+          });
+          return;
+        }
+
+        const sha256 = manifestRes.manifest.sha256;
+        await delay(Math.max(0, deliverAtMs - Date.now()));
+        await safeSend({
+          text: [
+            "v2 theme memo",
+            `job_id=${jobId}`,
+            `run_id=${result.runId}`,
+            `Universe: ${universe.join(", ")}`,
+            inferredUniverse
+              ? `Universe bootstrap: scanned_docs=${inferredUniverse.scanned_docs} inferred_domains=${inferredUniverse.inferred_domains.slice(0, 10).join(", ")}`
+              : null,
+            `Built: ${builtAtEt}`,
+            `sha256=${sha256}`,
+            `bytes=${pdfBuffer.length}`,
+          ]
+            .filter(Boolean)
+            .join("\n"),
           mediaUrl: pdfPath,
-        },
-      };
-    }
-
-    let inferredUniverse: {
-      scanned_docs: number;
-      inferred_tickers: string[];
-      inferred_domains: string[];
-      inferred_entities?: Array<{
-        id: string;
-        type: "equity" | "crypto_asset" | "protocol" | "private_company" | "index" | "other";
-        label: string;
-        symbol?: string;
-        urls?: string[];
-      }>;
-    } | null = null;
-    let themeRes: { tickers: string[] } | undefined;
-    try {
-      themeRes = computeThemeResearch({
-        theme: req.theme,
-      });
-    } catch {
-      // No membership yet: infer an initial universe from the evidence DB and register it.
-      const inferred = inferThemeUniverseFromDb({ theme: req.theme });
-      inferredUniverse = inferred;
-      if (inferred.inferred_tickers.length) {
-        themeRes = computeThemeResearch({
-          theme: req.theme,
-          tickers: inferred.inferred_tickers,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await delay(Math.max(0, deliverAtMs - Date.now()));
+        await safeSend({
+          text: `❌ quick research failed\njob_id=${jobId}\nerror=${message}`,
+          isError: true,
         });
       }
-    }
+    },
+  });
 
-    const maxUniverse =
-      req.minutes <= 10 ? 5 : req.minutes <= 30 ? 10 : req.minutes <= 60 ? 15 : 25;
-    const universe = (themeRes?.tickers ?? []).slice(0, maxUniverse);
-    if (!universe.length) {
-      params.typing.cleanup();
-      return {
-        kind: "reply",
-        reply: {
-          text: `❌ Could not resolve a ticker universe for theme="${req.theme}". Reply with a ticker list like: "tickers: SHOP, COIN, SQ, ...".`,
-          isError: true,
-        },
-      };
-    }
-
-    const result = await runThemePipelineV2({
-      themeName: req.theme,
-      universe,
-      universeEntities:
-        inferredUniverse?.inferred_entities && inferredUniverse.inferred_entities.length
-          ? inferredUniverse.inferred_entities
-          : undefined,
-      timeboxMinutes: req.minutes,
-    });
-    if (!result.passed) {
-      params.typing.cleanup();
-      return {
-        kind: "reply",
-        reply: {
-          text: `FAILED QUALITY GATE (v2)\nrun_id=${result.runId}\nTop issues:\n- ${result.issues
-            .filter((i: { severity: string }) => i.severity === "error")
-            .slice(0, 8)
-            .map(
-              (i: { code: string; message: string; path?: string }) =>
-                `${i.code}${i.path ? `@${i.path}` : ""}: ${i.message}`,
-            )
-            .join("\n- ")}`,
-          isError: true,
-        },
-      };
-    }
-
-    const outDir = path.join(path.dirname(result.reportMarkdownPath), "artifacts");
-    await fs.mkdir(outDir, { recursive: true });
-    const pdfPath = path.join(
-      outDir,
-      `${slugify(req.theme)}-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.pdf`,
-    );
-    await renderPdfFromMarkdown({
-      inPath: result.reportMarkdownPath,
-      outPath: pdfPath,
-      title: `${req.theme} (v2)`,
-    });
-    const pdfBuffer = await fs.readFile(pdfPath);
-    const diag = await diagnosePdfBuffer({
-      buffer: new Uint8Array(pdfBuffer),
-      maxPages: 50,
-      strict: true,
-    });
-    if (diag.errors.length) {
-      params.typing.cleanup();
-      return {
-        kind: "reply",
-        reply: {
-          text: `FAILED PDF DIAGNOSTICS (strict)\nrun_id=${result.runId}\n- ${diag.errors.slice(0, 12).join("\n- ")}`,
-          isError: true,
-        },
-      };
-    }
-
-    const os = await import("node:os");
-    const stateDir = resolveStateDir(process.env, os.homedir);
-    const seriesKey = `quickrun_theme_${slugify(req.theme)}`;
-    const seriesManifestPath = path.join(
-      stateDir,
-      "research",
-      "quickrun",
-      `${seriesKey}.artifact.json`,
-    );
-    await fs.mkdir(path.dirname(seriesManifestPath), { recursive: true, mode: 0o700 });
-    const manifestRes = await writeFileArtifactManifest({
-      kind: "theme_report",
-      outPath: pdfPath,
-      seriesKey,
-      seriesManifestPath,
-      markdownForMetrics: await fs.readFile(result.reportMarkdownPath, "utf8"),
-      metrics: {
-        run_id: result.runId,
-        built_at_et: builtAtEt,
-        kind: "theme",
-      },
-    });
-    if (manifestRes.manifest.unchangedFromPrevious) {
-      params.typing.cleanup();
-      return {
-        kind: "reply",
-        reply: {
-          text: `❌ Refusing to send: unchanged PDF artifact detected\nrun_id=${result.runId}\nsha256=${manifestRes.manifest.sha256}\nIf this is unexpected, render to a new versioned path and regenerate.`,
-          isError: true,
-        },
-      };
-    }
-
-    const sha256 =
-      manifestRes.manifest.sha256 || crypto.createHash("sha256").update(pdfBuffer).digest("hex");
-    params.typing.cleanup();
-    return {
-      kind: "reply",
-      reply: {
-        text: [
-          "v2 theme memo ready",
-          `run_id=${result.runId}`,
-          `Universe: ${universe.join(", ")}`,
-          inferredUniverse
-            ? `Universe bootstrap: scanned_docs=${inferredUniverse.scanned_docs} inferred_domains=${inferredUniverse.inferred_domains.slice(0, 10).join(", ")}`
-            : null,
-          `Built: ${builtAtEt}`,
-          `sha256=${sha256}`,
-          `bytes=${pdfBuffer.length}`,
-        ]
-          .filter(Boolean)
-          .join("\n"),
-        mediaUrl: pdfPath,
-      },
-    };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    params.typing.cleanup();
-    return {
-      kind: "reply",
-      reply: { text: `❌ quick research failed: ${message}`, isError: true },
-    };
-  }
+  params.typing.cleanup();
+  return {
+    kind: "reply",
+    reply: {
+      text: `Run accepted: ${req.kind} v2 (${req.minutes} min). Will post PDF at/after ${deliverAtEt} if it passes strict quality + strict PDF diagnostics.\njob_id=${jobId}\nagent_commit=${commit}`,
+    },
+  };
 }
 
 export async function handleInlineActions(params: {
@@ -708,6 +820,7 @@ export async function handleInlineActions(params: {
     cleanedBody,
     command,
     isGroup,
+    cfg,
     opts,
     typing,
     agentId,

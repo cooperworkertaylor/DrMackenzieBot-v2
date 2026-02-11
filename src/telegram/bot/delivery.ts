@@ -147,7 +147,33 @@ export async function deliverReplies(params: {
     let pendingFollowUpText: string | undefined;
     for (const mediaUrl of mediaList) {
       const isFirstMedia = first;
-      const media = await loadWebMedia(mediaUrl);
+      let media: Awaited<ReturnType<typeof loadWebMedia>>;
+      try {
+        media = await loadWebMedia(mediaUrl);
+      } catch (err) {
+        const errText = formatErrorMessage(err);
+        const refusal = [
+          "❌ Failed to load attachment before sending to Telegram.",
+          `url=${mediaUrl}`,
+          `error=${errText}`,
+        ].join("\n");
+        const replyToMessageId =
+          replyToId && (replyToMode === "all" || !hasReplied) ? replyToId : undefined;
+        await sendTelegramText(bot, chatId, refusal, runtime, {
+          replyToMessageId,
+          replyQuoteText,
+          thread,
+          linkPreview,
+          replyMarkup: isFirstMedia ? replyMarkup : undefined,
+          plainText: refusal,
+        });
+        markDelivered();
+        if (replyToId && !hasReplied) {
+          hasReplied = true;
+        }
+        first = false;
+        continue;
+      }
       const kind = mediaKindFromMime(media.contentType ?? undefined);
       const isGif = isGifMedia({
         contentType: media.contentType,
