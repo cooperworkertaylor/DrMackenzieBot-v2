@@ -143,10 +143,13 @@ export function renderV2ReportMarkdown(params: { kind: ReportKindV2; report: unk
   // Exhibits
   lines.push("## Exhibits");
   lines.push("");
-  for (const exhibit of report.exhibits ?? []) {
+  for (const [idx, exhibit] of (report.exhibits ?? []).entries()) {
     const numericRefs = asArray(exhibit.numeric_refs).map(asString).filter(Boolean);
     numericRefs.forEach((id) => usedNumeric.add(id));
-    lines.push(`### ${exhibit.id}: ${exhibit.title}`);
+    lines.push(`### Exhibit ${idx + 1}: ${exhibit.title}`);
+    if (asString(exhibit.id).trim()) {
+      lines.push(`- Exhibit ID: ${asString(exhibit.id).trim()}`);
+    }
     lines.push(`- Question: ${exhibit.question}`);
     for (const row of exhibit.data_summary ?? []) {
       const rendered = renderTextWithNumeric(row, numericById, usedNumeric);

@@ -331,6 +331,8 @@ async function maybeHandleQuickResearchPdfRequest(params: {
           await import("../../v2/pipeline/v2-pipeline.js");
 
         const builtAtEt = formatBuiltAtEt(new Date());
+        // Avoid hyphen mojibake in PDF text extraction (e.g. "-" -> standalone "n").
+        const builtAtEtFooter = builtAtEt.replaceAll("-", "/");
 
         const renderPdfFromMarkdown = async (p: {
           inPath: string;
@@ -412,7 +414,7 @@ async function maybeHandleQuickResearchPdfRequest(params: {
               p.title,
             )}</span><span></span></div>`;
             const footerTemplate = `<div style="font-size:8px;padding:0 24px;width:100%;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',Helvetica,Arial,sans-serif;color:#6b7280;display:flex;align-items:center;justify-content:space-between;"><span>FOR DISCUSSION PURPOSES ONLY; NOT INVESTMENT ADVICE.</span><span>Built: ${escapeHtml(
-              builtAtEt,
+              builtAtEtFooter,
             )}</span><span>Page <span class="pageNumber"></span> / <span class="totalPages"></span></span></div>`;
             await page.pdf({
               path: p.outPath,
