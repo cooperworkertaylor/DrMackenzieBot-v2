@@ -68,6 +68,24 @@ describe("parseQuickResearchRequest", () => {
     expect(res).toEqual({ kind: "theme", minutes: 5, theme: "optical networking" });
   });
 
+  it("parses /research ticker prompts with default 30-minute timebox", () => {
+    const res = parseQuickResearchRequest("/research KLAR as a long term investment opportunity.");
+    expect(res?.kind).toBe("company");
+    if (res?.kind !== "company") throw new Error("expected company");
+    expect(res.minutes).toBe(30);
+    expect(res.ticker).toBe("KLAR");
+  });
+
+  it("parses /research_deep theme prompts with default 120-minute timebox", () => {
+    const res = parseQuickResearchRequest("/research_deep optical networking");
+    expect(res).toEqual({ kind: "theme", minutes: 120, theme: "optical networking" });
+  });
+
+  it("keeps explicit minutes inside /research_deep prompts", () => {
+    const res = parseQuickResearchRequest("/research_deep optical networking 45");
+    expect(res).toEqual({ kind: "theme", minutes: 45, theme: "optical networking" });
+  });
+
   it("does not trigger without all guard tokens", () => {
     expect(parseQuickResearchRequest("give me a 5 min summary on agentic commerce")).toBeNull();
     expect(parseQuickResearchRequest("send pdf")).toBeNull();

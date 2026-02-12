@@ -138,7 +138,7 @@ const QUICK_RESEARCH_BG_QUEUE = createBackgroundQueue({ concurrency: 1 });
 const looksLikeQuickResearch = (value: string): boolean => {
   const s = value.trim();
   if (!s) return false;
-  if (/^\/research(?:[_-]?fast)?\b/i.test(s)) {
+  if (/^\/research(?:[_-]?(?:fast|deep))?\b/i.test(s)) {
     return true;
   }
   const lowered = s.toLowerCase();
