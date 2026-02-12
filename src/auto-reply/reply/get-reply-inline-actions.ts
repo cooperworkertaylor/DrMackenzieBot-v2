@@ -138,6 +138,9 @@ const QUICK_RESEARCH_BG_QUEUE = createBackgroundQueue({ concurrency: 1 });
 const looksLikeQuickResearch = (value: string): boolean => {
   const s = value.trim();
   if (!s) return false;
+  if (/^\/research(?:[_-]?fast)?\b/i.test(s)) {
+    return true;
+  }
   const lowered = s.toLowerCase();
   const hasTimebox =
     /\bt\+\s*\d{1,3}\b/.test(lowered) ||

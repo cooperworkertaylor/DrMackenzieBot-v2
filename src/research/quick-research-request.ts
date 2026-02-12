@@ -21,6 +21,9 @@ const normalizeTicker = (value: string): string =>
     .replaceAll(/[^A-Z0-9.]/g, "")
     .slice(0, 10);
 
+const isLikelyTickerToken = (value: string): boolean =>
+  /^[A-Z][A-Z0-9.]{0,7}$/.test(normalizeTicker(value.replace(/^\$/, "")));
+
 const extractTickersFromList = (value: string): string[] => {
   const tokens = value.match(/\$?[A-Za-z][A-Za-z0-9.]{0,15}/g) ?? [];
   const out: string[] = [];
@@ -71,9 +74,89 @@ const stripTransportPrefix = (value: string): string => {
   return out;
 };
 
+const parseMinutes = (text: string): number | null => {
+  const lowered = text.toLowerCase();
+  const minuteRe = /\b(\d{1,3})\s*(?:[-\u2010-\u2015\u2212]\s*)?(min|mins|minute|minutes)\b/;
+  const tPlusRe = /\bt\+\s*(\d{1,3})\b/i;
+
+  const minuteMatch = lowered.match(minuteRe);
+  if (minuteMatch?.[1]) {
+    return Math.max(1, Math.min(600, Number.parseInt(minuteMatch[1], 10) || 5));
+  }
+  const tPlus = lowered.match(tPlusRe);
+  if (tPlus?.[1]) {
+    return Math.max(1, Math.min(600, Number.parseInt(tPlus[1], 10) || 5));
+  }
+  const tail = text.match(/\b(\d{1,3})\b\s*[:.\u2010-\u2015\u2212]*\s*$/);
+  const tailN = tail?.[1] ? Number.parseInt(tail[1], 10) : NaN;
+  if (Number.isFinite(tailN) && tailN >= 1 && tailN <= 600) {
+    return Math.max(1, Math.min(600, tailN));
+  }
+  return null;
+};
+
+const stripTimeboxText = (text: string): string =>
+  normalizeSpaces(
+    text
+      .replace(/\b\d{1,3}\s*(?:[-\u2010-\u2015\u2212]\s*)?(?:min|mins|minute|minutes)\b/gi, " ")
+      .replace(/\bt\+\s*\d{1,3}\b/gi, " ")
+      .replace(/\b\d{1,3}\b\s*[:.\u2010-\u2015\u2212]*\s*$/g, " "),
+  );
+
+const parseSlashQuickResearch = (raw: string): QuickResearchRequest | null => {
+  const m = raw.match(/^\/([a-z0-9_-]+)\b\s*([\s\S]*)$/i);
+  if (!m) return null;
+  const command = (m[1] ?? "").toLowerCase();
+  if (
+    command !== "research_fast" &&
+    command !== "research-fast" &&
+    command !== "researchfast" &&
+    command !== "research"
+  ) {
+    return null;
+  }
+
+  const bodyRaw = normalizeSpaces(stripTransportPrefix(m[2] ?? ""));
+  if (!bodyRaw) return null;
+
+  const defaultMinutes = 30;
+  const minutes = parseMinutes(bodyRaw) ?? defaultMinutes;
+  const body = stripTimeboxText(bodyRaw);
+  const tickersMatch = body.match(/\b(?:tickers|universe)\s*:\s*([\s\S]+)$/i);
+  const tickers = tickersMatch?.[1] ? extractTickersFromList(tickersMatch[1]) : [];
+  const subject = stripTickersSpec(body);
+  if (!subject) return null;
+
+  const subjectTokens = subject.split(/\s+/).filter(Boolean);
+  const firstToken = subjectTokens[0] ?? "";
+  const ticker = normalizeTicker(firstToken.replace(/^\$/, ""));
+  const companyIntentHint =
+    /\b(investment|opportunity|long[- ]?term|thesis|valuation|moat|catalyst|bull|bear|falsifier)\b/i.test(
+      subject,
+    );
+  const treatAsCompany =
+    isLikelyTickerToken(firstToken) &&
+    (subjectTokens.length === 1 || (companyIntentHint && subjectTokens.length <= 16));
+
+  if (treatAsCompany) {
+    return {
+      kind: "company",
+      minutes,
+      ticker,
+      question: `Write an institutional memo on ${ticker}: base/bull/bear, falsifiers, KPIs, valuation scenarios, catalysts, and an evidence table.`,
+    };
+  }
+
+  return { kind: "theme", minutes, theme: subject, ...(tickers.length ? { tickers } : {}) };
+};
+
 export function parseQuickResearchRequest(raw: string): QuickResearchRequest | null {
   const text = normalizeSpaces(raw);
   if (!text) return null;
+
+  const slashParsed = parseSlashQuickResearch(text);
+  if (slashParsed) return slashParsed;
+
   const lowered = text.toLowerCase();
 
   const tickersMatch = text.match(/\b(?:tickers|universe)\s*:\s*([\s\S]+)$/i);
@@ -86,24 +169,9 @@ export function parseQuickResearchRequest(raw: string): QuickResearchRequest | n
   const mentionsPdf = /\bpdf\b/.test(lowered);
   const minuteRe = /\b(\d{1,3})\s*(?:[-\u2010-\u2015\u2212]\s*)?(min|mins|minute|minutes)\b/;
   const tPlusRe = /\bt\+\s*(\d{1,3})\b/i;
-
-  let minutes: number | null = null;
   const minuteMatch = lowered.match(minuteRe);
-  if (minuteMatch?.[1]) {
-    minutes = Math.max(1, Math.min(600, Number.parseInt(minuteMatch[1], 10) || 5));
-  } else {
-    const tPlus = lowered.match(tPlusRe);
-    if (tPlus?.[1]) {
-      minutes = Math.max(1, Math.min(600, Number.parseInt(tPlus[1], 10) || 5));
-    } else {
-      // Very common shorthand: "<topic> 5" or "<topic> 30" (minutes).
-      const tail = text.match(/\b(\d{1,3})\b\s*[:.\u2010-\u2015\u2212]*\s*$/);
-      const tailN = tail?.[1] ? Number.parseInt(tail[1], 10) : NaN;
-      if (Number.isFinite(tailN) && tailN >= 1 && tailN <= 600) {
-        minutes = Math.max(1, Math.min(600, tailN));
-      }
-    }
-  }
+
+  const minutes = parseMinutes(text);
 
   if (minutes == null) return null;
 
