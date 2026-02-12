@@ -32,6 +32,8 @@ import {
 
 const PARSE_ERR_RE = /can't parse entities|parse entities|find end of the entity/i;
 const VOICE_FORBIDDEN_RE = /VOICE_MESSAGES_FORBIDDEN/;
+const TELEGRAM_ENCODER_ATTACHMENT_RE =
+  /(?:uint8array|encoder|multipart|message field populated|payload with the message field)/i;
 
 const isPdfDocument = (p: { fileName?: string | null; contentType?: string | null }): boolean => {
   const fileName = (p.fileName ?? "").trim().toLowerCase();
@@ -39,6 +41,21 @@ const isPdfDocument = (p: { fileName?: string | null; contentType?: string | nul
   const contentType = (p.contentType ?? "").trim().toLowerCase();
   return contentType === "application/pdf" || contentType.startsWith("application/pdf;");
 };
+
+function sanitizeUploadFilename(fileName: string): string {
+  const cleaned = fileName
+    .trim()
+    .replaceAll(/[\r\n]/g, "_")
+    .replaceAll(/[";]/g, "_")
+    .replaceAll(/[^\x20-\x7E]/g, "_");
+  return cleaned || "document.pdf";
+}
+
+function toStrictUint8Array(buffer: Uint8Array): Uint8Array {
+  return new Uint8Array(
+    buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+  );
+}
 
 export async function deliverReplies(params: {
   replies: ReplyPayload[];
@@ -345,12 +362,44 @@ export async function deliverReplies(params: {
             continue;
           }
         }
+        let sentDocument = false;
+        let documentError: unknown = undefined;
         try {
           await withTelegramApiErrorLogging({
             operation: "sendDocument",
             runtime,
             fn: () => bot.api.sendDocument(chatId, file, { ...mediaParams }),
           });
+          sentDocument = true;
+        } catch (err) {
+          documentError = err;
+          const errText = formatErrorMessage(err);
+          if (TELEGRAM_ENCODER_ATTACHMENT_RE.test(errText)) {
+            try {
+              const retryFile = new InputFile(
+                toStrictUint8Array(media.buffer),
+                sanitizeUploadFilename(fileName),
+              );
+              const retryCaption =
+                typeof mediaParams.caption === "string" && mediaParams.caption.trim()
+                  ? mediaParams.caption
+                  : "report attached";
+              const retryParams: Record<string, unknown> = {
+                ...mediaParams,
+                caption: retryCaption,
+              };
+              await withTelegramApiErrorLogging({
+                operation: "sendDocument-encoder-retry",
+                runtime,
+                fn: () => bot.api.sendDocument(chatId, retryFile, { ...retryParams }),
+              });
+              sentDocument = true;
+            } catch (retryErr) {
+              documentError = retryErr;
+            }
+          }
+        }
+        if (sentDocument) {
           markDelivered();
           if (pdfSha256) {
             await writeTelegramLastSentPdf({
@@ -360,8 +409,10 @@ export async function deliverReplies(params: {
               fileName,
             });
           }
-        } catch (err) {
-          const errText = formatErrorMessage(err);
+        } else {
+          const errText = formatErrorMessage(
+            documentError ?? new Error("unknown document failure"),
+          );
           const refusal = [
             "❌ Telegram failed sending document attachment.",
             `fileName=${fileName}`,

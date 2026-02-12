@@ -186,6 +186,42 @@ describe("deliverReplies", () => {
     expect(String(sendMessage.mock.calls[0]?.[1] ?? "")).toContain("Refused to send PDF");
   });
 
+  it("retries document sends when Telegram encoder requires Uint8Array payload", async () => {
+    const runtime = { error: vi.fn(), log: vi.fn() };
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 21, chat: { id: "123" } });
+    const sendDocument = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(
+          "Telegram encoder requirement: needs a Uint8Array payload with the message field populated",
+        ),
+      )
+      .mockResolvedValueOnce({ message_id: 22, chat: { id: "123" } });
+    const bot = { api: { sendMessage, sendDocument } } as unknown as Bot;
+
+    loadWebMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("binary"),
+      contentType: "application/octet-stream",
+      fileName: "report.bin",
+    });
+
+    await deliverReplies({
+      replies: [{ mediaUrl: "https://example.com/report.bin" }],
+      chatId: "123",
+      token: "tok",
+      runtime,
+      bot,
+      replyToMode: "off",
+      textLimit: 4000,
+    });
+
+    expect(sendDocument).toHaveBeenCalledTimes(2);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(sendDocument.mock.calls[1]?.[2]).toMatchObject({
+      caption: "report attached",
+    });
+  });
+
   it("keeps message_thread_id=1 when allowed", async () => {
     const runtime = { error: vi.fn(), log: vi.fn() };
     const sendMessage = vi.fn().mockResolvedValue({
