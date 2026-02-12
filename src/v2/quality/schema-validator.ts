@@ -2,11 +2,28 @@ import type { ErrorObject } from "ajv";
 import Ajv from "ajv/dist/2020.js";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ReportKindV2 } from "./types.js";
 
 type ValidateFn = ((value: unknown) => boolean) & { errors?: ErrorObject[] | null };
 
-const schemaRoot = (): string => path.resolve(process.cwd(), "schemas");
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const schemaRoot = (): string => {
+  const candidates = [
+    process.env.OPENCLAW_RESEARCH_SCHEMA_ROOT?.trim() || "",
+    path.resolve(process.cwd(), "schemas"),
+    path.resolve(moduleDir, "../../../schemas"),
+    path.resolve(moduleDir, "../../../../schemas"),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, "source_item.schema.json"))) {
+      return candidate;
+    }
+  }
+  throw new Error(
+    `Could not locate v2 schema directory. Tried: ${candidates.join(", ") || "(none)"}`,
+  );
+};
 
 const readJson = (filePath: string): unknown => {
   const raw = fs.readFileSync(filePath, "utf8");
@@ -20,6 +37,10 @@ type SchemaBundle = {
 };
 
 let bundle: SchemaBundle | null = null;
+
+export function resetSchemaBundleForTests(): void {
+  bundle = null;
+}
 
 function loadSchemasOnce(): SchemaBundle {
   if (bundle) return bundle;
