@@ -713,6 +713,7 @@ export const buildResearchCandidateFromGmailHook = (params: {
   message: string;
   subjectPrefix?: string;
   allowedSenders?: string[];
+  forceSenders?: string[];
 }): ExternalResearchHookCandidate | null => {
   const parsed = parseGmailHookMessage(params.message);
   if (!parsed) return null;
@@ -720,6 +721,10 @@ export const buildResearchCandidateFromGmailHook = (params: {
   const normalizedAllowedSenders = (params.allowedSenders ?? [])
     .map((sender) => normalizeEmail(sender))
     .filter(Boolean);
+  const normalizedForceSenders = (params.forceSenders ?? [])
+    .map((sender) => normalizeEmail(sender))
+    .filter(Boolean);
+  const senderForced = normalizedForceSenders.includes(parsed.senderEmail.toLowerCase());
   const senderAllowed =
     normalizedAllowedSenders.length === 0 ||
     normalizedAllowedSenders.includes(parsed.senderEmail.toLowerCase());
@@ -735,16 +740,18 @@ export const buildResearchCandidateFromGmailHook = (params: {
   const subjectUpper = parsed.subject.toUpperCase();
   const isResearchSubject = subjectUpper.startsWith(prefix.toUpperCase());
 
-  if (!isResearchSubject && provider === "other") {
+  if (!senderForced && !isResearchSubject && provider === "other") {
     return null;
   }
-  if (isResearchSubject && !senderAllowed) {
+  if (!senderForced && isResearchSubject && !senderAllowed) {
     return null;
   }
 
-  const sourceType: ExternalResearchSourceType = isResearchSubject
+  const sourceType: ExternalResearchSourceType = senderForced
     ? "email_research"
-    : "newsletter";
+    : isResearchSubject
+      ? "email_research"
+      : "newsletter";
   const ticker = isResearchSubject ? extractTickerFromSubject(parsed.subject, prefix) : "";
   const title = isResearchSubject
     ? parsed.subject
@@ -756,6 +763,7 @@ export const buildResearchCandidateFromGmailHook = (params: {
   const tags = new Set<string>(["email", sourceType]);
   if (ticker) tags.add(`ticker:${ticker}`);
   if (provider !== "other") tags.add(`provider:${provider}`);
+  if (senderForced) tags.add("sender-force-ingest");
 
   return {
     sourceType,
