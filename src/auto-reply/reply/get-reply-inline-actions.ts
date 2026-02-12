@@ -166,6 +166,9 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   typing: TypingController;
   agentId: string;
 }): Promise<InlineActionResult | null> {
+  const explicitQuickResearchCommand = /^\/research(?:[_-]?(?:fast|deep))?\b/i.test(
+    (params.command.commandBodyNormalized ?? "").trim(),
+  );
   const channelResolved =
     resolveGatewayMessageChannel(params.ctx.OriginatingChannel) ??
     resolveGatewayMessageChannel(params.ctx.Surface) ??
@@ -180,10 +183,12 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   // IMPORTANT: do not rely solely on strict channel normalization.
   // If this is a timeboxed “send PDF” request and we're on Telegram, we must intercept.
   // If normalization fails for any reason, we still treat anything containing "telegram" as Telegram.
+  // Also hard-intercept explicit /research* commands and parseable quick-research prompts
+  // so they never fall through to free-form LLM confirmations.
   const isTelegram = channelResolved === "telegram" || channelRaw.includes("telegram");
-  if (!isTelegram) return null;
-
   const req = parseQuickResearchRequest(params.cleanedBody);
+  if (!isTelegram && !explicitQuickResearchCommand && !req) return null;
+
   if (!req) {
     if (!looksLikeQuickResearch(params.cleanedBody)) {
       return null;
@@ -270,7 +275,12 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   const commit = resolveCommitHash({ cwd: process.cwd(), env: process.env }) ?? "unknown";
 
   const originTo = params.ctx.OriginatingTo ?? params.ctx.To;
-  const originChannel = params.ctx.OriginatingChannel ?? "telegram";
+  const originChannel =
+    channelResolved ??
+    params.ctx.OriginatingChannel ??
+    params.command.channel ??
+    params.ctx.Surface ??
+    "telegram";
   const originAccountId = params.ctx.AccountId ?? undefined;
   const originThreadId = params.ctx.MessageThreadId ?? undefined;
   const originSessionKey = params.ctx.SessionKey ?? undefined;
