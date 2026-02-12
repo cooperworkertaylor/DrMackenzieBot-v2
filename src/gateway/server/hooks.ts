@@ -57,11 +57,19 @@ export function createGatewayHooksRequestHandler(params: {
       if (["0", "false", "no", "n"].includes(raw)) return false;
       return true;
     })();
+    const forcedSenderRaw = [
+      process.env.OPENCLAW_RESEARCH_EMAIL_FORCE_SENDERS,
+      process.env.OPENCLAW_RESEARCH_EMAIL_ALWAYS_INGEST_SENDERS,
+    ]
+      .map((value) => value?.trim() ?? "")
+      .filter(Boolean)
+      .join(",");
     const researchCandidate = buildResearchCandidateFromGmailHook({
       sessionKey,
       message: value.message,
       subjectPrefix: process.env.OPENCLAW_RESEARCH_EMAIL_SUBJECT_PREFIX,
       allowedSenders: parseCsvLower(process.env.OPENCLAW_RESEARCH_EMAIL_ALLOW_SENDERS),
+      forceSenders: parseCsvLower(forcedSenderRaw),
     });
     if (researchCandidate) {
       void (async () => {

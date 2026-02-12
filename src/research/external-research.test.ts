@@ -71,6 +71,35 @@ describe("external research ingestion", () => {
     expect(semianalysisCandidate?.provider).toBe("semianalysis");
   });
 
+  it("force-ingests configured senders even without RESEARCH prefix", () => {
+    const noForce = buildResearchCandidateFromGmailHook({
+      sessionKey: "hook:gmail:msg-900",
+      message: [
+        "New email from CT <ct@salemcounsel.com>",
+        "Subject: optical networking follow-up",
+        "My latest notes and quick checks.",
+      ].join("\n"),
+      allowedSenders: ["cooptaylor1@gmail.com"],
+    });
+    expect(noForce).toBeNull();
+
+    const forced = buildResearchCandidateFromGmailHook({
+      sessionKey: "hook:gmail:msg-901",
+      message: [
+        "New email from CT <ct@salemcounsel.com>",
+        "Subject: optical networking follow-up",
+        "My latest notes and quick checks.",
+      ].join("\n"),
+      allowedSenders: ["cooptaylor1@gmail.com"],
+      forceSenders: ["ct@salemcounsel.com"],
+    });
+    expect(forced).not.toBeNull();
+    expect(forced?.sourceType).toBe("email_research");
+    expect(forced?.provider).toBe("other");
+    expect(forced?.externalId).toBe("msg-901");
+    expect(forced?.tags).toContain("sender-force-ingest");
+  });
+
   it("ingests external docs and generates weekly digest", () => {
     const dbPath = testDbPath("digest");
 
