@@ -107,19 +107,19 @@ const parseSlashQuickResearch = (raw: string): QuickResearchRequest | null => {
   const m = raw.match(/^\/([a-z0-9_-]+)\b\s*([\s\S]*)$/i);
   if (!m) return null;
   const command = (m[1] ?? "").toLowerCase();
-  if (
-    command !== "research_fast" &&
-    command !== "research-fast" &&
-    command !== "researchfast" &&
-    command !== "research"
-  ) {
+  const isFastCommand =
+    command === "research_fast" || command === "research-fast" || command === "researchfast";
+  const isDeepCommand =
+    command === "research_deep" || command === "research-deep" || command === "researchdeep";
+  const isResearchCommand = command === "research";
+  if (!isFastCommand && !isDeepCommand && !isResearchCommand) {
     return null;
   }
 
   const bodyRaw = normalizeSpaces(stripTransportPrefix(m[2] ?? ""));
   if (!bodyRaw) return null;
 
-  const defaultMinutes = 30;
+  const defaultMinutes = isDeepCommand ? 120 : 30;
   const minutes = parseMinutes(bodyRaw) ?? defaultMinutes;
   const body = stripTimeboxText(bodyRaw);
   const tickersMatch = body.match(/\b(?:tickers|universe)\s*:\s*([\s\S]+)$/i);
