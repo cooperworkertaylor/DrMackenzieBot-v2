@@ -42,4 +42,20 @@ describe("pdf-diagnostics", () => {
 
     expect(errors).toEqual([]);
   });
+
+  it("does not hard-fail strict mode on standalone-n extraction noise alone", () => {
+    const text = [
+      "Exhibit 1 Revenue growth",
+      "Catalyst windows: 0 n 6 months, 6 n 18 months, 18 n 36 months.",
+      "This is a factual statement. [S1]",
+      "Sources",
+      "- [S1] SEC 10-K | https://www.sec.gov/Archives/edgar/data/0000000000/0000000000-index.html",
+    ].join("\n");
+
+    const metrics = computePdfDiagnostics(text);
+    const errors = validatePdfDiagnosticsStrict({ metrics });
+
+    expect(metrics.dashMojibakeStandaloneNCount).toBeGreaterThan(0);
+    expect(errors.some((e) => e.startsWith("dash_mojibake_tokens"))).toBe(false);
+  });
 });
