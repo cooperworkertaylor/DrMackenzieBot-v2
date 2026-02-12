@@ -71,6 +71,8 @@ type TelegramReactionOpts = {
 };
 
 const PARSE_ERR_RE = /can't parse entities|parse entities|find end of the entity/i;
+const TELEGRAM_ENCODER_ATTACHMENT_RE =
+  /(?:uint8array|encoder|multipart|message field populated|payload with the message field)/i;
 const diagLogger = createSubsystemLogger("telegram/diagnostic");
 
 const isPdfDocument = (p: { fileName?: string | null; contentType?: string | null }): boolean => {
@@ -180,6 +182,21 @@ function normalizeMessageId(raw: string | number): number {
     }
   }
   throw new Error("Message id is required for Telegram actions");
+}
+
+function sanitizeUploadFilename(fileName: string): string {
+  const cleaned = fileName
+    .trim()
+    .replaceAll(/[\r\n]/g, "_")
+    .replaceAll(/[";]/g, "_")
+    .replaceAll(/[^\x20-\x7E]/g, "_");
+  return cleaned || "document.pdf";
+}
+
+function toStrictUint8Array(buffer: Uint8Array): Uint8Array {
+  return new Uint8Array(
+    buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+  );
 }
 
 export function buildInlineKeyboard(
@@ -446,7 +463,8 @@ export async function sendMessageTelegram(
       | Awaited<ReturnType<typeof api.sendAudio>>
       | Awaited<ReturnType<typeof api.sendVoice>>
       | Awaited<ReturnType<typeof api.sendAnimation>>
-      | Awaited<ReturnType<typeof api.sendDocument>>;
+      | Awaited<ReturnType<typeof api.sendDocument>>
+      | undefined = undefined;
     if (isGif) {
       result = await requestWithDiag(
         () => api.sendAnimation(chatId, file, mediaParams),
@@ -489,6 +507,7 @@ export async function sendMessageTelegram(
         });
       }
     } else {
+      let documentError: unknown;
       try {
         result = await requestWithDiag(
           () => api.sendDocument(chatId, file, mediaParams),
@@ -497,7 +516,36 @@ export async function sendMessageTelegram(
           throw wrapChatNotFound(err);
         });
       } catch (err) {
+        documentError = err;
         const errText = formatErrorMessage(err);
+        if (TELEGRAM_ENCODER_ATTACHMENT_RE.test(errText)) {
+          try {
+            const retryFile = new InputFile(
+              toStrictUint8Array(media.buffer),
+              sanitizeUploadFilename(fileName),
+            );
+            const retryCaption =
+              typeof mediaParams.caption === "string" && mediaParams.caption.trim()
+                ? mediaParams.caption
+                : "report attached";
+            const retryParams = {
+              ...mediaParams,
+              caption: retryCaption,
+              ...(mediaParams.parse_mode ? { parse_mode: mediaParams.parse_mode } : {}),
+            };
+            result = await requestWithDiag(
+              () => api.sendDocument(chatId, retryFile, retryParams),
+              "document-encoder-retry",
+            ).catch((retryErr) => {
+              throw wrapChatNotFound(retryErr);
+            });
+          } catch (retryErr) {
+            documentError = retryErr;
+          }
+        }
+      }
+      if (!result) {
+        const errText = formatErrorMessage(documentError ?? new Error("unknown document failure"));
         const refusal = [
           "❌ Telegram failed sending document attachment.",
           `fileName=${fileName}`,
