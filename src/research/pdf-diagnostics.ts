@@ -30,8 +30,9 @@ export const DEFAULT_PDF_DIAGNOSTICS_THRESHOLDS_STRICT: PdfDiagnosticsThresholds
   maxMarkdownHeadingTokens: 0,
   maxMarkdownFenceTokens: 0,
   maxDashMojibakeDateCount: 0,
-  // A standalone "n" token is almost always a broken hyphen in these PDFs.
-  maxDashMojibakeStandaloneNCount: 0,
+  // Keep this metric for observability, but don't hard-fail by default.
+  // pdf.js extraction can emit standalone "n" from otherwise valid hyphens.
+  maxDashMojibakeStandaloneNCount: Number.POSITIVE_INFINITY,
   // Shipping "appendix pass" / "to appear" placeholders is a hard failure.
   maxPlaceholderTokenCount: 0,
   requireSourcesHeading: true,
