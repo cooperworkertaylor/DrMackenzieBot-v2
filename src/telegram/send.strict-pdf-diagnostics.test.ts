@@ -54,4 +54,40 @@ describe("sendMessageTelegram (strict pdf diagnostics)", () => {
       String((api.sendMessage as unknown as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] ?? ""),
     ).toContain("Refused to send PDF");
   });
+
+  it("retries document send when Telegram encoder requires Uint8Array payload", async () => {
+    const api = {
+      sendDocument: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new Error(
+            "Telegram encoder requirement: needs a Uint8Array payload with the message field populated",
+          ),
+        )
+        .mockResolvedValueOnce({ message_id: 3, chat: { id: "123" } }),
+      sendMessage: vi.fn(),
+    } as unknown as NonNullable<Parameters<typeof sendMessageTelegram>[2]>["api"];
+
+    loadWebMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("not-a-pdf"),
+      contentType: "application/octet-stream",
+      fileName: "report.bin",
+    });
+
+    const res = await sendMessageTelegram("telegram:123", "", {
+      token: "tok",
+      api,
+      mediaUrl: "https://example.com/report.bin",
+      maxBytes: 50 * 1024 * 1024,
+    });
+
+    expect(api.sendDocument).toHaveBeenCalledTimes(2);
+    expect(
+      (api.sendDocument as unknown as ReturnType<typeof vi.fn>).mock.calls[1]?.[2],
+    ).toMatchObject({
+      caption: "report attached",
+    });
+    expect(res).toEqual({ messageId: "3", chatId: "123" });
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
 });
