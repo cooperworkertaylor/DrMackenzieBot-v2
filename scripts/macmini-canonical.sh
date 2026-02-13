@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_DEFAULT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="${OPENCLAW_CANONICAL_REPO:-$REPO_DEFAULT_ROOT}"
 CANONICAL_SECRETS_FILE="$REPO_ROOT/.env.1password"
+ALLOWED_USER="${OPENCLAW_REQUIRED_USER:-agent}"
+FORBIDDEN_PATH_TOKEN="${OPENCLAW_FORBIDDEN_PATH_TOKEN:-/cooptaylor1/}"
+FORBIDDEN_HOSTNAME="${OPENCLAW_FORBIDDEN_HOSTNAME:-}"
+FIND_ROOTS=("/Users/agent" "/Users/agent/clawd" "/Users/cooptaylor1" "/Users/cooptaylor1/Documents")
 
 usage() {
   cat <<USAGE
@@ -20,9 +25,46 @@ This wrapper is pinned to this repo only:
 USAGE
 }
 
+find_candidate_repos() {
+  echo "Checking for candidate repo locations..."
+  for base in "${FIND_ROOTS[@]}"; do
+    if [[ -d "$base" ]]; then
+      while IFS= read -r candidate; do
+        echo "  $candidate"
+      done < <(find "$base" -maxdepth 5 -type d -name "DrMackenzieBot-v2" 2>/dev/null || true)
+    fi
+  done
+}
+
 check_repo() {
+  if [[ "${USER}" != "$ALLOWED_USER" ]]; then
+    echo "BLOCKED: expected user '$ALLOWED_USER', current user is '$USER'." >&2
+    echo "Set OPENCLAW_REQUIRED_USER only if running from a different account." >&2
+    exit 1
+  fi
+
+  if [[ "$REPO_ROOT" == *"$FORBIDDEN_PATH_TOKEN"* ]]; then
+    echo "BLOCKED: repo path contains forbidden segment: $FORBIDDEN_PATH_TOKEN" >&2
+    echo "Set OPENCLAW_CANONICAL_REPO to an allowed path for this machine." >&2
+    echo "Candidates:"
+    find_candidate_repos
+    exit 1
+  fi
+
+  if [[ ! -d "$REPO_ROOT" ]]; then
+    echo "ERROR: repository root not found: $REPO_ROOT" >&2
+    echo "Candidates:"
+    find_candidate_repos
+    exit 1
+  fi
+
   if ! cd "$REPO_ROOT"; then
     echo "ERROR: unable to enter repo root: $REPO_ROOT" >&2
+    exit 1
+  fi
+
+  if [[ -n "${FORBIDDEN_HOSTNAME}" && "$(hostname)" == "$FORBIDDEN_HOSTNAME" ]]; then
+    echo "BLOCKED: forbidden host '$FORBIDDEN_HOSTNAME'." >&2
     exit 1
   fi
 
@@ -30,6 +72,22 @@ check_repo() {
     echo "ERROR: not a git repo: $REPO_ROOT" >&2
     exit 1
   fi
+}
+
+run_node_cmd() {
+  if [[ -f "$REPO_ROOT/scripts/run-node.mjs" ]]; then
+    echo "node scripts/run-node.mjs"
+    return
+  fi
+
+  if [[ -f "$REPO_ROOT/dist/index.js" ]]; then
+    echo "node dist/index.js"
+    return
+  fi
+
+  echo "Could not find scripts/run-node.mjs or dist/index.js under $REPO_ROOT"
+  echo "Run: pnpm build"
+  exit 1
 }
 
 check_secrets_file() {
@@ -56,11 +114,13 @@ main() {
       ./scripts/repo-secrets-check.sh
       ;;
     status)
-      ./scripts/op-run.sh node scripts/run-node.mjs status
+      run_node="$(run_node_cmd)"
+      ./scripts/op-run.sh $run_node status
       ;;
     start-gateway)
       check_secrets_file
-      ./scripts/op-run.sh node scripts/run-node.mjs gateway
+      run_node="$(run_node_cmd)"
+      ./scripts/op-run.sh $run_node gateway
       ;;
     stop-gateway)
       openclaw gateway stop
