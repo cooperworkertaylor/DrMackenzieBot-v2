@@ -1,0 +1,131 @@
+{
+  "corpus": [
+    {
+      "source_id": "nvda-q3-2025-call",
+      "source_url": "https://local.benchmark/nvda-q3-2025-call",
+      "ticker": "NVDA",
+      "company": "NVIDIA",
+      "doc_type": "transcript",
+      "published_at": "2025-11-20",
+      "section": "Datacenter",
+      "text": "NVIDIA Q3 2025 call: Data center revenue grew 112% year over year. Management guided gross margin to the low 75% range and noted sovereign AI demand was broadening."
+    },
+    {
+      "source_id": "msft-fy2025-10k",
+      "source_url": "https://local.benchmark/msft-fy2025-10k",
+      "ticker": "MSFT",
+      "company": "Microsoft",
+      "doc_type": "filing",
+      "published_at": "2025-08-30",
+      "section": "Capital Expenditures",
+      "text": "Microsoft FY2025 10-K: capital expenditures increased 38% due to AI cloud infrastructure buildout. Commercial remaining performance obligations rose 31% year over year."
+    },
+    {
+      "source_id": "amzn-q2-2025-earnings",
+      "source_url": "https://local.benchmark/amzn-q2-2025-earnings",
+      "ticker": "AMZN",
+      "company": "Amazon",
+      "doc_type": "transcript",
+      "published_at": "2025-08-01",
+      "section": "AWS",
+      "text": "Amazon Q2 2025: AWS growth re-accelerated to 21%. Management emphasized AI inference demand and custom Trainium adoption. Operating margin expanded to 10.2%."
+    },
+    {
+      "source_id": "goog-2025-cloud-update",
+      "source_url": "https://local.benchmark/goog-2025-cloud-update",
+      "ticker": "GOOGL",
+      "company": "Alphabet",
+      "doc_type": "news",
+      "published_at": "2025-10-11",
+      "section": "Cloud",
+      "text": "Alphabet cloud update: Google Cloud bookings accelerated, Gemini enterprise adoption increased, and AI infrastructure depreciation headwinds were flagged for 2026."
+    },
+    {
+      "source_id": "meta-2025-capex-letter",
+      "source_url": "https://local.benchmark/meta-2025-capex-letter",
+      "ticker": "META",
+      "company": "Meta",
+      "doc_type": "memo",
+      "published_at": "2025-09-14",
+      "section": "Capital Allocation",
+      "text": "Meta investor letter 2025: capex was raised to support next-gen training clusters. Management reiterated long-run free cash flow targets despite near-term infrastructure pressure."
+    },
+    {
+      "source_id": "asml-2025-order-book",
+      "source_url": "https://local.benchmark/asml-2025-order-book",
+      "ticker": "ASML",
+      "company": "ASML",
+      "doc_type": "news",
+      "published_at": "2025-07-19",
+      "section": "Order Intake",
+      "text": "ASML order intake in 2025 remained elevated with high-NA EUV demand from logic customers. Backlog visibility was highlighted as a stabilizer through 2026."
+    },
+    {
+      "source_id": "tsm-2025-capacity-note",
+      "source_url": "https://local.benchmark/tsm-2025-capacity-note",
+      "ticker": "TSM",
+      "company": "TSMC",
+      "doc_type": "memo",
+      "published_at": "2025-09-02",
+      "section": "Advanced Nodes",
+      "text": "TSMC memo: N3 and N2 capacity plans imply sustained foundry capex intensity. AI accelerator demand was concentrated in advanced packaging and CoWoS capacity."
+    },
+    {
+      "source_id": "pltr-2025-ic-note",
+      "source_url": "https://local.benchmark/pltr-2025-ic-note",
+      "ticker": "PLTR",
+      "company": "Palantir",
+      "doc_type": "memo",
+      "published_at": "2025-10-30",
+      "section": "Commercial",
+      "text": "Palantir IC note: US commercial revenue growth exceeded 40% and AIP deal velocity improved. Revenue concentration risk remains a key monitoring point."
+    },
+    {
+      "source_id": "nu-2025-credit-risk",
+      "source_url": "https://local.benchmark/nu-2025-credit-risk",
+      "ticker": "NU",
+      "company": "Nu Holdings",
+      "doc_type": "filing",
+      "published_at": "2025-04-16",
+      "section": "Credit Quality",
+      "text": "Nu 20-F 2025: expected credit loss rate declined while contribution margin improved. Brazil and Mexico cohort performance continued to diverge."
+    },
+    {
+      "source_id": "semianalysis-h200-2025",
+      "source_url": "https://local.benchmark/semianalysis-h200-2025",
+      "ticker": "",
+      "company": "SemiAnalysis",
+      "doc_type": "research",
+      "published_at": "2025-12-01",
+      "section": "GPU Supply Chain",
+      "text": "SemiAnalysis report: H200 supply constraints eased in late 2025 while inference cluster economics improved. Networking bottlenecks moved from optics to switching silicon."
+    }
+  ],
+  "checks": [
+    { "id": "q01", "query": "NVDA data center revenue growth", "expected_source_ids": ["nvda-q3-2025-call"] },
+    { "id": "q02", "query": "NVIDIA gross margin guidance low 75%", "expected_source_ids": ["nvda-q3-2025-call"] },
+    { "id": "q03", "query": "MSFT capex increase AI cloud infrastructure", "expected_source_ids": ["msft-fy2025-10k"] },
+    { "id": "q04", "query": "Microsoft remaining performance obligations growth", "expected_source_ids": ["msft-fy2025-10k"] },
+    { "id": "q05", "query": "AMZN AWS re-accelerated growth 2025", "expected_source_ids": ["amzn-q2-2025-earnings"] },
+    { "id": "q06", "query": "Amazon operating margin 10.2", "expected_source_ids": ["amzn-q2-2025-earnings"] },
+    { "id": "q07", "query": "Google Cloud bookings acceleration Gemini enterprise", "expected_source_ids": ["goog-2025-cloud-update"] },
+    { "id": "q08", "query": "GOOGL depreciation headwind 2026 AI infrastructure", "expected_source_ids": ["goog-2025-cloud-update"] },
+    { "id": "q09", "query": "Meta raised capex for training clusters", "expected_source_ids": ["meta-2025-capex-letter"] },
+    { "id": "q10", "query": "META free cash flow targets despite capex pressure", "expected_source_ids": ["meta-2025-capex-letter"] },
+    { "id": "q11", "query": "ASML high-NA EUV demand order intake", "expected_source_ids": ["asml-2025-order-book"] },
+    { "id": "q12", "query": "ASML backlog visibility through 2026", "expected_source_ids": ["asml-2025-order-book"] },
+    { "id": "q13", "query": "TSM N3 N2 capacity plan capex intensity", "expected_source_ids": ["tsm-2025-capacity-note"] },
+    { "id": "q14", "query": "TSMC CoWoS advanced packaging bottleneck", "expected_source_ids": ["tsm-2025-capacity-note"] },
+    { "id": "q15", "query": "Palantir US commercial growth above 40", "expected_source_ids": ["pltr-2025-ic-note"] },
+    { "id": "q16", "query": "PLTR AIP deal velocity and concentration risk", "expected_source_ids": ["pltr-2025-ic-note"] },
+    { "id": "q17", "query": "Nu expected credit loss rate declined", "expected_source_ids": ["nu-2025-credit-risk"] },
+    { "id": "q18", "query": "NU contribution margin Brazil Mexico cohort divergence", "expected_source_ids": ["nu-2025-credit-risk"] },
+    { "id": "q19", "query": "SemiAnalysis H200 supply constraints eased", "expected_source_ids": ["semianalysis-h200-2025"] },
+    { "id": "q20", "query": "inference cluster economics improved and switching silicon bottlenecks", "expected_source_ids": ["semianalysis-h200-2025"] },
+    { "id": "q21", "query": "which company discussed sovereign AI demand", "expected_source_ids": ["nvda-q3-2025-call"] },
+    { "id": "q22", "query": "enterprise cloud RPO growth signal", "expected_source_ids": ["msft-fy2025-10k"] },
+    { "id": "q23", "query": "custom Trainium adoption in AWS", "expected_source_ids": ["amzn-q2-2025-earnings"] },
+    { "id": "q24", "query": "high NA EUV logic customers", "expected_source_ids": ["asml-2025-order-book"] },
+    { "id": "q25", "query": "AIP deal velocity improved", "expected_source_ids": ["pltr-2025-ic-note"] }
+  ]
+}
