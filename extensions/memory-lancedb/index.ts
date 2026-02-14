@@ -23,10 +23,23 @@ import {
   chunkDocument,
   extractPublishedAt,
   hashNormalizedText,
+  inferMetadata,
   normalizeText,
   type ChunkSeed,
 } from "./ingestion.js";
-import { hybridSearch, type EmbeddingClient } from "./retrieval.js";
+import { generateFactCardsFromChunk } from "./fact-cards.js";
+import {
+  buildCitationFirstBundle,
+  retrieveHybridAcrossTables,
+  type EmbeddingClient,
+} from "./retrieval.js";
+import {
+  FACT_CARDS_TABLE,
+  LEGACY_RAW_CHUNKS_TABLES,
+  RAW_CHUNKS_TABLE,
+  buildFactCardsSchema,
+  buildRawChunksSchema,
+} from "./schema.js";
 import type { MemoryChunkRow, RetrievedSnippet, RetrievalFilters } from "./types.js";
 
 // ============================================================================
@@ -60,8 +73,7 @@ type MemorySearchResult = {
 // LanceDB Provider
 // ============================================================================
 
-const TABLE_NAME = "memories_v2";
-const LEGACY_TABLE_NAME = "memories";
+const TABLE_NAME = RAW_CHUNKS_TABLE;
 
 function sqlQuote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
@@ -70,6 +82,7 @@ function sqlQuote(value: string): string {
 class MemoryDB {
   private db: lancedb.Connection | null = null;
   private table: lancedb.Table | null = null;
+  private factCardsTable: lancedb.Table | null = null;
   private initPromise: Promise<void> | null = null;
 
   constructor(
@@ -96,99 +109,100 @@ class MemoryDB {
     if (tables.includes(TABLE_NAME)) {
       this.table = await this.db.openTable(TABLE_NAME);
     } else {
-      this.table = await this.db.createTable(TABLE_NAME, [
-        {
-          chunk_id: "__schema__",
-          doc_id: "__schema__",
-          text: "",
-          text_norm: "",
-          vector: Array.from({ length: this.vectorDim }).fill(0),
-          importance: 0,
-          category: "other",
-          company: "",
-          ticker: "",
-          doc_type: "other",
-          published_at: 0,
-          ingested_at: 0,
-          source_url: "",
-          section: "",
-          page: 0,
-          chunk_index: 0,
-          chunk_hash: "",
-          char_start: 0,
-          char_end: 0,
-          token_count: 0,
-          citation_key: "",
-        },
-      ]);
-      await this.table.delete('chunk_id = "__schema__"');
-      await this.backfillLegacyTableIfPresent(tables);
+      this.table = await this.db.createEmptyTable(TABLE_NAME, buildRawChunksSchema(this.vectorDim));
     }
+
+    if (tables.includes(FACT_CARDS_TABLE)) {
+      this.factCardsTable = await this.db.openTable(FACT_CARDS_TABLE);
+    } else {
+      this.factCardsTable = await this.db.createEmptyTable(
+        FACT_CARDS_TABLE,
+        buildFactCardsSchema(this.vectorDim),
+      );
+    }
+
+    await this.backfillLegacyTableIfPresent(tables);
 
     await this.ensureIndices();
   }
 
   private async backfillLegacyTableIfPresent(existingTables: string[]): Promise<void> {
-    if (!this.db || !this.table || !existingTables.includes(LEGACY_TABLE_NAME)) {
+    if (!this.db || !this.table || !this.factCardsTable) {
       return;
     }
 
-    const legacy = await this.db.openTable(LEGACY_TABLE_NAME);
-    const legacyRowsRaw = await legacy.query().limit(200_000).toArray();
-    const legacyRows = legacyRowsRaw as Array<Record<string, unknown>>;
-    if (legacyRows.length === 0) {
-      return;
-    }
+    for (const legacyName of LEGACY_RAW_CHUNKS_TABLES) {
+      if (!existingTables.includes(legacyName) || legacyName === TABLE_NAME) {
+        continue;
+      }
+      const legacy = await this.db.openTable(legacyName);
+      const legacyRowsRaw = await legacy.query().limit(200_000).toArray();
+      const legacyRows = legacyRowsRaw as Array<Record<string, unknown>>;
+      if (legacyRows.length === 0) {
+        continue;
+      }
 
-    const mapped: MemoryChunkRow[] = legacyRows
-      .filter((row) => typeof row.id === "string" && String(row.id) !== "__schema__")
-      .map((row, index) => {
-        const text = String(row.text ?? "");
-        const createdAt = Number(row.createdAt ?? Date.now());
-        const chunkHash = hashNormalizedText(text);
-        const sourceUrl = `openclaw://memory/${String(row.id ?? index)}`;
-        return {
-          chunk_id: String(row.id),
-          doc_id: `legacy:${String(row.id)}`,
-          text,
-          text_norm: normalizeText(text),
-          vector: (row.vector as number[]) ?? [],
-          importance: Number(row.importance ?? 0.7),
-          category: String(row.category ?? "other"),
-          company: "",
-          ticker: "",
-          doc_type: "other",
-          published_at: createdAt,
-          ingested_at: Date.now(),
-          source_url: sourceUrl,
-          section: "",
-          page: 1,
-          chunk_index: index,
-          chunk_hash: chunkHash,
-          char_start: 0,
-          char_end: text.length,
-          token_count: Math.max(1, text.split(/\s+/).filter(Boolean).length),
-          citation_key: `${sourceUrl}#${chunkHash.slice(0, 12)}:p1:c0-${text.length}`,
-        };
-      });
+      const mapped: MemoryChunkRow[] = legacyRows
+        .filter((row) => String(row.chunk_id ?? row.id ?? "") !== "__schema__")
+        .map((row, index) => {
+          const text = String(row.text ?? "");
+          const createdAt = Number(row.createdAt ?? row.ingested_at ?? Date.now());
+          const chunkHash = String(row.chunk_hash ?? row.text_norm_hash ?? hashNormalizedText(text));
+          const sourceUrl = String(row.source_url ?? `openclaw://memory/${String(row.id ?? index)}`);
+          const page = Number(row.page ?? 1);
+          const section = String(row.section ?? "");
+          const citationKey =
+            String(row.citation_key ?? "").trim() ||
+            `${sourceUrl}#${chunkHash.slice(0, 12)}:p${page}:c0-${text.length}`;
+          return {
+            chunk_id: String(row.chunk_id ?? row.id ?? randomUUID()),
+            doc_id: String(row.doc_id ?? `legacy:${String(row.id ?? index)}`),
+            text,
+            text_norm_hash: chunkHash,
+            source_url: sourceUrl,
+            source_title: String(row.source_title ?? "legacy"),
+            doc_type: String(row.doc_type ?? "other") as MemoryChunkRow["doc_type"],
+            company: String(row.company ?? ""),
+            ticker: String(row.ticker ?? ""),
+            published_at: Number(row.published_at ?? createdAt),
+            retrieved_at: Number(row.retrieved_at ?? createdAt),
+            section,
+            page,
+            char_start: Number(row.char_start ?? 0),
+            char_end: Number(row.char_end ?? text.length),
+            embedding: (row.embedding as number[]) ?? (row.vector as number[]) ?? [],
+            tags: Array.isArray(row.tags) ? (row.tags as string[]) : [],
+            chunk_hash: chunkHash,
+            text_norm: normalizeText(text),
+            citation_key: citationKey,
+            search_text: text,
+            chunk_index: Number(row.chunk_index ?? index),
+            token_count: Number(row.token_count ?? Math.max(1, text.split(/\s+/).filter(Boolean).length)),
+            ingested_at: Date.now(),
+            category: String(row.category ?? "other"),
+            importance: Number(row.importance ?? 0.7),
+            vector: (row.vector as number[]) ?? (row.embedding as number[]) ?? [],
+          };
+        });
 
-    if (mapped.length > 0) {
-      await this.table.add(mapped);
+      if (mapped.length > 0) {
+        await this.table.add(mapped);
+      }
     }
   }
 
   private async ensureIndices(): Promise<void> {
-    if (!this.table) {
+    if (!this.table || !this.factCardsTable) {
       return;
     }
 
-    const specs: Array<{ column: string; options?: Partial<lancedb.IndexOptions> }> = [
+    const rawSpecs: Array<{ column: string; options?: Partial<lancedb.IndexOptions> }> = [
       {
-        column: "vector",
+        column: "embedding",
         options: {
           config: Index.ivfFlat({ distanceType: "cosine", numPartitions: 64 }),
           replace: false,
-          name: "idx_memories_v2_vector",
+          name: "idx_raw_chunks_embedding",
         },
       },
       {
@@ -201,19 +215,52 @@ class MemoryDB {
             withPosition: true,
           }),
           replace: false,
-          name: "idx_memories_v2_text_fts",
+          name: "idx_raw_chunks_text_fts",
         },
       },
       { column: "ticker", options: { config: Index.btree(), replace: false } },
       { column: "doc_type", options: { config: Index.bitmap(), replace: false } },
       { column: "published_at", options: { config: Index.btree(), replace: false } },
       { column: "source_url", options: { config: Index.btree(), replace: false } },
-      { column: "chunk_hash", options: { config: Index.btree(), replace: false } },
+      { column: "text_norm_hash", options: { config: Index.btree(), replace: false } },
     ];
 
-    for (const spec of specs) {
+    const cardSpecs: Array<{ column: string; options?: Partial<lancedb.IndexOptions> }> = [
+      {
+        column: "embedding",
+        options: {
+          config: Index.ivfFlat({ distanceType: "cosine", numPartitions: 64 }),
+          replace: false,
+          name: "idx_fact_cards_embedding",
+        },
+      },
+      {
+        column: "search_text",
+        options: {
+          config: Index.fts({
+            baseTokenizer: "simple",
+            lowercase: true,
+            removeStopWords: false,
+            withPosition: true,
+          }),
+          replace: false,
+          name: "idx_fact_cards_search_text_fts",
+        },
+      },
+      { column: "ticker", options: { config: Index.btree(), replace: false } },
+      { column: "doc_type", options: { config: Index.bitmap(), replace: false } },
+      { column: "published_at", options: { config: Index.btree(), replace: false } },
+      { column: "source_url", options: { config: Index.btree(), replace: false } },
+      { column: "text_norm_hash", options: { config: Index.btree(), replace: false } },
+    ];
+
+    for (const spec of [...rawSpecs, ...cardSpecs]) {
       try {
-        await this.table.createIndex(spec.column, spec.options);
+        if (rawSpecs.includes(spec)) {
+          await this.table.createIndex(spec.column, spec.options);
+        } else {
+          await this.factCardsTable.createIndex(spec.column, spec.options);
+        }
       } catch {
         // best-effort index creation; table remains queryable without index
       }
@@ -234,6 +281,9 @@ class MemoryDB {
     publishedAt?: number;
   }): Promise<MemoryEntry> {
     await this.ensureInitialized();
+    if (!this.table || !this.factCardsTable) {
+      throw new Error("memory tables not initialized");
+    }
 
     const now = Date.now();
     const text = entry.text.trim();
@@ -241,6 +291,7 @@ class MemoryDB {
     const page = Number.isFinite(entry.page) ? Math.max(1, Number(entry.page)) : 1;
     const chunkHash = hashNormalizedText(text);
     const chunkId = randomUUID();
+    const docId = `doc:${chunkId}`;
     const publishedAt =
       typeof entry.publishedAt === "number" && Number.isFinite(entry.publishedAt)
         ? Math.floor(entry.publishedAt)
@@ -248,29 +299,44 @@ class MemoryDB {
 
     const row: MemoryChunkRow = {
       chunk_id: chunkId,
-      doc_id: `doc:${chunkId}`,
+      doc_id: docId,
       text,
+      text_norm_hash: chunkHash,
+      source_url: sourceUrl,
+      source_title: sourceUrl,
+      doc_type: (entry.docType?.trim().toLowerCase() as MemoryChunkRow["doc_type"]) || "other",
+      company: entry.company?.trim() ?? "",
+      ticker: entry.ticker?.trim().toUpperCase() ?? "",
+      published_at: publishedAt,
+      retrieved_at: now,
+      section: entry.section?.trim() ?? "",
+      page,
+      char_start: 0,
+      char_end: text.length,
+      embedding: entry.vector,
+      tags: [],
+      // compatibility fields
       text_norm: normalizeText(text),
       vector: entry.vector,
       importance: entry.importance,
       category: entry.category,
-      company: entry.company?.trim() ?? "",
-      ticker: entry.ticker?.trim().toUpperCase() ?? "",
-      doc_type: (entry.docType?.trim().toLowerCase() as MemoryChunkRow["doc_type"]) || "other",
-      published_at: publishedAt,
       ingested_at: now,
-      source_url: sourceUrl,
-      section: entry.section?.trim() ?? "",
-      page,
+      search_text: text,
       chunk_index: 0,
       chunk_hash: chunkHash,
-      char_start: 0,
-      char_end: text.length,
       token_count: Math.max(1, text.split(/\s+/).filter(Boolean).length),
       citation_key: `${sourceUrl}#${chunkHash.slice(0, 12)}:p${page}:c0-${text.length}`,
     };
 
-    await this.table!.add([row]);
+    await this.table.add([row]);
+    const cards = generateFactCardsFromChunk(row);
+    if (cards.length > 0) {
+      for (const card of cards) {
+        card.embedding = entry.vector;
+      }
+      await this.factCardsTable.add(cards);
+    }
+
     return {
       id: chunkId,
       text: row.text,
@@ -309,13 +375,24 @@ class MemoryDB {
     embeddings: EmbeddingClient;
   }): Promise<{ ingested: number; deduped: number; docId: string }> {
     await this.ensureInitialized();
-    if (!this.table) {
+    if (!this.table || !this.factCardsTable) {
       throw new Error("memory table not initialized");
     }
 
+    const metadata = inferMetadata({
+      text: params.text,
+      sourceUrl: params.sourceUrl,
+      ticker: params.ticker,
+      company: params.company,
+      docType: params.docType,
+      section: params.section,
+      publishedAt: params.publishedAt,
+      retrievedAt: Date.now(),
+      tags: [params.docType ?? "research", params.ticker ?? ""],
+    });
     const publishedAt =
-      typeof params.publishedAt === "number" && Number.isFinite(params.publishedAt)
-        ? Math.floor(params.publishedAt)
+      typeof metadata.published_at === "number" && Number.isFinite(metadata.published_at)
+        ? metadata.published_at
         : extractPublishedAt(params.text) ?? Date.now();
     const docId = `doc:${randomUUID()}`;
     const base: ChunkSeed = {
@@ -323,15 +400,18 @@ class MemoryDB {
       text: params.text,
       importance: params.importance ?? 0.7,
       category: params.category ?? "other",
-      company: params.company?.trim() ?? "",
-      ticker: params.ticker?.trim().toUpperCase() ?? "",
-      doc_type: params.docType ?? "research",
+      company: metadata.company,
+      ticker: metadata.ticker,
+      doc_type: metadata.doc_type,
       published_at: publishedAt,
-      source_url: params.sourceUrl,
-      section: params.section ?? "",
+      retrieved_at: metadata.retrieved_at,
+      source_url: metadata.source_url,
+      source_title: metadata.source_title,
+      section: metadata.section,
       page: 1,
       chunk_index: 0,
       char_start: 0,
+      tags: metadata.tags,
     };
 
     const chunked = chunkDocument(base, params.chunking);
@@ -344,24 +424,32 @@ class MemoryDB {
     let deduped = 0;
 
     for (const chunk of chunked) {
-      const dedupKey = `${chunk.source_url}::${chunk.chunk_hash}`;
+      const dedupKey = `${chunk.source_url}::${chunk.text_norm_hash}`;
       if (seen.has(dedupKey)) {
         deduped++;
         continue;
       }
       seen.add(dedupKey);
-      const predicate = `source_url = ${sqlQuote(chunk.source_url)} AND chunk_hash = ${sqlQuote(chunk.chunk_hash)}`;
+      const predicate = `source_url = ${sqlQuote(chunk.source_url)} AND text_norm_hash = ${sqlQuote(chunk.text_norm_hash)}`;
       const existing = await this.table.query().where(predicate).limit(1).toArray();
       if ((existing as unknown[]).length > 0) {
         deduped++;
         continue;
       }
 
-      const vector = await params.embeddings.embed(chunk.text);
-      chunk.vector = vector;
+      const embedding = await params.embeddings.embed(chunk.text);
+      chunk.vector = embedding;
+      chunk.embedding = embedding;
       chunk.chunk_id = randomUUID();
       chunk.ingested_at = Date.now();
       await this.table.add([chunk]);
+      const cards = generateFactCardsFromChunk(chunk);
+      for (const card of cards) {
+        card.embedding = await params.embeddings.embed(card.search_text);
+      }
+      if (cards.length > 0) {
+        await this.factCardsTable.add(cards);
+      }
       ingested++;
     }
 
@@ -375,6 +463,7 @@ class MemoryDB {
     budget: {
       maxResults: number;
       maxTokensPerSnippet: number;
+      maxTotalTokens?: number;
     };
     vectorLimit: number;
     ftsLimit: number;
@@ -383,13 +472,13 @@ class MemoryDB {
     filters?: RetrievalFilters;
   }): Promise<MemorySearchResult[]> {
     await this.ensureInitialized();
-    if (!this.table) {
+    if (!this.table || !this.factCardsTable) {
       return [];
     }
 
-    let snippets: RetrievedSnippet[];
+    let snippets: RetrievedSnippet[] = [];
     if (params.hybridEnabled === false) {
-      let query = this.table.vectorSearch(await params.embeddings.embed(params.query)).withRowId();
+      let query = this.table.vectorSearch(await params.embeddings.embed(params.query)).column("embedding").withRowId();
       if (params.filters?.tickers?.length) {
         const tickers = params.filters.tickers.map((value) => sqlQuote(value.toUpperCase()));
         query = query.where(`ticker IN (${tickers.join(",")})`);
@@ -425,7 +514,8 @@ class MemoryDB {
           section: String(row.section ?? ""),
           page,
           publishedAt: Number(row.published_at ?? 0),
-          chunkHash: String(row.chunk_hash ?? ""),
+          chunkHash: String(row.text_norm_hash ?? row.chunk_hash ?? ""),
+          type: "raw_chunk",
           citation: {
             key: citationKey,
             chunkId,
@@ -437,17 +527,56 @@ class MemoryDB {
         };
       });
     } else {
-      snippets = await hybridSearch({
+      const retrieved = await retrieveHybridAcrossTables({
         query: params.query,
-        table: this.table,
+        rawChunksTable: this.table,
+        factCardsTable: this.factCardsTable,
         embeddings: params.embeddings,
-        budget: params.budget,
+        budget: {
+          maxResults: params.budget.maxResults,
+          maxTokensPerSnippet: params.budget.maxTokensPerSnippet,
+          maxTotalTokens: params.budget.maxTotalTokens ?? 800,
+        },
         filters: params.filters,
         vectorLimit: params.vectorLimit,
         ftsLimit: params.ftsLimit,
         rewriteCount: params.rewriteCount,
         rrfK: params.rrfK,
       });
+      const citationBundle = buildCitationFirstBundle(params.query, retrieved);
+      snippets = retrieved.map((item) => {
+        const firstCitation = item.citations[0];
+        const sourceUrl = firstCitation?.url ?? item.metadata.source_url;
+        const chunkId = item.metadata.chunk_id;
+        const page = firstCitation?.page ?? item.metadata.page;
+        return {
+          chunkId,
+          text: item.snippet,
+          score: item.score,
+          sourceUrl,
+          company: item.metadata.company,
+          ticker: item.metadata.ticker,
+          docType: item.metadata.doc_type,
+          section: firstCitation?.section ?? item.metadata.section,
+          page,
+          publishedAt: item.metadata.published_at,
+          chunkHash: item.metadata.text_norm_hash,
+          type: item.type,
+          citation: {
+            key: `${sourceUrl}#${chunkId}:p${page}`,
+            chunkId,
+            sourceUrl,
+            section: firstCitation?.section,
+            page,
+            charStart: 0,
+            charEnd: 0,
+            docId: item.metadata.doc_id,
+            publishedAt: item.metadata.published_at,
+          },
+        } satisfies RetrievedSnippet;
+      });
+      // Best-effort contract surface for upstream generators.
+      void citationBundle;
     }
 
     return snippets.map((snippet) => ({
@@ -466,7 +595,7 @@ class MemoryDB {
         company: snippet.company,
         docType: snippet.docType,
         publishedAt: snippet.publishedAt,
-        chunkHash: snippet.chunkHash,
+        chunkHash: snippet.chunkHash ?? "",
       },
       score: snippet.score,
     }));
@@ -478,6 +607,7 @@ class MemoryDB {
     budget: {
       maxResults: number;
       maxTokensPerSnippet: number;
+      maxTotalTokens?: number;
     };
     vectorLimit: number;
     ftsLimit: number;
@@ -486,36 +616,76 @@ class MemoryDB {
     filters?: RetrievalFilters;
   }): Promise<RetrievedSnippet[]> {
     await this.ensureInitialized();
-    if (!this.table) {
+    if (!this.table || !this.factCardsTable) {
       return [];
     }
-    return hybridSearch({
+    const items = await retrieveHybridAcrossTables({
       query: params.query,
-      table: this.table,
+      rawChunksTable: this.table,
+      factCardsTable: this.factCardsTable,
       embeddings: params.embeddings,
-      budget: params.budget,
+      budget: {
+        maxResults: params.budget.maxResults,
+        maxTokensPerSnippet: params.budget.maxTokensPerSnippet,
+        maxTotalTokens: params.budget.maxTotalTokens ?? 800,
+      },
       filters: params.filters,
       vectorLimit: params.vectorLimit,
       ftsLimit: params.ftsLimit,
       rewriteCount: params.rewriteCount,
       rrfK: params.rrfK,
     });
+    return items.map((item) => {
+      const firstCitation = item.citations[0];
+      const sourceUrl = firstCitation?.url ?? item.metadata.source_url;
+      const chunkId = item.metadata.chunk_id;
+      const page = firstCitation?.page ?? item.metadata.page;
+      return {
+        chunkId,
+        text: item.snippet,
+        score: item.score,
+        sourceUrl,
+        company: item.metadata.company,
+        ticker: item.metadata.ticker,
+        docType: item.metadata.doc_type,
+        section: firstCitation?.section ?? item.metadata.section,
+        page,
+        publishedAt: item.metadata.published_at,
+        chunkHash: item.metadata.text_norm_hash,
+        type: item.type,
+        citation: {
+          key: `${sourceUrl}#${chunkId}:p${page}`,
+          chunkId,
+          sourceUrl,
+          section: firstCitation?.section,
+          page,
+          charStart: 0,
+          charEnd: 0,
+          docId: item.metadata.doc_id,
+          publishedAt: item.metadata.published_at,
+        },
+      } satisfies RetrievedSnippet;
+    });
   }
 
   async delete(id: string): Promise<boolean> {
     await this.ensureInitialized();
+    if (!this.table || !this.factCardsTable) {
+      return false;
+    }
     // Validate UUID format to prevent injection
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!uuidRegex.test(id)) {
       throw new Error(`Invalid memory ID format: ${id}`);
     }
-    await this.table!.delete(`chunk_id = ${sqlQuote(id)}`);
+    await this.table.delete(`chunk_id = ${sqlQuote(id)}`);
+    await this.factCardsTable.delete(`chunk_id = ${sqlQuote(id)} OR card_id = ${sqlQuote(id)}`);
     return true;
   }
 
   async count(): Promise<number> {
     await this.ensureInitialized();
-    return this.table!.countRows();
+    return this.table?.countRows() ?? 0;
   }
 }
 
@@ -627,6 +797,7 @@ const memoryPlugin = {
     const retrievalBudget = {
       maxResults: Math.max(1, cfg.retrieval?.maxResults ?? 8),
       maxTokensPerSnippet: Math.max(40, cfg.retrieval?.maxTokensPerSnippet ?? 220),
+      maxTotalTokens: Math.max(200, cfg.retrieval?.maxTotalTokens ?? 800),
     };
     const retrievalTuning = {
       hybridEnabled: cfg.retrieval?.hybridEnabled !== false,
@@ -687,6 +858,7 @@ const memoryPlugin = {
             budget: {
               maxResults: Math.min(Math.max(1, limit), retrievalBudget.maxResults),
               maxTokensPerSnippet: retrievalBudget.maxTokensPerSnippet,
+              maxTotalTokens: retrievalBudget.maxTotalTokens,
             },
             vectorLimit: retrievalTuning.vectorLimit,
             ftsLimit: retrievalTuning.ftsLimit,
@@ -778,7 +950,7 @@ const memoryPlugin = {
             query: text,
             embeddings,
             hybridEnabled: retrievalTuning.hybridEnabled,
-            budget: { maxResults: 1, maxTokensPerSnippet: 160 },
+            budget: { maxResults: 1, maxTokensPerSnippet: 160, maxTotalTokens: 220 },
             vectorLimit: Math.max(4, retrievalTuning.vectorLimit / 2),
             ftsLimit: Math.max(4, retrievalTuning.ftsLimit / 2),
             rewriteCount: 3,
@@ -911,7 +1083,7 @@ const memoryPlugin = {
               query,
               embeddings,
               hybridEnabled: retrievalTuning.hybridEnabled,
-              budget: { maxResults: 5, maxTokensPerSnippet: 120 },
+              budget: { maxResults: 5, maxTokensPerSnippet: 120, maxTotalTokens: 500 },
               vectorLimit: Math.max(10, retrievalTuning.vectorLimit / 2),
               ftsLimit: Math.max(10, retrievalTuning.ftsLimit / 2),
               rewriteCount: 3,
@@ -1010,6 +1182,7 @@ const memoryPlugin = {
               budget: {
                 maxResults: Math.min(parseInt(opts.limit, 10) || 5, retrievalBudget.maxResults),
                 maxTokensPerSnippet: retrievalBudget.maxTokensPerSnippet,
+                maxTotalTokens: retrievalBudget.maxTotalTokens,
               },
               vectorLimit: retrievalTuning.vectorLimit,
               ftsLimit: retrievalTuning.ftsLimit,
@@ -1093,7 +1266,11 @@ const memoryPlugin = {
             query: event.prompt,
             embeddings,
             hybridEnabled: retrievalTuning.hybridEnabled,
-            budget: { maxResults: 3, maxTokensPerSnippet: retrievalBudget.maxTokensPerSnippet },
+            budget: {
+              maxResults: 3,
+              maxTokensPerSnippet: retrievalBudget.maxTokensPerSnippet,
+              maxTotalTokens: retrievalBudget.maxTotalTokens,
+            },
             vectorLimit: retrievalTuning.vectorLimit,
             ftsLimit: retrievalTuning.ftsLimit,
             rewriteCount: 3,
@@ -1187,7 +1364,7 @@ const memoryPlugin = {
               query: text,
               embeddings,
               hybridEnabled: retrievalTuning.hybridEnabled,
-              budget: { maxResults: 1, maxTokensPerSnippet: 120 },
+              budget: { maxResults: 1, maxTokensPerSnippet: 120, maxTotalTokens: 220 },
               vectorLimit: Math.max(8, retrievalTuning.vectorLimit / 2),
               ftsLimit: Math.max(8, retrievalTuning.ftsLimit / 2),
               rewriteCount: 3,

@@ -30,11 +30,14 @@ describe("memory-lancedb ingestion", () => {
         ticker: "TST",
         doc_type: "memo",
         published_at: Date.now(),
+        retrieved_at: Date.now(),
         source_url: "https://example.com/doc",
+        source_title: "Example",
         section: "Overview",
         page: 1,
         chunk_index: 0,
         char_start: 0,
+        tags: ["memo", "tst"],
       },
       {
         targetTokens: 700,
@@ -49,4 +52,3 @@ describe("memory-lancedb ingestion", () => {
     expect(new Set(chunks.map((chunk) => chunk.chunk_hash)).size).toBe(chunks.length);
   });
 });
-

@@ -15,6 +15,7 @@ export type MemoryConfig = {
     hybridEnabled?: boolean;
     maxResults?: number;
     maxTokensPerSnippet?: number;
+    maxTotalTokens?: number;
     vectorLimit?: number;
     ftsLimit?: number;
     rewriteCount?: number;
@@ -142,6 +143,11 @@ export const memoryConfigSchema = {
           "number"
             ? Number((cfg.retrieval as Record<string, unknown>).maxTokensPerSnippet)
             : 220,
+        maxTotalTokens:
+          typeof (cfg.retrieval as Record<string, unknown> | undefined)?.maxTotalTokens ===
+          "number"
+            ? Number((cfg.retrieval as Record<string, unknown>).maxTotalTokens)
+            : 800,
         vectorLimit:
           typeof (cfg.retrieval as Record<string, unknown> | undefined)?.vectorLimit === "number"
             ? Number((cfg.retrieval as Record<string, unknown>).vectorLimit)
@@ -217,6 +223,11 @@ export const memoryConfigSchema = {
     "retrieval.maxTokensPerSnippet": {
       label: "Max Snippet Tokens",
       help: "Truncate each snippet to this approximate token limit",
+      advanced: true,
+    },
+    "retrieval.maxTotalTokens": {
+      label: "Max Retrieval Tokens",
+      help: "Hard cap for total tokens sent from retrieval to model",
       advanced: true,
     },
     "retrieval.vectorLimit": {

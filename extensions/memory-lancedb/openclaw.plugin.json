@@ -41,6 +41,11 @@
       "help": "Approximate token cap per snippet",
       "advanced": true
     },
+    "retrieval.maxTotalTokens": {
+      "label": "Max Retrieval Tokens",
+      "help": "Hard cap for total retrieval tokens sent to model",
+      "advanced": true
+    },
     "chunking.targetTokens": {
       "label": "Chunk Target Tokens",
       "advanced": true
@@ -84,6 +89,7 @@
           "hybridEnabled": { "type": "boolean" },
           "maxResults": { "type": "number" },
           "maxTokensPerSnippet": { "type": "number" },
+          "maxTotalTokens": { "type": "number" },
           "vectorLimit": { "type": "number" },
           "ftsLimit": { "type": "number" },
           "rewriteCount": { "type": "number" },

@@ -1,102 +1,120 @@
-# LanceDB Retrieval Rollout (Phased)
+# LanceDB Retrieval Upgrade (Hybrid + Fact Cards)
 
-## Scope
-- Plugin: `extensions/memory-lancedb`
-- Goal: raise recall and citation grounding without breaking current workflows.
+## Assumptions
+- Runtime: Node 18+ with `pnpm`.
+- Plugin: `extensions/memory-lancedb`.
+- Existing deployments may already have `memories` or `memories_v2`; migration must be additive and reversible.
 
-## P0: Schema + Compatibility (Low Risk)
+## P0 — Schema + Compatibility
 ### Changes
-- Introduced `memories_v2` table with citation-safe chunk schema.
-- Added legacy backfill from `memories` into `memories_v2` on initialization.
-- Added index creation (vector, BM25/FTS, scalar metadata indices) best-effort.
+- Add two additive tables:
+  - `raw_chunks` (auditability + full metadata filters)
+  - `fact_cards` (citation-first atomic claims)
+- Keep legacy backfill support from `memories_v2`/`memories`.
+- Add idempotent indexes for vector, BM25/FTS, and scalar filters.
 
-### Acceptance
-- Plugin starts cleanly.
-- Existing legacy data remains available.
-- `ltm stats` returns count from `memories_v2`.
+### Acceptance Criteria
+- Plugin boots with existing DB.
+- `raw_chunks` and `fact_cards` exist after startup.
+- Existing legacy rows are queryable through `raw_chunks`.
 
 ### Rollback
-- Revert plugin code to previous commit.
-- Legacy `memories` table remains intact and unchanged.
+- Set retrieval to vector-only (`retrieval.hybridEnabled=false`) and use `raw_chunks` only.
+- No destructive migration was applied; legacy tables remain untouched.
 
-## P1: Hybrid Retrieval + Grounding
+## P1 — Ingestion Quality + Fact Cards
 ### Changes
-- Hybrid retrieval (`vector + BM25`) with query rewrites and RRF fusion.
-- Dedup by `(source_url, chunk_hash)` and near-duplicate text.
+- Dedup on `source_url + text_norm_hash`.
+- Chunking: heading-aware, 500–900 token windows, ~12% overlap.
+- Boilerplate removal for web-origin text.
+- Metadata extraction for company/ticker/doc type/date/source/section.
+- Fact-card generation:
+  - `claim` (single atomic sentence)
+  - `evidence_text` (max 2 bullets)
+  - `entities[]`, `metrics[]`, `confidence`
+  - stable `citations[]` linking to `doc_id/chunk_id/page/section/url`
+
+### Acceptance Criteria
+- Re-ingestion of same source does not duplicate rows.
+- `fact_cards` gets populated during ingest/store.
+- Every fact card has at least one citation.
+
+### Rollback
+- Disable card generation operationally by using raw ingest only.
+- Existing rows stay readable.
+
+## P2 — Hybrid Retrieval + Citation Contract
+### Changes
+- Query planner extracts ticker/metric/timeframe/doc-type hints and generates 3–5 rewrites.
+- Parallel retrieval channels:
+  - fact cards vector (primary)
+  - fact cards BM25 (primary)
+  - raw chunks vector (fallback)
+  - raw chunks BM25 (fallback)
+- LanceDB hybrid flow with `fullTextSearch + RRFReranker` used per rewrite, with fallback fusion.
+- Prefilter used for strict constraints; postfilter used for looser constraints to preserve recall.
+- Dedup:
+  - exact by `(source_url, text_norm_hash)`
+  - near-duplicate snippet suppression
 - Retrieval budget guardrails:
-  - max results (default `8`)
-  - max tokens/snippet (default `220`)
-- Every snippet returns citation pointer (`citation_key`, page, char offsets).
-- Added `retrieval.hybridEnabled` switch for safe rollback to vector-only.
+  - max results to LLM = 8
+  - per-snippet token truncation
+  - total retrieval token cap (default 800)
+- Citation-first bundle contract:
+  - `question + retrieved_items[]` with stable citation pointers
+  - output validator flags paragraphs lacking citation ids
 
-### Acceptance
-- Retrieval output always includes citation metadata.
-- Context payload size constrained by budget.
-- `retrieval.hybridEnabled=false` falls back to vector-only.
+### Acceptance Criteria
+- Retrieved payload always includes citations.
+- Context budget respected across all returned items.
+- Fact cards are preferred; raw chunks still recover misses.
 
 ### Rollback
-- Set `retrieval.hybridEnabled=false` in plugin config.
-- Keep schema/index upgrades; only retrieval behavior changes.
+- `retrieval.hybridEnabled=false` for vector-only fallback.
+- Keep indexes and schema; rollback is behavioral, not destructive.
 
-## P2: Ingestion Quality
+## P3 — Evaluation + Regression Gates
 ### Changes
-- New ingestion pipeline:
-  - boilerplate removal (nav/footer/cookie/newsletter lines)
-  - heading-aware chunking (`500–900` tokens, `~12%` overlap)
-  - normalized-text hash dedup
-  - published date extraction fallback
-- Added tool + CLI ingestion entrypoint:
-  - tool: `memory_ingest_document`
-  - CLI: `ltm ingest ...`
+- Eval dataset: `extensions/memory-lancedb/eval/eval_set.json` (25 checks).
+- Runner: `extensions/memory-lancedb/eval/eval_runner.ts`.
+- Metrics:
+  - `recall@k`
+  - `MRR`
+  - `citation_coverage_rate`
+  - latency (`avg/p50/p95`)
+- CLI:
+  - `pnpm eval:before`
+  - `pnpm eval:after`
+  - `pnpm eval:lancedb-retrieval` (comparison table)
 
-### Acceptance
-- Lower duplicate chunk rate.
-- Higher hit rate on company/metric/timeframe queries.
-- Ingested chunks contain stable citation keys.
-
-### Rollback
-- Use `memory_store` only (disable document ingestion operationally).
-- Existing ingested chunks remain queryable.
-
-## P3: Evaluation + Regression Control
-### Changes
-- Added benchmark corpus and 25 retrieval checks.
-- Added evaluation harness with metrics:
-  - recall@k
-  - MRR
-  - citation coverage
-  - latency (avg/p50/p95)
-- Added script: `pnpm eval:lancedb-retrieval`.
-- Added unit tests for retrieval + ingestion behavior.
-
-### Acceptance
-- Eval script runs in CI/local with deterministic thresholds.
-- No regression in retrieval metrics against baseline.
+### Acceptance Criteria
+- `eval:after` improves or matches `eval:before` on recall and MRR.
+- Citation coverage remains at or above baseline.
+- Runner prints machine-readable JSON and human-readable comparison.
 
 ### Rollback
-- Remove eval gate thresholds from CI if blocked.
-- Keep harness as diagnostics tool.
+- Keep eval harness for diagnostics.
+- Remove CI gate if needed without reverting runtime code.
 
-## Operational Defaults
-- `retrieval.hybridEnabled=true`
-- `retrieval.maxResults=8`
-- `retrieval.maxTokensPerSnippet=220`
-- `retrieval.vectorLimit=40`
-- `retrieval.ftsLimit=40`
-- `retrieval.rewriteCount=5`
-- `retrieval.rrfK=60`
-- `chunking.targetTokens=700`
-- `chunking.minTokens=500`
-- `chunking.maxTokens=900`
-- `chunking.overlapRatio=0.12`
+## Operator Tuning
+- `retrieval.maxResults`: default 8.
+- `retrieval.maxTokensPerSnippet`: default 220.
+- `retrieval.maxTotalTokens`: default 800.
+- `retrieval.vectorLimit`: start at 40, raise to 80 for higher recall.
+- `retrieval.ftsLimit`: start at 40, raise to 80 when lexical misses are high.
+- `retrieval.rewriteCount`: 3–5 (default 5).
+- `retrieval.rrfK`: default 60; increase for flatter rank blending.
+- Filter strategy:
+  - strict ticker/doc_type/date windows => prefilter.
+  - exploratory theme/entity queries => postfilter for recall.
 
 ## Validation Commands
 ```bash
 pnpm vitest run \
-  extensions/memory-lancedb/index.test.ts \
-  extensions/memory-lancedb/retrieval.test.ts \
-  extensions/memory-lancedb/ingestion.test.ts
+  extensions/memory-lancedb/ingestion.test.ts \
+  extensions/memory-lancedb/retrieval.test.ts
 
+pnpm eval:before
+pnpm eval:after
 pnpm eval:lancedb-retrieval
 ```
-
