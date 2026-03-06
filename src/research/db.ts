@@ -746,6 +746,23 @@ const migrate = (db: ResearchDb) => {
       primary key (source_table, row_id)
     );
 
+    create table if not exists quickrun_jobs (
+      id text primary key,
+      job_type text not null,
+      status text not null default 'queued',
+      payload text not null default '{}',
+      run_after_ms integer not null,
+      attempts integer not null default 0,
+      max_attempts integer not null default 3,
+      locked_by text not null default '',
+      locked_at_ms integer,
+      heartbeat_at_ms integer,
+      completed_at_ms integer,
+      last_error text not null default '',
+      created_at_ms integer not null,
+      updated_at_ms integer not null
+    );
+
     create index if not exists idx_prices_instrument_date
       on prices (instrument_id, date desc);
 
@@ -893,6 +910,12 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_research_facts_event
       on research_facts (event_id, metric_key, as_of_date desc);
+
+    create index if not exists idx_quickrun_jobs_status_run_after
+      on quickrun_jobs (status, run_after_ms, created_at_ms);
+
+    create index if not exists idx_quickrun_jobs_type_status_run_after
+      on quickrun_jobs (job_type, status, run_after_ms, created_at_ms);
   `);
 
   ensureColumn(db, "filings", "accession_raw", "TEXT");
