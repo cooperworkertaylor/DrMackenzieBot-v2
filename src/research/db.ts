@@ -772,6 +772,33 @@ const migrate = (db: ResearchDb) => {
       unique (watchlist_id, brief_type, brief_date)
     );
 
+    create table if not exists research_tool_runs (
+      id integer primary key,
+      workflow text not null default '',
+      tool_name text not null default '',
+      capability_key text not null default '',
+      status text not null default 'ok',
+      subject text not null default '',
+      latency_ms integer not null default 0,
+      request_metadata text not null default '{}',
+      response_metadata text not null default '{}',
+      error_text text not null default '',
+      created_at integer not null
+    );
+
+    create table if not exists research_approval_requests (
+      id integer primary key,
+      workflow text not null default '',
+      capability_key text not null default '',
+      subject text not null default '',
+      status text not null default 'pending',
+      requested_by text not null default '',
+      resolved_by text not null default '',
+      details text not null default '{}',
+      created_at integer not null,
+      updated_at integer not null
+    );
+
     create table if not exists external_documents (
       id integer primary key,
       source_type text not null default 'manual',
@@ -1060,6 +1087,12 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_research_briefs_lookup
       on research_briefs (watchlist_id, brief_type, brief_date desc);
+
+    create index if not exists idx_research_tool_runs_lookup
+      on research_tool_runs (workflow, capability_key, created_at desc);
+
+    create index if not exists idx_research_approval_requests_lookup
+      on research_approval_requests (workflow, capability_key, status, created_at desc);
 
     create index if not exists idx_quickrun_jobs_status_run_after
       on quickrun_jobs (status, run_after_ms, created_at_ms);

@@ -26,6 +26,11 @@ import {
   storeExternalResearchThesisDiff,
 } from "./external-research-thesis.js";
 import { enqueueWatchlistRefresh } from "./external-research-watchlists.js";
+import {
+  recordResearchToolRun,
+  requireApprovedResearchCapability,
+  resolveGovernedSecret,
+} from "./external-research-governance.js";
 
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 
@@ -383,6 +388,12 @@ const providerCookieEnv = (provider: string, env: NodeJS.ProcessEnv): string => 
   if (provider === "diff") return (env.OPENCLAW_RESEARCH_DIFF_COOKIE ?? "").trim();
   if (provider === "semianalysis") return (env.OPENCLAW_RESEARCH_SEMIANALYSIS_COOKIE ?? "").trim();
   return "";
+};
+
+const providerCookieEnvRef = (provider: string, env: NodeJS.ProcessEnv): string => {
+  const providerCookie = providerCookieEnv(provider, env);
+  if (providerCookie) return providerCookie;
+  return (env.OPENCLAW_RESEARCH_NEWSLETTER_COOKIE ?? "").trim();
 };
 
 const parseSourceSpecLine = (line: string): NewsletterSyncSource | null => {
@@ -1323,6 +1334,9 @@ export const syncNewsletterSources = async (params: {
   maxDocs?: number;
   userAgent?: string;
   cookies?: Record<string, string>;
+  approvalRef?: string;
+  requestedBy?: string;
+  secretResolver?: (ref: string) => string;
   fetchFn?: typeof fetch;
   env?: NodeJS.ProcessEnv;
 }): Promise<NewsletterSyncResult> => {
@@ -1368,10 +1382,44 @@ export const syncNewsletterSources = async (params: {
     const provider = normalizeProvider(source.provider);
     const sourceUrl = parseUrlSafe(source.url);
     if (!sourceUrl) continue;
-    const cookie = params.cookies?.[provider] ?? "";
+    const rawCookie =
+      (params.cookies?.[provider] ?? "").trim() || providerCookieEnvRef(provider, env);
+    let cookie = "";
+    if (rawCookie) {
+      const approval = requireApprovedResearchCapability({
+        workflow: "newsletter_sync",
+        capability: "newsletter_cookie_access",
+        subject: `${provider}:${sourceUrl}`,
+        approvalRef: params.approvalRef,
+        requestedBy: params.requestedBy,
+        details: { provider, sourceUrl },
+        dbPath: params.dbPath,
+      });
+      if (!approval.approved) {
+        docs.push({
+          provider,
+          sourceUrl,
+          url: sourceUrl,
+          title: sourceUrl,
+          ingested: false,
+          reason: `approval required: ${approval.approvalRef}`,
+        });
+        failures += 1;
+        continue;
+      }
+      cookie = resolveGovernedSecret({
+        refOrValue: rawCookie,
+        workflow: "newsletter_sync",
+        capability: "newsletter_cookie_access",
+        subject: `${provider}:${sourceUrl}`,
+        dbPath: params.dbPath,
+        secretResolver: params.secretResolver,
+      });
+    }
     let archiveHtml = "";
     let archiveUrl = sourceUrl;
     try {
+      const startedAt = Date.now();
       const archive = await fetchHtmlWithAuth({
         url: sourceUrl,
         provider,
@@ -1382,7 +1430,29 @@ export const syncNewsletterSources = async (params: {
       });
       archiveHtml = archive.html;
       archiveUrl = archive.finalUrl;
+      recordResearchToolRun({
+        workflow: "newsletter_sync",
+        toolName: "fetch.archive",
+        capabilityKey: cookie ? "newsletter_authenticated_fetch" : "newsletter_archive_fetch",
+        status: "ok",
+        subject: `${provider}:${sourceUrl}`,
+        latencyMs: Date.now() - startedAt,
+        requestMetadata: { provider, sourceUrl, authenticated: Boolean(cookie) },
+        responseMetadata: { finalUrl: archive.finalUrl },
+        dbPath: params.dbPath,
+      });
     } catch (error) {
+      recordResearchToolRun({
+        workflow: "newsletter_sync",
+        toolName: "fetch.archive",
+        capabilityKey: cookie ? "newsletter_authenticated_fetch" : "newsletter_archive_fetch",
+        status: "error",
+        subject: `${provider}:${sourceUrl}`,
+        latencyMs: 0,
+        requestMetadata: { provider, sourceUrl, authenticated: Boolean(cookie) },
+        errorText: error instanceof Error ? error.message : String(error),
+        dbPath: params.dbPath,
+      });
       docs.push({
         provider,
         sourceUrl,
