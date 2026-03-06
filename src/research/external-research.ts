@@ -18,6 +18,13 @@ import {
   buildExternalResearchStructuredReport,
   storeExternalResearchStructuredReport,
 } from "./external-research-report.js";
+import {
+  buildExternalResearchThesisFromReport,
+  getLatestExternalResearchThesis,
+  persistExternalResearchThesisBreakAlert,
+  storeExternalResearchThesis,
+  storeExternalResearchThesisDiff,
+} from "./external-research-thesis.js";
 
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 
@@ -49,6 +56,9 @@ export type IngestExternalResearchResult = {
   ticker?: string;
   title: string;
   reportId?: number;
+  thesisId?: number;
+  thesisDiffId?: number;
+  thesisAlertId?: number;
 };
 
 export type ParsedHookEmail = {
@@ -1045,15 +1055,44 @@ export const ingestExternalResearchDocument = (
   });
 
   let reportId: number | undefined;
+  let thesisId: number | undefined;
+  let thesisDiffId: number | undefined;
+  let thesisAlertId: number | undefined;
   if (ticker) {
     const report = buildExternalResearchStructuredReport({
       ticker,
       dbPath: params.dbPath,
     });
-    reportId = storeExternalResearchStructuredReport({
+    const storedReport = storeExternalResearchStructuredReport({
       report,
       dbPath: params.dbPath,
-    }).id;
+    });
+    reportId = storedReport.id;
+
+    const previousThesis = getLatestExternalResearchThesis({
+      ticker,
+      dbPath: params.dbPath,
+    });
+    const storedThesis = storeExternalResearchThesis({
+      thesis: buildExternalResearchThesisFromReport({
+        report,
+        reportId,
+      }),
+      dbPath: params.dbPath,
+    });
+    thesisId = storedThesis.id;
+    const storedDiff = storeExternalResearchThesisDiff({
+      previous: previousThesis,
+      current: storedThesis,
+      dbPath: params.dbPath,
+    });
+    thesisDiffId = storedDiff.id;
+    thesisAlertId =
+      persistExternalResearchThesisBreakAlert({
+        thesis: storedThesis,
+        diff: storedDiff,
+        dbPath: params.dbPath,
+      }) ?? undefined;
   }
 
   return {
@@ -1064,6 +1103,9 @@ export const ingestExternalResearchDocument = (
     ticker: ticker || undefined,
     title,
     reportId,
+    thesisId,
+    thesisDiffId,
+    thesisAlertId,
   };
 };
 

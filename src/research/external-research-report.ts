@@ -78,6 +78,15 @@ export type ExternalResearchStructuredReport = {
   confidence: number;
   confidenceRationale: string;
   evidenceCoverage: ExternalResearchEvidenceCoverage;
+  diffFromPrevious?: {
+    previousReportId: number;
+    previousGeneratedAt: string;
+    confidenceDelta: number;
+    newBullCase: string[];
+    newBearCase: string[];
+    newUnknowns: string[];
+    resolvedUnknowns: string[];
+  };
   markdown: string;
 };
 
@@ -108,6 +117,19 @@ const toDateMs = (value?: string): number | undefined => {
 };
 
 const unique = <T>(values: T[]): T[] => Array.from(new Set(values));
+
+const normalizedKey = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const diffStrings = (current: string[], previous: string[]): string[] => {
+  const previousKeys = new Set(previous.map(normalizedKey));
+  return current.filter((value) => !previousKeys.has(normalizedKey(value)));
+};
 
 const formatMetricValue = (fact: ExternalResearchReportFact): string => {
   if (typeof fact.valueNum === "number" && Number.isFinite(fact.valueNum)) {
@@ -216,6 +238,12 @@ const renderMarkdown = (report: ExternalResearchStructuredReport): string => {
   }
   lines.push("");
   lines.push(`Confidence rationale: ${report.confidenceRationale}`);
+  if (report.diffFromPrevious) {
+    lines.push(`Previous report: ${report.diffFromPrevious.previousGeneratedAt}`);
+    lines.push(
+      `Delta: confidence ${(report.diffFromPrevious.confidenceDelta * 100).toFixed(0)} pts | +bull ${report.diffFromPrevious.newBullCase.length} | +bear ${report.diffFromPrevious.newBearCase.length} | +unknowns ${report.diffFromPrevious.newUnknowns.length} | resolved ${report.diffFromPrevious.resolvedUnknowns.length}`,
+    );
+  }
   lines.push("");
   return lines.join("\n");
 };
@@ -231,13 +259,16 @@ const chooseEvidenceClaims = (
     })
     .slice(0, limit);
 
-const sentenceLooksPositive = (value: string): boolean =>
-  /\b(upside|improve|strength|favorable|discipline|accelerat|pricing power|demand remains strong)\b/i.test(
+const sentenceLooksNegative = (value: string): boolean =>
+  /\b(risk|downside|threat|pressure|stretch|weak|weakening|bottleneck|uncertain|uncertainty|contradict|no longer hold)\b/i.test(
     value,
   );
 
-const sentenceLooksNegative = (value: string): boolean =>
-  /\b(risk|downside|threat|pressure|stretch|weak|bottleneck|uncertain)\b/i.test(value);
+const sentenceLooksPositive = (value: string): boolean =>
+  !sentenceLooksNegative(value) &&
+  /\b(upside|improve|strength|favorable|discipline|accelerat|pricing power|demand remains strong)\b/i.test(
+    value,
+  );
 
 export const buildExternalResearchStructuredReport = (params: {
   ticker: string;
@@ -269,6 +300,26 @@ export const buildExternalResearchStructuredReport = (params: {
   if (!entity) {
     throw new Error(`research entity not found for ticker=${ticker}`);
   }
+
+  const previousReportRow = db
+    .prepare(
+      `SELECT id, report_json, generated_at
+       FROM research_reports
+       WHERE ticker=? AND report_type='external_structured'
+       ORDER BY generated_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .get(ticker) as
+    | {
+        id: number;
+        report_json?: string;
+        generated_at: number;
+      }
+    | undefined;
+  const previousReport =
+    typeof previousReportRow?.report_json === "string" && previousReportRow.report_json.trim()
+      ? (JSON.parse(previousReportRow.report_json) as ExternalResearchStructuredReport)
+      : null;
 
   const sources = db
     .prepare(
@@ -476,13 +527,6 @@ export const buildExternalResearchStructuredReport = (params: {
     .filter((claim) => claim.claimType === "risk" || sentenceLooksNegative(claim.claimText))
     .slice(0, 3)
     .map((claim) => `${claim.claimText} (${claim.validFrom ?? "undated"}${claim.provider ? `; ${claim.provider}` : ""})`);
-  const whatChanged = mappedEvents.length
-    ? mappedEvents
-        .slice(0, 4)
-        .map((event) => `${event.eventDate ?? "undated"}: ${event.title} [${event.eventType}]`)
-    : keyClaims
-        .slice(0, 3)
-        .map((claim) => `${claim.validFrom ?? "undated"}: ${claim.claimText}`);
   const evidence = [
     ...keyClaims.map(
       (claim) =>
@@ -510,6 +554,45 @@ export const buildExternalResearchStructuredReport = (params: {
   if (coverage.avgTrustScore < 0.45) {
     unknowns.push("Source trust is still skewed toward secondary commentary rather than primary documents.");
   }
+
+  const diffFromPrevious =
+    previousReportRow && previousReport
+      ? {
+          previousReportId: previousReportRow.id,
+          previousGeneratedAt: previousReport.generatedAt,
+          confidenceDelta: score - previousReport.confidence,
+          newBullCase: diffStrings(bullCase, previousReport.bullCase),
+          newBearCase: diffStrings(bearCase, previousReport.bearCase),
+          newUnknowns: diffStrings(unknowns, previousReport.unknowns),
+          resolvedUnknowns: diffStrings(previousReport.unknowns, unknowns),
+        }
+      : undefined;
+
+  const whatChanged = diffFromPrevious
+    ? [
+        ...diffFromPrevious.newBullCase
+          .slice(0, 2)
+          .map((item) => `New bullish support: ${item}`),
+        ...diffFromPrevious.newBearCase
+          .slice(0, 2)
+          .map((item) => `New risk: ${item}`),
+        ...diffFromPrevious.newUnknowns
+          .slice(0, 2)
+          .map((item) => `New unknown: ${item}`),
+        ...diffFromPrevious.resolvedUnknowns
+          .slice(0, 2)
+          .map((item) => `Resolved unknown: ${item}`),
+        `Confidence delta ${(diffFromPrevious.confidenceDelta * 100).toFixed(0)} pts vs prior report.`,
+      ]
+        .filter(Boolean)
+        .slice(0, 5)
+    : mappedEvents.length
+      ? mappedEvents
+          .slice(0, 4)
+          .map((event) => `${event.eventDate ?? "undated"}: ${event.title} [${event.eventType}]`)
+      : keyClaims
+          .slice(0, 3)
+          .map((claim) => `${claim.validFrom ?? "undated"}: ${claim.claimText}`);
 
   const nextActions = unique(
     [
@@ -552,6 +635,7 @@ export const buildExternalResearchStructuredReport = (params: {
     confidence: score,
     confidenceRationale: rationale,
     evidenceCoverage: coverage,
+    diffFromPrevious,
     markdown: "",
   };
   report.markdown = renderMarkdown(report);

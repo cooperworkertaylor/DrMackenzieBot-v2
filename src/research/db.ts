@@ -692,6 +692,40 @@ const migrate = (db: ResearchDb) => {
       updated_at integer not null
     );
 
+    create table if not exists research_theses (
+      id integer primary key,
+      entity_id integer not null,
+      ticker text not null default '',
+      thesis_type text not null default 'external_structured',
+      version_number integer not null,
+      stance text not null default 'neutral',
+      summary text not null default '',
+      confidence real not null default 0,
+      bull_case text not null default '[]',
+      bear_case text not null default '[]',
+      open_questions text not null default '[]',
+      supporting_evidence text not null default '[]',
+      report_id integer,
+      created_at integer not null,
+      updated_at integer not null,
+      unique (ticker, thesis_type, version_number)
+    );
+
+    create table if not exists research_thesis_diffs (
+      id integer primary key,
+      entity_id integer not null,
+      ticker text not null default '',
+      thesis_type text not null default 'external_structured',
+      previous_thesis_id integer,
+      current_thesis_id integer not null,
+      report_id integer,
+      thesis_break integer not null default 0,
+      confidence_delta real not null default 0,
+      summary text not null default '',
+      delta_json text not null default '{}',
+      created_at integer not null
+    );
+
     create table if not exists external_documents (
       id integer primary key,
       source_type text not null default 'manual',
@@ -962,6 +996,12 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_research_reports_ticker
       on research_reports (ticker, report_type, generated_at desc);
+
+    create index if not exists idx_research_theses_lookup
+      on research_theses (ticker, thesis_type, version_number desc);
+
+    create index if not exists idx_research_thesis_diffs_lookup
+      on research_thesis_diffs (ticker, thesis_type, created_at desc);
 
     create index if not exists idx_quickrun_jobs_status_run_after
       on quickrun_jobs (status, run_after_ms, created_at_ms);
