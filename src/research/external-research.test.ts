@@ -207,6 +207,55 @@ describe("external research ingestion", () => {
     expect(sources.count).toBe(1);
   });
 
+  it("extracts claims, events, and facts for ticker-linked documents", () => {
+    const dbPath = testDbPath("structured-extraction");
+
+    const ingested = ingestExternalResearchDocument({
+      dbPath,
+      sourceType: "email_research",
+      provider: "other",
+      sender: "cooptaylor1@gmail.com",
+      title: "NVDA earnings and capex setup",
+      subject: "RESEARCH NVDA earnings and capex setup",
+      ticker: "NVDA",
+      content: [
+        "NVDA earnings setup looks favorable because revenue growth could sustain 24% as supply constraints ease and pricing remains disciplined.",
+        "Gross margin could hold around 72% while operating margin remains above 45% if mix stays tilted toward high-end accelerators.",
+        "Management guidance and capex discipline suggest capex could stay near $2.5 billion while demand remains strong.",
+      ].join(" "),
+      url: "https://example.com/research/nvda-earnings-setup",
+      tags: ["research-email", "variant"],
+      publishedAt: "2026-03-01T10:00:00Z",
+    });
+
+    expect(ingested.chunks).toBeGreaterThan(0);
+
+    const db = openResearchDb(dbPath);
+    const claims = db.prepare(`SELECT COUNT(*) AS count FROM research_claims`).get() as {
+      count: number;
+    };
+    const events = db.prepare(`SELECT COUNT(*) AS count FROM research_events`).get() as {
+      count: number;
+    };
+    const facts = db.prepare(`SELECT COUNT(*) AS count FROM research_facts`).get() as {
+      count: number;
+    };
+    const doc = db.prepare(
+      `SELECT metadata FROM external_documents WHERE id=?`,
+    ).get(ingested.id) as { metadata?: string };
+    const parsed = JSON.parse(doc.metadata ?? "{}") as {
+      extraction?: { status?: string; claimsCreated?: number; eventsCreated?: number; factsCreated?: number };
+    };
+
+    expect(claims.count).toBeGreaterThan(0);
+    expect(events.count).toBeGreaterThan(0);
+    expect(facts.count).toBeGreaterThan(0);
+    expect(parsed.extraction?.status).toBe("completed");
+    expect(parsed.extraction?.claimsCreated).toBeGreaterThan(0);
+    expect(parsed.extraction?.eventsCreated).toBeGreaterThan(0);
+    expect(parsed.extraction?.factsCreated).toBeGreaterThan(0);
+  });
+
   it("parses newsletter source specs and env defaults", () => {
     const specs = parseNewsletterSourceSpecs(
       [

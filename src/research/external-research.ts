@@ -13,6 +13,7 @@ import {
   writeRawExternalDocumentArtifactSync,
 } from "./ingestion-utils.js";
 import { upsertResearchSource } from "./source-registry.js";
+import { extractStructuredResearchFromExternalDocument } from "./structured-extraction.js";
 
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 
@@ -1032,6 +1033,11 @@ export const ingestExternalResearchDocument = (
     db.exec("ROLLBACK");
     throw error;
   }
+
+  extractStructuredResearchFromExternalDocument({
+    documentId: row.id,
+    dbPath: params.dbPath,
+  });
 
   return {
     id: row.id,
