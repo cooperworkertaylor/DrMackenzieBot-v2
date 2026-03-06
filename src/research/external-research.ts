@@ -3,6 +3,18 @@ import { parseHTML } from "linkedom";
 import { createHash } from "node:crypto";
 import { chunkText } from "./chunker.js";
 import { openResearchDb } from "./db.js";
+import {
+  buildSourceKey,
+  fingerprintExternalDocument,
+  inferDocumentTrustTier,
+  normalizeDocumentText,
+  safeCanonicalizeUrl,
+  scoreExternalDocumentMateriality,
+  writeRawExternalDocumentArtifactSync,
+} from "./ingestion-utils.js";
+import { upsertResearchSource } from "./source-registry.js";
+
+const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 
 export type ExternalResearchSourceType = "email_research" | "newsletter" | "manual";
 export type NewsletterProvider = "substack" | "stratechery" | "diff" | "semianalysis" | "other";
@@ -114,8 +126,6 @@ const NEWSLETTER_SOURCE_DEFAULT_MAX_LINKS = 10;
 const NEWSLETTER_SOURCE_DEFAULT_MAX_DOCS = 50;
 const NEWSLETTER_SITEMAP_MAX_URLS = 5000;
 const NEWSLETTER_SITEMAP_MAX_FILES = 64;
-
-const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 
 const normalizeEmail = (value?: string): string => {
   if (!value) return "";
@@ -795,74 +805,160 @@ export const ingestExternalResearchDocument = (
   const provider = providerRaw || "other";
   const subject = (params.subject ?? title).trim();
   const url = (params.url ?? "").trim();
+  const canonicalUrl = safeCanonicalizeUrl(url);
   const ticker = normalizeTicker(params.ticker);
   const publishedAt = normalizeDate(params.publishedAt);
   const receivedAt = normalizeDate(params.receivedAt) || new Date(now).toISOString();
   const tags = parseCsv((params.tags ?? []).join(","));
+  const normalizedContent = normalizeDocumentText(content);
+  const sourceKey = buildSourceKey({
+    sourceType,
+    provider,
+    sender,
+    canonicalUrl,
+  });
+  const trustTier = inferDocumentTrustTier({
+    canonicalUrl,
+    sourceType,
+    provider,
+  });
+  const materialityScore = scoreExternalDocumentMateriality({
+    sourceType,
+    ticker,
+    title,
+    content: normalizedContent,
+    tags,
+    canonicalUrl,
+  });
   const metadata = {
     ...(params.metadata ?? {}),
     tags,
+    sourceKey,
+    canonicalUrl,
+    trustTier,
+    materialityScore,
   };
 
-  const contentHash = sha256(
-    JSON.stringify({
+  const contentHash = fingerprintExternalDocument({
+    sourceType,
+    provider,
+    sender,
+    title,
+    subject,
+    url: canonicalUrl || url,
+    content: normalizedContent,
+    ticker,
+  });
+
+  const externalId = (params.externalId ?? "").trim();
+  const baseUrl = (() => {
+    try {
+      const target = canonicalUrl || url;
+      if (!target) return "";
+      const parsed = new URL(target);
+      return `${parsed.protocol}//${parsed.hostname}`;
+    } catch {
+      return "";
+    }
+  })();
+
+  upsertResearchSource({
+    dbPath: params.dbPath,
+    sourceKey,
+    sourceType,
+    provider,
+    sender,
+    baseUrl,
+    trustTier,
+    metadata: {
+      tags,
+      lastSeenAt: new Date(now).toISOString(),
+    },
+  });
+
+  const rawArtifactPath = writeRawExternalDocumentArtifactSync({
+    sourceKey,
+    contentHash,
+    payload: {
       sourceType,
       provider,
+      externalId,
       sender,
       title,
       subject,
       url,
-      content,
+      canonicalUrl,
       ticker,
-    }),
-  );
-
-  const externalId = (params.externalId ?? "").trim();
+      publishedAt,
+      receivedAt,
+      content,
+      normalizedContent,
+      metadata,
+    },
+  });
 
   const insertDocument = db.prepare(`
     INSERT INTO external_documents (
       source_type,
       provider,
+      source_key,
       external_id,
       sender,
       title,
       subject,
       url,
+      canonical_url,
       ticker,
       published_at,
       received_at,
       content,
+      normalized_content,
       content_hash,
+      trust_tier,
+      materiality_score,
+      raw_artifact_path,
       metadata,
       fetched_at
     )
     VALUES (
       @source_type,
       @provider,
+      @source_key,
       @external_id,
       @sender,
       @title,
       @subject,
       @url,
+      @canonical_url,
       @ticker,
       @published_at,
       @received_at,
       @content,
+      @normalized_content,
       @content_hash,
+      @trust_tier,
+      @materiality_score,
+      @raw_artifact_path,
       @metadata,
       @fetched_at
     )
     ON CONFLICT(content_hash) DO UPDATE SET
       provider=excluded.provider,
+      source_key=excluded.source_key,
       external_id=CASE WHEN excluded.external_id<>'' THEN excluded.external_id ELSE external_documents.external_id END,
       sender=excluded.sender,
       title=excluded.title,
       subject=excluded.subject,
       url=excluded.url,
+      canonical_url=excluded.canonical_url,
       ticker=excluded.ticker,
       published_at=excluded.published_at,
       received_at=excluded.received_at,
       content=excluded.content,
+      normalized_content=excluded.normalized_content,
+      trust_tier=excluded.trust_tier,
+      materiality_score=excluded.materiality_score,
+      raw_artifact_path=excluded.raw_artifact_path,
       metadata=excluded.metadata,
       fetched_at=excluded.fetched_at
     RETURNING id
@@ -883,16 +979,22 @@ export const ingestExternalResearchDocument = (
   const row = insertDocument.get({
     source_type: sourceType,
     provider,
+    source_key: sourceKey,
     external_id: externalId,
     sender,
     title,
     subject,
     url,
+    canonical_url: canonicalUrl,
     ticker,
     published_at: publishedAt,
     received_at: receivedAt,
     content,
+    normalized_content: normalizedContent,
     content_hash: contentHash,
+    trust_tier: trustTier,
+    materiality_score: materialityScore,
+    raw_artifact_path: rawArtifactPath,
     metadata: JSON.stringify(metadata),
     fetched_at: now,
   }) as { id: number };
@@ -900,16 +1002,20 @@ export const ingestExternalResearchDocument = (
   const chunkMeta = JSON.stringify({
     sourceType,
     provider,
+    sourceKey,
     sender,
     title,
     subject,
     url,
+    canonicalUrl,
     ticker,
     publishedAt: publishedAt || undefined,
     receivedAt,
     tags,
+    trustTier,
+    materialityScore,
   });
-  const chunks = chunkText(content, 220);
+  const chunks = chunkText(normalizedContent, 220);
   db.exec("BEGIN");
   try {
     for (const chunk of chunks) {

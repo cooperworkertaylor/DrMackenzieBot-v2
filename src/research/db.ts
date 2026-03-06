@@ -679,18 +679,38 @@ const migrate = (db: ResearchDb) => {
       id integer primary key,
       source_type text not null default 'manual',
       provider text not null default 'other',
+      source_key text not null default '',
       external_id text not null default '',
       sender text not null default '',
       title text not null default '',
       subject text not null default '',
       url text not null default '',
+      canonical_url text not null default '',
       ticker text not null default '',
       published_at text not null default '',
       received_at text not null default '',
       content text not null default '',
+      normalized_content text not null default '',
       content_hash text not null unique,
+      trust_tier integer not null default 4,
+      materiality_score real not null default 0,
+      raw_artifact_path text not null default '',
       metadata text not null default '{}',
       fetched_at integer not null
+    );
+
+    create table if not exists research_sources (
+      id integer primary key,
+      source_key text not null unique,
+      source_type text not null default '',
+      provider text not null default '',
+      sender text not null default '',
+      base_url text not null default '',
+      trust_tier integer not null default 4,
+      active integer not null default 1,
+      metadata text not null default '{}',
+      created_at integer not null,
+      updated_at integer not null
     );
 
     create table if not exists chunks (
@@ -802,6 +822,15 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_external_documents_ticker_fetched
       on external_documents (ticker, fetched_at desc);
+
+    create index if not exists idx_external_documents_source_key_fetched
+      on external_documents (source_key, fetched_at desc);
+
+    create index if not exists idx_external_documents_canonical_url
+      on external_documents (canonical_url, fetched_at desc);
+
+    create index if not exists idx_research_sources_type_provider
+      on research_sources (source_type, provider, active, updated_at desc);
 
     create index if not exists idx_thesis_forecasts_resolution
       on thesis_forecasts (ticker, resolved, created_at);
@@ -924,6 +953,12 @@ const migrate = (db: ResearchDb) => {
   ensureColumn(db, "filings", "as_of_date", "TEXT");
   ensureColumn(db, "filings", "source_url", "TEXT");
   ensureColumn(db, "filings", "filing_hash", "TEXT");
+  ensureColumn(db, "external_documents", "source_key", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "external_documents", "canonical_url", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "external_documents", "normalized_content", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "external_documents", "trust_tier", "INTEGER NOT NULL DEFAULT 4");
+  ensureColumn(db, "external_documents", "materiality_score", "REAL NOT NULL DEFAULT 0");
+  ensureColumn(db, "external_documents", "raw_artifact_path", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "research_vectors", "provider", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "research_vectors", "model", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "task_outcomes", "policy_name", "TEXT NOT NULL DEFAULT ''");
