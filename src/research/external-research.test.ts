@@ -229,6 +229,7 @@ describe("external research ingestion", () => {
     });
 
     expect(ingested.chunks).toBeGreaterThan(0);
+    expect(ingested.reportId).toBeGreaterThan(0);
 
     const db = openResearchDb(dbPath);
     const claims = db.prepare(`SELECT COUNT(*) AS count FROM research_claims`).get() as {
@@ -246,10 +247,14 @@ describe("external research ingestion", () => {
     const parsed = JSON.parse(doc.metadata ?? "{}") as {
       extraction?: { status?: string; claimsCreated?: number; eventsCreated?: number; factsCreated?: number };
     };
+    const reports = db.prepare(`SELECT COUNT(*) AS count FROM research_reports`).get() as {
+      count: number;
+    };
 
     expect(claims.count).toBeGreaterThan(0);
     expect(events.count).toBeGreaterThan(0);
     expect(facts.count).toBeGreaterThan(0);
+    expect(reports.count).toBeGreaterThan(0);
     expect(parsed.extraction?.status).toBe("completed");
     expect(parsed.extraction?.claimsCreated).toBeGreaterThan(0);
     expect(parsed.extraction?.eventsCreated).toBeGreaterThan(0);

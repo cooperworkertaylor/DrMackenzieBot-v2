@@ -675,6 +675,23 @@ const migrate = (db: ResearchDb) => {
       unique (entity_id, fact_hash)
     );
 
+    create table if not exists research_reports (
+      id integer primary key,
+      entity_id integer not null,
+      ticker text not null default '',
+      report_type text not null default 'external_structured',
+      title text not null default '',
+      summary text not null default '',
+      markdown text not null default '',
+      report_json text not null default '{}',
+      confidence real not null default 0,
+      source_count integer not null default 0,
+      lookback_days integer not null default 30,
+      generated_at integer not null,
+      created_at integer not null,
+      updated_at integer not null
+    );
+
     create table if not exists external_documents (
       id integer primary key,
       source_type text not null default 'manual',
@@ -939,6 +956,12 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_research_facts_event
       on research_facts (event_id, metric_key, as_of_date desc);
+
+    create index if not exists idx_research_reports_lookup
+      on research_reports (entity_id, report_type, generated_at desc);
+
+    create index if not exists idx_research_reports_ticker
+      on research_reports (ticker, report_type, generated_at desc);
 
     create index if not exists idx_quickrun_jobs_status_run_after
       on quickrun_jobs (status, run_after_ms, created_at_ms);

@@ -14,6 +14,10 @@ import {
 } from "./ingestion-utils.js";
 import { upsertResearchSource } from "./source-registry.js";
 import { extractStructuredResearchFromExternalDocument } from "./structured-extraction.js";
+import {
+  buildExternalResearchStructuredReport,
+  storeExternalResearchStructuredReport,
+} from "./external-research-report.js";
 
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 
@@ -44,6 +48,7 @@ export type IngestExternalResearchResult = {
   provider: string;
   ticker?: string;
   title: string;
+  reportId?: number;
 };
 
 export type ParsedHookEmail = {
@@ -1039,6 +1044,18 @@ export const ingestExternalResearchDocument = (
     dbPath: params.dbPath,
   });
 
+  let reportId: number | undefined;
+  if (ticker) {
+    const report = buildExternalResearchStructuredReport({
+      ticker,
+      dbPath: params.dbPath,
+    });
+    reportId = storeExternalResearchStructuredReport({
+      report,
+      dbPath: params.dbPath,
+    }).id;
+  }
+
   return {
     id: row.id,
     chunks: chunks.length,
@@ -1046,6 +1063,7 @@ export const ingestExternalResearchDocument = (
     provider,
     ticker: ticker || undefined,
     title,
+    reportId,
   };
 };
 
