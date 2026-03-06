@@ -25,6 +25,7 @@ import {
   storeExternalResearchThesis,
   storeExternalResearchThesisDiff,
 } from "./external-research-thesis.js";
+import { enqueueWatchlistRefresh } from "./external-research-watchlists.js";
 
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 
@@ -59,6 +60,7 @@ export type IngestExternalResearchResult = {
   thesisId?: number;
   thesisDiffId?: number;
   thesisAlertId?: number;
+  watchlistRefreshId?: number;
 };
 
 export type ParsedHookEmail = {
@@ -1058,6 +1060,7 @@ export const ingestExternalResearchDocument = (
   let thesisId: number | undefined;
   let thesisDiffId: number | undefined;
   let thesisAlertId: number | undefined;
+  let watchlistRefreshId: number | undefined;
   if (ticker) {
     const report = buildExternalResearchStructuredReport({
       ticker,
@@ -1093,6 +1096,15 @@ export const ingestExternalResearchDocument = (
         diff: storedDiff,
         dbPath: params.dbPath,
       }) ?? undefined;
+
+    watchlistRefreshId =
+      enqueueWatchlistRefresh({
+        ticker,
+        sourceDocumentId: row.id,
+        materialityScore,
+        reason: `${sourceType}:${title}`,
+        dbPath: params.dbPath,
+      })?.id ?? undefined;
   }
 
   return {
@@ -1106,6 +1118,7 @@ export const ingestExternalResearchDocument = (
     thesisId,
     thesisDiffId,
     thesisAlertId,
+    watchlistRefreshId,
   };
 };
 

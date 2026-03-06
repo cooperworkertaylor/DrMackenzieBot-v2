@@ -726,6 +726,52 @@ const migrate = (db: ResearchDb) => {
       created_at integer not null
     );
 
+    create table if not exists research_watchlists (
+      id integer primary key,
+      name text not null unique,
+      description text not null default '',
+      is_default integer not null default 0,
+      created_at integer not null,
+      updated_at integer not null
+    );
+
+    create table if not exists research_watchlist_memberships (
+      id integer primary key,
+      watchlist_id integer not null,
+      ticker text not null,
+      priority integer not null default 3,
+      tags text not null default '[]',
+      created_at integer not null,
+      updated_at integer not null,
+      unique (watchlist_id, ticker)
+    );
+
+    create table if not exists research_refresh_queue (
+      id integer primary key,
+      watchlist_id integer not null,
+      ticker text not null,
+      source_document_id integer not null,
+      priority text not null default 'medium',
+      reason text not null default '',
+      status text not null default 'queued',
+      created_at integer not null,
+      updated_at integer not null,
+      unique (watchlist_id, ticker, source_document_id)
+    );
+
+    create table if not exists research_briefs (
+      id integer primary key,
+      watchlist_id integer not null,
+      brief_type text not null default 'daily_watchlist',
+      brief_date text not null,
+      title text not null default '',
+      markdown text not null default '',
+      brief_json text not null default '{}',
+      created_at integer not null,
+      updated_at integer not null,
+      unique (watchlist_id, brief_type, brief_date)
+    );
+
     create table if not exists external_documents (
       id integer primary key,
       source_type text not null default 'manual',
@@ -1002,6 +1048,18 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_research_thesis_diffs_lookup
       on research_thesis_diffs (ticker, thesis_type, created_at desc);
+
+    create index if not exists idx_research_watchlists_default
+      on research_watchlists (is_default, updated_at desc);
+
+    create index if not exists idx_research_watchlist_memberships_lookup
+      on research_watchlist_memberships (watchlist_id, priority, ticker);
+
+    create index if not exists idx_research_refresh_queue_lookup
+      on research_refresh_queue (watchlist_id, status, priority, created_at desc);
+
+    create index if not exists idx_research_briefs_lookup
+      on research_briefs (watchlist_id, brief_type, brief_date desc);
 
     create index if not exists idx_quickrun_jobs_status_run_after
       on quickrun_jobs (status, run_after_ms, created_at_ms);
