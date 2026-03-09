@@ -167,6 +167,34 @@ export const addTickerToResearchWatchlist = (params: {
   };
 };
 
+export const listResearchWatchlists = (params?: {
+  dbPath?: string;
+}): ResearchWatchlist[] => {
+  const db = openResearchDb(params?.dbPath);
+  const rows = db
+    .prepare(
+      `SELECT id, name, description, is_default, created_at, updated_at
+       FROM research_watchlists
+       ORDER BY is_default DESC, name ASC`,
+    )
+    .all() as Array<{
+    id: number;
+    name: string;
+    description: string;
+    is_default: number;
+    created_at: number;
+    updated_at: number;
+  }>;
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    isDefault: row.is_default === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+};
+
 export const listResearchWatchlistMembers = (params: {
   watchlistId: number;
   dbPath?: string;

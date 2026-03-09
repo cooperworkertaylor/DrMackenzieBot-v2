@@ -297,4 +297,83 @@ export class QuickrunJobStore {
           .get() as { count: number });
     return Number(row.count ?? 0);
   }
+
+  list<TPayload>(params?: {
+    jobType?: string;
+    status?: QuickrunJobStatus;
+    limit?: number;
+  }): QuickrunJobRecord<TPayload>[] {
+    const clauses: string[] = [];
+    const values: Array<string | number> = [];
+    if (params?.jobType) {
+      clauses.push("job_type = ?");
+      values.push(params.jobType);
+    }
+    if (params?.status) {
+      clauses.push("status = ?");
+      values.push(params.status);
+    }
+    const limit = Math.max(1, Math.floor(params?.limit ?? 100));
+    values.push(limit);
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = this.db
+      .prepare(
+        `SELECT
+           id, job_type, status, payload, run_after_ms, attempts, max_attempts,
+           locked_by, locked_at_ms, heartbeat_at_ms, completed_at_ms, last_error,
+           created_at_ms, updated_at_ms
+         FROM quickrun_jobs
+         ${where}
+         ORDER BY updated_at_ms DESC, created_at_ms DESC
+         LIMIT ?`,
+      )
+      .all(...values) as Array<{
+      id: string;
+      job_type: string;
+      status: QuickrunJobStatus;
+      payload: string;
+      run_after_ms: number;
+      attempts: number;
+      max_attempts: number;
+      locked_by?: string;
+      locked_at_ms?: number;
+      heartbeat_at_ms?: number;
+      completed_at_ms?: number;
+      last_error?: string;
+      created_at_ms: number;
+      updated_at_ms: number;
+    }>;
+    return rows.map((row) => mapRow<TPayload>(row));
+  }
+
+  requeueFailed(params: { id: string; nowMs?: number }): QuickrunJobRecord | null {
+    const nowMs = params.nowMs ?? Date.now();
+    return withImmediateTransaction(this.db, () => {
+      const row = this.db
+        .prepare(
+          `SELECT id
+           FROM quickrun_jobs
+           WHERE id = ? AND status = 'failed'`,
+        )
+        .get(params.id) as { id: string } | undefined;
+      if (!row) {
+        return this.getById(params.id);
+      }
+      this.db
+        .prepare(
+          `UPDATE quickrun_jobs
+           SET status = 'queued',
+               run_after_ms = ?,
+               locked_by = '',
+               locked_at_ms = NULL,
+               heartbeat_at_ms = NULL,
+               completed_at_ms = NULL,
+               last_error = '',
+               updated_at_ms = ?
+           WHERE id = ?`,
+        )
+        .run(nowMs, nowMs, params.id);
+      return this.getById(params.id);
+    });
+  }
 }
