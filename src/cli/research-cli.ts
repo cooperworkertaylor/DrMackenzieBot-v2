@@ -105,6 +105,7 @@ import {
   createResearchBackup,
   getResearchHealthSnapshot,
   replayFailedQuickrunJobs,
+  resolveResearchBackupDir,
   restoreResearchBackup,
   runResearchSchedulerLoop,
   runResearchSchedulerPass,
@@ -4783,11 +4784,7 @@ export function registerResearchCli(program: Command) {
     .command("backup")
     .description("Backup the research runtime (db plus local research artifacts)")
     .option("--db <path>", "Database path", resolveResearchDbPath())
-    .option(
-      "--dest <dir>",
-      "Backup destination",
-      path.join(process.cwd(), "data", "research-backups"),
-    )
+    .option("--dest <dir>", "Backup destination", resolveResearchBackupDir())
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const out = createResearchBackup({
