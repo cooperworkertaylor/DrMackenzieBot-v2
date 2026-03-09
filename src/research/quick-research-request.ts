@@ -170,6 +170,8 @@ export function parseQuickResearchRequest(raw: string): QuickResearchRequest | n
   const minuteRe = /\b(\d{1,3})\s*(?:[-\u2010-\u2015\u2212]\s*)?(min|mins|minute|minutes)\b/;
   const tPlusRe = /\bt\+\s*(\d{1,3})\b/i;
   const minuteMatch = lowered.match(minuteRe);
+  const singleTickerMinuteCandidate =
+    /^\s*\$?[A-Za-z][A-Za-z0-9.]{0,7}\s+\d{1,3}\s*(?:min|mins|minute|minutes)\s*$/i.test(text);
 
   const minutes = parseMinutes(text);
 
@@ -179,7 +181,13 @@ export function parseQuickResearchRequest(raw: string): QuickResearchRequest | n
   // Also allow shorthand "<topic> <minutes>" if the topic is non-trivial.
   const hasTPlus = tPlusRe.test(lowered);
   const shorthandCandidate = /\b(\d{1,3})\b\s*[:.\u2010-\u2015\u2212]*\s*$/.test(text);
-  if (!actionOk && !mentionsPdf && !hasTPlus && !shorthandCandidate) {
+  if (
+    !actionOk &&
+    !mentionsPdf &&
+    !hasTPlus &&
+    !shorthandCandidate &&
+    !singleTickerMinuteCandidate
+  ) {
     return null;
   }
 
@@ -220,7 +228,7 @@ export function parseQuickResearchRequest(raw: string): QuickResearchRequest | n
   if (!subject) return null;
 
   // Shorthand safety: if we triggered only on a trailing number, require a non-trivial topic.
-  if (!actionOk && !mentionsPdf && !hasTPlus) {
+  if (!actionOk && !mentionsPdf && !hasTPlus && !singleTickerMinuteCandidate) {
     const tokens = subject.split(" ").filter(Boolean);
     if (tokens.length < 2 && subject.length < 10) return null;
   }
