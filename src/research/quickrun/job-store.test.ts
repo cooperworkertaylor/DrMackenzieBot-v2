@@ -82,4 +82,32 @@ describe("QuickrunJobStore", () => {
     expect(failed?.status).toBe("failed");
     expect(failed?.lastError).toBe("still boom");
   });
+
+  it("persists progress notes for running jobs", () => {
+    const store = QuickrunJobStore.open(makeDbPath());
+    store.enqueue({
+      id: "job-3",
+      jobType: "quick_research_pdf_v2",
+      payload: { ok: true },
+      runAfterMs: 0,
+    });
+
+    const claimed = store.claimNext({
+      jobType: "quick_research_pdf_v2",
+      workerId: "worker-a",
+      nowMs: 10,
+    });
+    expect(claimed?.status).toBe("running");
+
+    store.setProgress({
+      id: "job-3",
+      workerId: "worker-a",
+      note: "Draft passed quality gate. Rendering PDF.",
+      nowMs: 20,
+    });
+
+    const updated = store.getById<{ ok: boolean }>("job-3");
+    expect(updated?.progressNote).toBe("Draft passed quality gate. Rendering PDF.");
+    expect(updated?.progressUpdatedAtMs).toBe(20);
+  });
 });

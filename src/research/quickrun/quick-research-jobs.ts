@@ -339,11 +339,27 @@ export const buildQuickResearchStatusReply = (params: {
   if (job.payload.researchProfile?.modelRef) {
     lines.push(`- Model: ${job.payload.researchProfile.modelRef}`);
   }
+  if (job.progressNote?.trim()) {
+    lines.push(`- Progress: ${job.progressNote.trim()}`);
+  }
   if (job.status === "failed" && job.lastError?.trim()) {
     lines.push(`- Last error: ${job.lastError.trim()}`);
   }
   lines.push(`- job_id=${job.id}`);
   return lines.join("\n");
+};
+
+const maybeSendQuickResearchProgress = async (params: {
+  cfg: OpenClawConfig;
+  route: QuickResearchJobPayload["route"];
+  jobId: string;
+  note: string;
+}): Promise<void> => {
+  await safeSend({
+    cfg: params.cfg,
+    route: params.route,
+    text: `Quick research progress\njob_id=${params.jobId}\n${params.note}`,
+  });
 };
 
 const safeSend = async (params: {
@@ -476,6 +492,7 @@ const runCompanyQuickResearch = async (params: {
   cfg: OpenClawConfig;
   chromePath: string;
   builtAtEt: string;
+  onProgress?: (note: string) => Promise<void>;
 }) => {
   if (params.payload.request.kind !== "company") {
     throw new Error("Company quick research runner received a non-company payload");
@@ -483,6 +500,8 @@ const runCompanyQuickResearch = async (params: {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
   const { runCompanyPipelineV2 } = await import("../../v2/pipeline/v2-pipeline.js");
+
+  await params.onProgress?.("Started source gathering and memo draft.");
 
   const result = await runCompanyPipelineV2({
     ticker: params.payload.request.ticker,
@@ -507,6 +526,8 @@ const runCompanyQuickResearch = async (params: {
     });
     return;
   }
+
+  await params.onProgress?.("Draft passed quality gate. Rendering PDF.");
 
   const outDir = path.join(path.dirname(result.reportMarkdownPath), "artifacts");
   await fs.mkdir(outDir, { recursive: true });
@@ -541,6 +562,8 @@ const runCompanyQuickResearch = async (params: {
     });
     return;
   }
+
+  await params.onProgress?.("PDF passed diagnostics. Waiting for delivery window.");
 
   const stateDir = resolveStateDir(process.env, os.homedir);
   const seriesKey = `quickrun_company_${slugify(params.payload.request.ticker)}`;
@@ -598,6 +621,7 @@ const runThemeQuickResearch = async (params: {
   cfg: OpenClawConfig;
   chromePath: string;
   builtAtEt: string;
+  onProgress?: (note: string) => Promise<void>;
 }) => {
   if (params.payload.request.kind !== "theme") {
     throw new Error("Theme quick research runner received a non-theme payload");
@@ -605,6 +629,7 @@ const runThemeQuickResearch = async (params: {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
   const { runThemePipelineV2 } = await import("../../v2/pipeline/v2-pipeline.js");
+  await params.onProgress?.("Started universe resolution and memo draft.");
 
   const themeLabel = sanitizeThemeLabel(params.payload.request.theme);
   const explicitUniverse = Array.from(
@@ -682,6 +707,8 @@ const runThemeQuickResearch = async (params: {
     return;
   }
 
+  await params.onProgress?.(`Universe resolved (${universe.length} names). Building memo.`);
+
   const result = await runThemePipelineV2({
     themeName: themeLabel,
     universe,
@@ -709,6 +736,8 @@ const runThemeQuickResearch = async (params: {
     });
     return;
   }
+
+  await params.onProgress?.("Draft passed quality gate. Rendering PDF.");
 
   const outDir = path.join(path.dirname(result.reportMarkdownPath), "artifacts");
   await fs.mkdir(outDir, { recursive: true });
@@ -743,6 +772,8 @@ const runThemeQuickResearch = async (params: {
     });
     return;
   }
+
+  await params.onProgress?.("PDF passed diagnostics. Waiting for delivery window.");
 
   const stateDir = resolveStateDir(process.env, os.homedir);
   const seriesKey = `quickrun_theme_${slugify(themeLabel)}`;
@@ -808,6 +839,24 @@ export const executeQuickResearchJob = async (
   cfg: OpenClawConfig,
 ) => {
   const payload = job.payload;
+  const store = QuickrunJobStore.open();
+  let lastProgress = "";
+  const updateProgress = async (note: string) => {
+    const normalized = note.trim();
+    if (!normalized || normalized === lastProgress) return;
+    lastProgress = normalized;
+    store.setProgress({
+      id: job.id,
+      workerId: job.lockedBy ?? "",
+      note: normalized,
+    });
+    await maybeSendQuickResearchProgress({
+      cfg,
+      route: payload.route,
+      jobId: payload.jobId,
+      note: normalized,
+    });
+  };
   try {
     const chromePath = resolveChromeExecutablePath();
     if (!chromePath) {
@@ -818,9 +867,21 @@ export const executeQuickResearchJob = async (
     const builtAtEt = formatBuiltAtEt(new Date());
 
     if (payload.request.kind === "company") {
-      await runCompanyQuickResearch({ payload, cfg, chromePath, builtAtEt });
+      await runCompanyQuickResearch({
+        payload,
+        cfg,
+        chromePath,
+        builtAtEt,
+        onProgress: updateProgress,
+      });
     } else {
-      await runThemeQuickResearch({ payload, cfg, chromePath, builtAtEt });
+      await runThemeQuickResearch({
+        payload,
+        cfg,
+        chromePath,
+        builtAtEt,
+        onProgress: updateProgress,
+      });
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

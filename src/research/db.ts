@@ -1225,6 +1225,8 @@ const migrate = (db: ResearchDb) => {
   ensureColumn(db, "external_documents", "raw_artifact_path", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "research_vectors", "provider", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "research_vectors", "model", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "quickrun_jobs", "progress_note", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "quickrun_jobs", "progress_updated_at_ms", "INTEGER");
   ensureColumn(db, "task_outcomes", "policy_name", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "task_outcomes", "policy_role", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn(db, "task_outcomes", "experiment_group", "TEXT NOT NULL DEFAULT ''");

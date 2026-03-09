@@ -110,6 +110,12 @@ describe("buildQuickResearchTelegramSummary", () => {
       workerId: "worker-a",
       nowMs: Date.UTC(2026, 2, 9, 19, 26),
     });
+    store.setProgress({
+      id: "job-789",
+      workerId: "worker-a",
+      note: "Draft passed quality gate. Rendering PDF.",
+      nowMs: Date.UTC(2026, 2, 9, 19, 27),
+    });
 
     const text = buildQuickResearchStatusReply({
       dbPath,
@@ -125,6 +131,7 @@ describe("buildQuickResearchTelegramSummary", () => {
     expect(text).toContain("Job: company v2 NVDA (5 min)");
     expect(text).toContain("Status: running");
     expect(text).toContain("Model: openai/gpt-5.4");
+    expect(text).toContain("Progress: Draft passed quality gate. Rendering PDF.");
     expect(text).toContain("job_id=job-789");
   });
 });
