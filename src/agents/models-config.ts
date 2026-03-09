@@ -3,6 +3,7 @@ import path from "node:path";
 import { type OpenClawConfig, loadConfig } from "../config/config.js";
 import { resolveOpenClawAgentDir } from "./agent-paths.js";
 import {
+  buildOpenAiProvider,
   normalizeProviders,
   type ProviderConfig,
   resolveImplicitBedrockProvider,
@@ -81,6 +82,39 @@ async function readJson(pathname: string): Promise<unknown> {
   }
 }
 
+function collectConfiguredModelRefs(config?: OpenClawConfig): string[] {
+  if (!config) {
+    return [];
+  }
+
+  const refs = new Set<string>();
+  const add = (value: unknown) => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const trimmed = value.trim();
+    if (trimmed) {
+      refs.add(trimmed);
+    }
+  };
+
+  add(config.agents?.defaults?.model?.primary);
+  for (const fallback of config.agents?.defaults?.model?.fallbacks ?? []) {
+    add(fallback);
+  }
+  for (const key of Object.keys(config.agents?.defaults?.models ?? {})) {
+    add(key);
+  }
+
+  return [...refs];
+}
+
+function needsImplicitOpenAiProvider(config?: OpenClawConfig): boolean {
+  return collectConfiguredModelRefs(config).some((ref) =>
+    /^openai\/gpt-5\.(4|4-mini)\b/i.test(ref),
+  );
+}
+
 export async function ensureOpenClawModelsJson(
   config?: OpenClawConfig,
   agentDirOverride?: string,
@@ -89,11 +123,17 @@ export async function ensureOpenClawModelsJson(
   const agentDir = agentDirOverride?.trim() ? agentDirOverride.trim() : resolveOpenClawAgentDir();
 
   const explicitProviders = cfg.models?.providers ?? {};
-  const implicitProviders = await resolveImplicitProviders({ agentDir });
+  const implicitProviders = await resolveImplicitProviders({
+    agentDir,
+    includeOpenAiProvider: needsImplicitOpenAiProvider(cfg),
+  });
   const providers: Record<string, ProviderConfig> = mergeProviders({
     implicit: implicitProviders,
     explicit: explicitProviders,
   });
+  if (needsImplicitOpenAiProvider(cfg) && !providers.openai) {
+    providers.openai = buildOpenAiProvider();
+  }
   const implicitBedrock = await resolveImplicitBedrockProvider({ agentDir, config: cfg });
   if (implicitBedrock) {
     const existing = providers["amazon-bedrock"];
