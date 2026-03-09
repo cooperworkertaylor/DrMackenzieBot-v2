@@ -186,17 +186,27 @@ type QuickResearchReportShape = {
   };
 };
 
+const QUICK_SUMMARY_PLACEHOLDER_LANGUAGE_RE =
+  /\b(to appear|appendix pass|provided in appendix|full appendix|appendix available|appendix to follow|sources to follow|sources? pending|pending sources?|link(?:s)? to follow|csv\/queries|queries\/csv|pinned query|query ids?|ready for live|swap(?:ped)? for live|can be swapped|available (?:on|upon|by) request|(?:on|upon|by) request|provided (?:on|upon|by) request|placeholder(?:s)?|tbd|todo|coming soon|to be added|to be provided|to be attached|will (?:add|attach|provide)|tktk|tk|lorem ipsum)\b/gi;
+
 const normalizeTextLine = (value: string): string =>
   value
     .replaceAll(/\s+/g, " ")
     .replaceAll(/\s+([,.;:!?])/g, "$1")
     .trim();
 
+const sanitizeQuickSummaryText = (value: string): string =>
+  normalizeTextLine(
+    value
+      .replaceAll(/\{\{\s*N\d+\s*\}\}/g, "n/a")
+      .replace(QUICK_SUMMARY_PLACEHOLDER_LANGUAGE_RE, "omitted"),
+  );
+
 const takeDistinctLines = (values: Array<string | undefined>, limit: number): string[] => {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const value of values) {
-    const normalized = normalizeTextLine(value ?? "");
+    const normalized = sanitizeQuickSummaryText(value ?? "");
     if (!normalized) continue;
     const key = normalized.toLowerCase();
     if (seen.has(key)) continue;

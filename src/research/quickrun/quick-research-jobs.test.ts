@@ -78,6 +78,39 @@ describe("buildQuickResearchTelegramSummary", () => {
     expect(text).toContain("Need one primary filing to validate the margin bridge.");
   });
 
+  it("sanitizes unresolved numeric placeholders and placeholder language in the Telegram summary", () => {
+    const text = buildQuickResearchTelegramSummary({
+      kind: "company",
+      subject: "NVDA",
+      jobId: "job-124",
+      runId: "run-457",
+      builtAtEt: "2026-03-09 14:40 ET",
+      pdfBytes: 1024,
+      sha256: "abc123",
+      report: {
+        sections: [
+          {
+            key: "executive_summary",
+            blocks: [
+              {
+                tag: "FACT",
+                text: "Anchor KPI baseline: reported metric is {{N1}} and placeholder detail will be attached later.",
+              },
+            ],
+          },
+        ],
+        appendix: {
+          whats_missing: ["Placeholder source follow-up should be removed."],
+        },
+      },
+    });
+
+    expect(text).not.toContain("{{N1}}");
+    expect(text.toLowerCase()).not.toContain("placeholder");
+    expect(text).toContain("n/a");
+    expect(text).toContain("omitted");
+  });
+
   it("builds a deterministic status reply for the latest matching route", () => {
     const dbPath = makeDbPath();
     const store = QuickrunJobStore.open(dbPath);
