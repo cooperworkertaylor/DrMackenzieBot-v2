@@ -6,6 +6,10 @@ import { ensureOpenClawModelsJson } from "../../agents/models-config.js";
 import { extractAssistantText } from "../../agents/pi-embedded-utils.js";
 import { discoverAuthStorage, discoverModels } from "../../agents/pi-model-discovery.js";
 import { loadConfig } from "../../config/config.js";
+import {
+  resolveActiveResearchDbPath,
+  resolveResearchExecutionProfile,
+} from "../../research/research-model-profile.js";
 
 export type ModelRef = { provider: string; model: string };
 
@@ -300,6 +304,47 @@ export function resolveResearchV2ModelRef(params: {
   return picked;
 }
 
+export function resolveResearchV2ExecutionProfile(params: {
+  purpose: "writer" | "analyzer" | "seed";
+  env?: NodeJS.ProcessEnv;
+  cfg?: ReturnType<typeof loadConfig>;
+  dbPath?: string;
+}): { modelRef: string; profileId?: string } {
+  const env = params.env ?? process.env;
+  const purposeKey = params.purpose.toUpperCase();
+  const explicitPurposeModel = env[`OPENCLAW_RESEARCH_V2_${purposeKey}_MODEL`]?.trim() || "";
+  if (explicitPurposeModel) {
+    return {
+      modelRef: explicitPurposeModel,
+      ...(env.OPENCLAW_RESEARCH_V2_PROFILE?.trim()
+        ? { profileId: env.OPENCLAW_RESEARCH_V2_PROFILE.trim() }
+        : {}),
+    };
+  }
+
+  const stored = resolveResearchExecutionProfile({
+    dbPath: params.dbPath ?? resolveActiveResearchDbPath(),
+    env,
+  });
+  if (stored.source !== "default") {
+    return {
+      modelRef: stored.modelRef,
+      ...(stored.profileId ? { profileId: stored.profileId } : {}),
+    };
+  }
+
+  const modelRef = resolveResearchV2ModelRef({
+    purpose: params.purpose,
+    env,
+    cfg: params.cfg,
+  });
+  const profileId = env.OPENCLAW_RESEARCH_V2_PROFILE?.trim() || undefined;
+  return {
+    modelRef,
+    ...(profileId ? { profileId } : {}),
+  };
+}
+
 export async function completeJsonWithResearchV2Model(params: {
   purpose: "writer" | "analyzer" | "seed";
   prompt: string;
@@ -313,9 +358,14 @@ export async function completeJsonWithResearchV2Model(params: {
   const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
   await ensureOpenClawModelsJson(cfg, agentDir);
 
+  const selectedExecutionProfile = resolveResearchV2ExecutionProfile({
+    purpose: params.purpose,
+    env: process.env,
+    cfg,
+  });
   const selectedModelRef =
-    (params.modelRefOverride ?? "").trim() ||
-    resolveResearchV2ModelRef({ purpose: params.purpose, env: process.env, cfg });
+    (params.modelRefOverride ?? "").trim() || selectedExecutionProfile.modelRef;
+  const selectedProfileId = params.profileId?.trim() || selectedExecutionProfile.profileId;
 
   const authStorage = discoverAuthStorage(agentDir);
   const modelRegistry = discoverModels(authStorage, agentDir);
@@ -347,7 +397,7 @@ export async function completeJsonWithResearchV2Model(params: {
         model,
         cfg,
         agentDir,
-        profileId: params.profileId,
+        profileId: selectedProfileId,
       });
       const apiKey = requireApiKey(apiKeyInfo, model.provider);
       authStorage.setRuntimeApiKey(model.provider, apiKey);

@@ -439,7 +439,7 @@ export async function sendMessageTelegram(
       }
     }
 
-    const file = new InputFile(media.buffer, fileName);
+    const file = new InputFile(toStrictUint8Array(media.buffer), fileName);
     const { caption, followUpText } = splitTelegramCaption(text);
     const htmlCaption = caption ? renderHtmlText(caption) : undefined;
     // If text exceeds Telegram's caption limit, send media without caption

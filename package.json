@@ -129,6 +129,7 @@
     "research:nightly": "node --import tsx scripts/research-nightly.ts",
     "research:quality-gate-nightly": "node --import tsx scripts/research-quality-gate-nightly.ts",
     "research:sec-xbrl": "node --import tsx scripts/sec-xbrl-extract.ts",
+    "secrets:sync": "node scripts/sync-op-env.mjs",
     "eval:research": "node --import tsx scripts/eval-research-v2.ts",
     "eval:lancedb-retrieval": "node --import tsx extensions/memory-lancedb/eval/eval_runner.ts",
     "eval:before": "node --import tsx extensions/memory-lancedb/eval/eval_runner.ts --mode=before",

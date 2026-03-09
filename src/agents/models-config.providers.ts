@@ -17,6 +17,15 @@ import { discoverVeniceModels, VENICE_BASE_URL } from "./venice-models.js";
 type ModelsConfig = NonNullable<OpenClawConfig["models"]>;
 export type ProviderConfig = NonNullable<ModelsConfig["providers"]>[string];
 
+const OPENAI_DEFAULT_CONTEXT_WINDOW = 400000;
+const OPENAI_DEFAULT_MAX_TOKENS = 128000;
+const OPENAI_DEFAULT_COST = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+};
+
 const MINIMAX_API_BASE_URL = "https://api.minimax.chat/v1";
 const MINIMAX_PORTAL_BASE_URL = "https://api.minimax.io/anthropic";
 const MINIMAX_DEFAULT_MODEL_ID = "MiniMax-M2.1";
@@ -394,13 +403,68 @@ async function buildOllamaProvider(): Promise<ProviderConfig> {
   };
 }
 
+export function buildOpenAiProvider(): ProviderConfig {
+  return {
+    baseUrl: "https://api.openai.com/v1",
+    api: "openai-responses",
+    models: [
+      {
+        id: "gpt-5.4",
+        name: "GPT-5.4",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: OPENAI_DEFAULT_COST,
+        contextWindow: OPENAI_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: OPENAI_DEFAULT_MAX_TOKENS,
+      },
+      {
+        id: "gpt-5.4-mini",
+        name: "GPT-5.4 Mini",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: OPENAI_DEFAULT_COST,
+        contextWindow: OPENAI_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: OPENAI_DEFAULT_MAX_TOKENS,
+      },
+      {
+        id: "gpt-5.2",
+        name: "GPT-5.2",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: OPENAI_DEFAULT_COST,
+        contextWindow: OPENAI_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: OPENAI_DEFAULT_MAX_TOKENS,
+      },
+      {
+        id: "gpt-5-mini",
+        name: "GPT-5 Mini",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: OPENAI_DEFAULT_COST,
+        contextWindow: OPENAI_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: OPENAI_DEFAULT_MAX_TOKENS,
+      },
+    ],
+  };
+}
+
 export async function resolveImplicitProviders(params: {
   agentDir: string;
+  includeOpenAiProvider?: boolean;
 }): Promise<ModelsConfig["providers"]> {
   const providers: Record<string, ProviderConfig> = {};
   const authStore = ensureAuthProfileStore(params.agentDir, {
     allowKeychainPrompt: false,
   });
+
+  if (params.includeOpenAiProvider) {
+    const openaiKey =
+      resolveEnvApiKeyVarName("openai") ??
+      resolveApiKeyFromProfiles({ provider: "openai", store: authStore });
+    if (openaiKey) {
+      providers.openai = { ...buildOpenAiProvider(), apiKey: openaiKey };
+    }
+  }
 
   const minimaxKey =
     resolveEnvApiKeyVarName("minimax") ??

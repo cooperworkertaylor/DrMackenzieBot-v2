@@ -1,9 +1,10 @@
 import fsSync from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import type { OpenClawConfig } from "../../config/config.js";
+import type { QuickResearchRequest } from "../quick-research-request.js";
 import { resolveStateDir } from "../../config/paths.js";
 import { getLogger } from "../../logging/logger.js";
-import type { QuickResearchRequest } from "../quick-research-request.js";
 import { writeFileArtifactManifest } from "../artifact-manifest.js";
 import { diagnosePdfBuffer } from "../pdf-diagnostics.js";
 import { computeThemeResearch } from "../theme-sector.js";
@@ -22,6 +23,12 @@ export type QuickResearchJobPayload = {
   request: QuickResearchRequest;
   createdAtMs: number;
   deliverAtMs: number;
+  researchProfile?: {
+    key: string;
+    label: string;
+    modelRef: string;
+    profileId?: string;
+  };
   route: {
     channel: string;
     to: string;
@@ -30,6 +37,8 @@ export type QuickResearchJobPayload = {
     sessionKey?: string;
   };
 };
+
+export type QuickResearchJobRoute = QuickResearchJobPayload["route"];
 
 const escapeHtml = (value: string): string =>
   value
@@ -84,6 +93,39 @@ const sanitizeThemeLabel = (value: string): string => {
   return raw;
 };
 
+const resolveQuickResearchSeriesKey = (request: QuickResearchRequest): string =>
+  request.kind === "company"
+    ? `quickrun_company_${slugify(request.ticker)}`
+    : `quickrun_theme_${slugify(sanitizeThemeLabel(request.theme))}`;
+
+const resolveQuickResearchArtifactFromManifest = (
+  request: QuickResearchRequest,
+): { mediaUrl: string; runId?: string } | null => {
+  try {
+    const stateDir = resolveStateDir(process.env, os.homedir);
+    const manifestPath = path.join(
+      stateDir,
+      "research",
+      "quickrun",
+      `${resolveQuickResearchSeriesKey(request)}.artifact.json`,
+    );
+    if (!fsSync.existsSync(manifestPath)) return null;
+    const parsed = JSON.parse(fsSync.readFileSync(manifestPath, "utf8")) as {
+      outPath?: unknown;
+      metrics?: { run_id?: unknown };
+    };
+    const outPath = typeof parsed.outPath === "string" ? parsed.outPath.trim() : "";
+    if (!outPath || !fsSync.existsSync(outPath)) return null;
+    const runId =
+      typeof parsed.metrics?.run_id === "string" && parsed.metrics.run_id.trim()
+        ? parsed.metrics.run_id.trim()
+        : undefined;
+    return { mediaUrl: outPath, ...(runId ? { runId } : {}) };
+  } catch {
+    return null;
+  }
+};
+
 const resolveChromeExecutablePath = (): string | undefined => {
   const env = (process.env.OPENCLAW_CHROME_PATH ?? process.env.CHROME_PATH ?? "").trim();
   if (env && fsSync.existsSync(env)) return env;
@@ -106,7 +148,404 @@ const normalizeTickerList = (values: Iterable<unknown>): string[] =>
     .map((value) => (typeof value === "string" ? value.trim().toUpperCase() : ""))
     .filter(Boolean);
 
-const safeSend = async (params: {
+const normalizeRoutePart = (value?: string): string => value?.trim().toLowerCase() ?? "";
+
+const matchesQuickResearchRoute = (
+  candidate: QuickResearchJobRoute | undefined,
+  expected: QuickResearchJobRoute,
+): boolean => {
+  if (!candidate) return false;
+  const expectedSessionKey = normalizeRoutePart(expected.sessionKey);
+  const candidateSessionKey = normalizeRoutePart(candidate.sessionKey);
+  if (expectedSessionKey && candidateSessionKey) {
+    return expectedSessionKey === candidateSessionKey;
+  }
+  return (
+    normalizeRoutePart(candidate.channel) === normalizeRoutePart(expected.channel) &&
+    normalizeRoutePart(candidate.to) === normalizeRoutePart(expected.to) &&
+    normalizeRoutePart(candidate.accountId) === normalizeRoutePart(expected.accountId) &&
+    normalizeRoutePart(candidate.threadId) === normalizeRoutePart(expected.threadId)
+  );
+};
+
+type ReportSectionBlock = {
+  tag?: string;
+  text?: string;
+};
+
+type ReportSection = {
+  key?: string;
+  title?: string;
+  blocks?: ReportSectionBlock[];
+};
+
+type QuickResearchReportShape = {
+  sections?: ReportSection[];
+  appendix?: {
+    whats_missing?: string[];
+  };
+};
+
+const QUICK_SUMMARY_PLACEHOLDER_LANGUAGE_RE =
+  /\b(to appear|appendix pass|provided in appendix|full appendix|appendix available|appendix to follow|sources to follow|sources? pending|pending sources?|link(?:s)? to follow|csv\/queries|queries\/csv|pinned query|query ids?|ready for live|swap(?:ped)? for live|can be swapped|available (?:on|upon|by) request|(?:on|upon|by) request|provided (?:on|upon|by) request|placeholder(?:s)?|tbd|todo|coming soon|to be added|to be provided|to be attached|will (?:add|attach|provide)|tktk|tk|lorem ipsum)\b/gi;
+
+const normalizeTextLine = (value: string): string =>
+  value
+    .replaceAll(/\s+/g, " ")
+    .replaceAll(/\s+([,.;:!?])/g, "$1")
+    .trim();
+
+const sanitizeQuickSummaryText = (value: string): string =>
+  normalizeTextLine(
+    value
+      .replaceAll(/\{\{\s*N\d+\s*\}\}/g, "n/a")
+      .replace(QUICK_SUMMARY_PLACEHOLDER_LANGUAGE_RE, "omitted"),
+  );
+
+const takeDistinctLines = (values: Array<string | undefined>, limit: number): string[] => {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const normalized = sanitizeQuickSummaryText(value ?? "");
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+    if (out.length >= limit) break;
+  }
+  return out;
+};
+
+const collectSectionLines = (
+  report: QuickResearchReportShape,
+  sectionKeys: string[],
+  preferredTags: string[],
+  limit: number,
+): string[] => {
+  const keySet = new Set(sectionKeys.map((value) => value.trim().toLowerCase()));
+  const tagSet = new Set(preferredTags.map((value) => value.trim().toUpperCase()));
+  const matchingSections = (report.sections ?? []).filter((section) =>
+    keySet.has(
+      String(section.key ?? "")
+        .trim()
+        .toLowerCase(),
+    ),
+  );
+  const tagged = matchingSections.flatMap((section) =>
+    (section.blocks ?? [])
+      .filter((block) =>
+        tagSet.has(
+          String(block.tag ?? "")
+            .trim()
+            .toUpperCase(),
+        ),
+      )
+      .map((block) => block.text),
+  );
+  const fallback = matchingSections.flatMap((section) =>
+    (section.blocks ?? []).map((block) => block.text),
+  );
+  return takeDistinctLines(tagged.length ? tagged : fallback, limit);
+};
+
+export const buildQuickResearchTelegramSummary = (params: {
+  kind: QuickResearchRequest["kind"];
+  subject: string;
+  jobId: string;
+  runId: string;
+  builtAtEt: string;
+  pdfBytes: number;
+  sha256: string;
+  report: QuickResearchReportShape;
+}): string => {
+  const overview = collectSectionLines(
+    params.report,
+    ["executive_summary", "what_it_is_isnt_why_now"],
+    ["INTERPRETATION", "FACT"],
+    2,
+  );
+  const thesis = collectSectionLines(
+    params.report,
+    ["thesis", "variant_perception"],
+    ["INTERPRETATION", "FACT", "ASSUMPTION"],
+    2,
+  );
+  const risks = collectSectionLines(
+    params.report,
+    ["risks_premortem", "risks_falsifiers", "change_mind_triggers"],
+    ["INTERPRETATION", "FACT", "ASSUMPTION"],
+    2,
+  );
+  const catalysts = collectSectionLines(
+    params.report,
+    ["catalysts", "catalysts_timeline"],
+    ["FACT", "INTERPRETATION"],
+    2,
+  );
+  const missing = takeDistinctLines(params.report.appendix?.whats_missing ?? [], 2);
+  const whyNow = collectSectionLines(
+    params.report,
+    ["what_it_is_isnt_why_now", "variant_perception", "catalysts", "catalysts_timeline"],
+    ["INTERPRETATION", "FACT"],
+    2,
+  );
+
+  const lines: string[] = [];
+  lines.push(
+    params.kind === "company"
+      ? `Company memo ready: ${params.subject}`
+      : `Theme memo ready: ${params.subject}`,
+  );
+  lines.push(`Built: ${params.builtAtEt}`);
+  lines.push("");
+  lines.push("Summary");
+  for (const line of overview) lines.push(`- ${line}`);
+  if (!overview.length) lines.push("- Memo completed; see PDF for the full investment case.");
+  lines.push("");
+  if (whyNow.length) {
+    lines.push("Why now / what changed");
+    for (const line of whyNow) lines.push(`- ${line}`);
+    lines.push("");
+  }
+  lines.push("Bull case");
+  for (const line of thesis) lines.push(`- ${line}`);
+  if (!thesis.length) lines.push("- See thesis section in the attached PDF.");
+  lines.push("");
+  lines.push("Bear case / change-mind triggers");
+  for (const line of risks) lines.push(`- ${line}`);
+  if (!risks.length) lines.push("- No concise risk lines extracted; use the PDF risks section.");
+  if (catalysts.length) {
+    lines.push("");
+    lines.push("Catalysts to watch");
+    for (const line of catalysts) lines.push(`- ${line}`);
+  }
+  if (missing.length) {
+    lines.push("");
+    lines.push("Next diligence");
+    for (const line of missing) lines.push(`- ${line}`);
+  }
+  lines.push("");
+  lines.push(`job_id=${params.jobId}`);
+  lines.push(`run_id=${params.runId}`);
+  if (params.kind === "company") {
+    lines.push(
+      `Follow-ups: /changed ${params.subject} | /thesis ${params.subject} | /sources ${params.subject}`,
+    );
+  }
+  return lines.join("\n");
+};
+
+const buildQuickResearchStatusLine = (
+  job: QuickrunJobRecord<QuickResearchJobPayload>,
+  nowMs: number,
+): string => {
+  if (job.status === "running") {
+    const ageMinutes = Math.max(0, Math.round((nowMs - job.updatedAtMs) / 60_000));
+    return `running (attempt ${job.attempts}/${job.maxAttempts}, last update ${ageMinutes}m ago)`;
+  }
+  if (job.status === "queued") {
+    const waitMinutes = Math.max(0, Math.ceil((job.runAfterMs - nowMs) / 60_000));
+    return waitMinutes > 0 ? `queued (${waitMinutes}m until eligible)` : "queued";
+  }
+  if (job.status === "failed") {
+    return `failed after ${job.attempts}/${job.maxAttempts} attempts`;
+  }
+  return `completed at ${formatBuiltAtEt(new Date(job.completedAtMs ?? job.updatedAtMs))}`;
+};
+
+export const getLatestQuickResearchJobForRoute = (params: {
+  route: QuickResearchJobRoute;
+  dbPath?: string;
+  includeTerminal?: boolean;
+  limit?: number;
+}): QuickrunJobRecord<QuickResearchJobPayload> | null => {
+  const store = QuickrunJobStore.open(params.dbPath);
+  const jobs = store.list<QuickResearchJobPayload>({
+    jobType: QUICK_RESEARCH_JOB_TYPE,
+    limit: params.limit ?? 40,
+  });
+  const matching = jobs.filter((job) => matchesQuickResearchRoute(job.payload.route, params.route));
+  if (!matching.length) return null;
+  const active = matching.find((job) => job.status === "queued" || job.status === "running");
+  if (active) return active;
+  if (params.includeTerminal ?? true) {
+    return matching[0] ?? null;
+  }
+  return null;
+};
+
+export const listQuickResearchJobsForRoute = (params: {
+  route: QuickResearchJobRoute;
+  dbPath?: string;
+  limit?: number;
+}): QuickrunJobRecord<QuickResearchJobPayload>[] => {
+  const store = QuickrunJobStore.open(params.dbPath);
+  return store
+    .list<QuickResearchJobPayload>({
+      jobType: QUICK_RESEARCH_JOB_TYPE,
+      limit: params.limit ?? 10,
+    })
+    .filter((job) => matchesQuickResearchRoute(job.payload.route, params.route));
+};
+
+export const buildQuickResearchStatusReply = (params: {
+  route: QuickResearchJobRoute;
+  dbPath?: string;
+  nowMs?: number;
+}): string | null => {
+  const nowMs = params.nowMs ?? Date.now();
+  const job = getLatestQuickResearchJobForRoute({
+    route: params.route,
+    dbPath: params.dbPath,
+    includeTerminal: true,
+  });
+  if (!job) return null;
+  const request = job.payload.request;
+  const subject = request.kind === "company" ? request.ticker : request.theme;
+  const lines = ["Quick status:"];
+  lines.push(`- Job: ${request.kind} v2 ${subject} (${request.minutes} min)`);
+  lines.push(`- Status: ${buildQuickResearchStatusLine(job, nowMs)}`);
+  lines.push(`- Accepted: ${formatBuiltAtEt(new Date(job.payload.createdAtMs))}`);
+  lines.push(`- Target post-after: ${formatBuiltAtEt(new Date(job.payload.deliverAtMs))}`);
+  if (job.payload.researchProfile?.modelRef) {
+    lines.push(`- Model: ${job.payload.researchProfile.modelRef}`);
+  }
+  if (job.progressNote?.trim()) {
+    lines.push(`- Progress: ${job.progressNote.trim()}`);
+  }
+  if (job.status === "failed" && job.lastError?.trim()) {
+    lines.push(`- Last error: ${job.lastError.trim()}`);
+  }
+  lines.push(`- job_id=${job.id}`);
+  return lines.join("\n");
+};
+
+export const buildQuickResearchRecentJobsReply = (params: {
+  route: QuickResearchJobRoute;
+  dbPath?: string;
+  limit?: number;
+  nowMs?: number;
+}): string | null => {
+  const nowMs = params.nowMs ?? Date.now();
+  const jobs = listQuickResearchJobsForRoute({
+    route: params.route,
+    dbPath: params.dbPath,
+    limit: params.limit ?? 3,
+  });
+  if (!jobs.length) return null;
+  const lines = ["Recent quick research jobs:"];
+  for (const job of jobs.slice(0, params.limit ?? 3)) {
+    const request = job.payload.request;
+    const subject = request.kind === "company" ? request.ticker : request.theme;
+    lines.push(
+      `- ${job.id}: ${request.kind} ${subject} (${request.minutes} min) | ${buildQuickResearchStatusLine(job, nowMs)}`,
+    );
+  }
+  return lines.join("\n");
+};
+
+export const retryQuickResearchJob = (params: {
+  id: string;
+  dbPath?: string;
+}): QuickrunJobRecord | null => {
+  const store = QuickrunJobStore.open(params.dbPath);
+  return store.requeueFailed({ id: params.id });
+};
+
+export const buildQuickResearchPdfFollowupReply = (params: {
+  route: QuickResearchJobRoute;
+  dbPath?: string;
+  nowMs?: number;
+}): { text: string; mediaUrl?: string; isError?: boolean } | null => {
+  const nowMs = params.nowMs ?? Date.now();
+  const job = getLatestQuickResearchJobForRoute({
+    route: params.route,
+    dbPath: params.dbPath,
+    includeTerminal: true,
+  });
+  if (!job) return null;
+
+  if (job.status === "queued" || job.status === "running") {
+    return {
+      text:
+        buildQuickResearchStatusReply({
+          route: params.route,
+          dbPath: params.dbPath,
+          nowMs,
+        }) ?? "Quick research PDF is not ready yet.",
+    };
+  }
+
+  if (job.status === "failed") {
+    const request = job.payload.request;
+    const subject = request.kind === "company" ? request.ticker : request.theme;
+    return {
+      text: [
+        `❌ Last quick research run failed for ${subject}.`,
+        `job_id=${job.id}`,
+        job.lastError?.trim() ? `error=${job.lastError.trim()}` : null,
+        "Use /qretry to requeue it.",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      isError: true,
+    };
+  }
+
+  if (!job.resultMediaUrl?.trim()) {
+    const recovered = resolveQuickResearchArtifactFromManifest(job.payload.request);
+    if (recovered?.mediaUrl) {
+      return {
+        text:
+          job.resultText?.trim() ||
+          [
+            "Re-sending quick research PDF.",
+            `job_id=${job.id}`,
+            recovered.runId?.trim() ? `run_id=${recovered.runId.trim()}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        mediaUrl: recovered.mediaUrl,
+      };
+    }
+    return {
+      text: [
+        "❌ Quick research run completed, but no PDF artifact is stored for re-delivery.",
+        `job_id=${job.id}`,
+      ].join("\n"),
+      isError: true,
+    };
+  }
+
+  return {
+    text:
+      job.resultText?.trim() ||
+      [
+        "Re-sending quick research PDF.",
+        `job_id=${job.id}`,
+        job.resultRunId?.trim() ? `run_id=${job.resultRunId.trim()}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    mediaUrl: job.resultMediaUrl.trim(),
+  };
+};
+
+const maybeSendQuickResearchProgress = async (params: {
+  cfg: OpenClawConfig;
+  route: QuickResearchJobPayload["route"];
+  jobId: string;
+  note: string;
+}): Promise<void> => {
+  await deliverQuickResearchReply({
+    cfg: params.cfg,
+    route: params.route,
+    text: `Quick research progress\njob_id=${params.jobId}\n${params.note}`,
+  });
+};
+
+export const deliverQuickResearchReply = async (params: {
   cfg: OpenClawConfig;
   route: QuickResearchJobPayload["route"];
   text: string;
@@ -114,7 +553,7 @@ const safeSend = async (params: {
   mediaUrl?: string;
 }) => {
   const { routeReply } = await import("../../auto-reply/reply/route-reply.js");
-  await routeReply({
+  const result = await routeReply({
     payload: {
       text: params.text,
       ...(params.isError ? { isError: true } : {}),
@@ -128,6 +567,37 @@ const safeSend = async (params: {
     sessionKey: params.route.sessionKey,
     mirror: false,
   });
+  if (result.ok) {
+    return;
+  }
+
+  if (params.mediaUrl) {
+    const fallbackText = [
+      "❌ PDF delivery failed.",
+      `error=${result.error ?? "unknown send failure"}`,
+      `local_path=${params.mediaUrl}`,
+      "",
+      params.text,
+    ].join("\n");
+    const fallback = await routeReply({
+      payload: {
+        text: fallbackText,
+        isError: true,
+      },
+      channel: params.route.channel,
+      to: params.route.to,
+      accountId: params.route.accountId,
+      threadId: params.route.threadId,
+      cfg: params.cfg,
+      sessionKey: params.route.sessionKey,
+      mirror: false,
+    });
+    if (fallback.ok) {
+      return;
+    }
+  }
+
+  throw new Error(result.error ?? "failed to route reply");
 };
 
 const renderPdfFromMarkdown = async (params: {
@@ -236,6 +706,8 @@ const runCompanyQuickResearch = async (params: {
   cfg: OpenClawConfig;
   chromePath: string;
   builtAtEt: string;
+  onProgress?: (note: string) => Promise<void>;
+  onResult?: (params: { text: string; mediaUrl: string; runId: string }) => Promise<void>;
 }) => {
   if (params.payload.request.kind !== "company") {
     throw new Error("Company quick research runner received a non-company payload");
@@ -244,14 +716,17 @@ const runCompanyQuickResearch = async (params: {
   const path = await import("node:path");
   const { runCompanyPipelineV2 } = await import("../../v2/pipeline/v2-pipeline.js");
 
+  await params.onProgress?.("Started source gathering and memo draft.");
+
   const result = await runCompanyPipelineV2({
     ticker: params.payload.request.ticker,
     question: params.payload.request.question,
     timeboxMinutes: params.payload.request.minutes,
+    llmProfile: params.payload.researchProfile,
   });
   if (!result.passed) {
     await delay(Math.max(0, params.payload.deliverAtMs - Date.now()));
-    await safeSend({
+    await deliverQuickResearchReply({
       cfg: params.cfg,
       route: params.payload.route,
       isError: true,
@@ -266,6 +741,8 @@ const runCompanyQuickResearch = async (params: {
     });
     return;
   }
+
+  await params.onProgress?.("Draft passed quality gate. Rendering PDF.");
 
   const outDir = path.join(path.dirname(result.reportMarkdownPath), "artifacts");
   await fs.mkdir(outDir, { recursive: true });
@@ -282,6 +759,9 @@ const runCompanyQuickResearch = async (params: {
   });
 
   const pdfBuffer = await fs.readFile(pdfPath);
+  const reportJson = JSON.parse(
+    await fs.readFile(result.reportJsonPath, "utf8"),
+  ) as QuickResearchReportShape;
   const diag = await diagnosePdfBuffer({
     buffer: new Uint8Array(pdfBuffer),
     maxPages: 50,
@@ -289,7 +769,7 @@ const runCompanyQuickResearch = async (params: {
   });
   if (diag.errors.length) {
     await delay(Math.max(0, params.payload.deliverAtMs - Date.now()));
-    await safeSend({
+    await deliverQuickResearchReply({
       cfg: params.cfg,
       route: params.payload.route,
       isError: true,
@@ -298,9 +778,16 @@ const runCompanyQuickResearch = async (params: {
     return;
   }
 
+  await params.onProgress?.("PDF passed diagnostics. Waiting for delivery window.");
+
   const stateDir = resolveStateDir(process.env, os.homedir);
-  const seriesKey = `quickrun_company_${slugify(params.payload.request.ticker)}`;
-  const seriesManifestPath = path.join(stateDir, "research", "quickrun", `${seriesKey}.artifact.json`);
+  const seriesKey = resolveQuickResearchSeriesKey(params.payload.request);
+  const seriesManifestPath = path.join(
+    stateDir,
+    "research",
+    "quickrun",
+    `${seriesKey}.artifact.json`,
+  );
   await fs.mkdir(path.dirname(seriesManifestPath), { recursive: true, mode: 0o700 });
   const manifestRes = await writeFileArtifactManifest({
     kind: "memo",
@@ -317,7 +804,7 @@ const runCompanyQuickResearch = async (params: {
   });
   if (manifestRes.manifest.unchangedFromPrevious) {
     await delay(Math.max(0, params.payload.deliverAtMs - Date.now()));
-    await safeSend({
+    await deliverQuickResearchReply({
       cfg: params.cfg,
       route: params.payload.route,
       isError: true,
@@ -326,12 +813,27 @@ const runCompanyQuickResearch = async (params: {
     return;
   }
 
+  const summaryText = buildQuickResearchTelegramSummary({
+    kind: "company",
+    subject: params.payload.request.ticker,
+    jobId: params.payload.jobId,
+    runId: result.runId,
+    builtAtEt: params.builtAtEt,
+    pdfBytes: pdfBuffer.length,
+    sha256: manifestRes.manifest.sha256,
+    report: reportJson,
+  });
+  await params.onResult?.({
+    text: summaryText,
+    mediaUrl: pdfPath,
+    runId: result.runId,
+  });
   await delay(Math.max(0, params.payload.deliverAtMs - Date.now()));
-  await safeSend({
+  await deliverQuickResearchReply({
     cfg: params.cfg,
     route: params.payload.route,
     mediaUrl: pdfPath,
-    text: `v2 company memo\njob_id=${params.payload.jobId}\nrun_id=${result.runId}\nBuilt: ${params.builtAtEt}\nsha256=${manifestRes.manifest.sha256}\nbytes=${pdfBuffer.length}`,
+    text: summaryText,
   });
 };
 
@@ -340,6 +842,8 @@ const runThemeQuickResearch = async (params: {
   cfg: OpenClawConfig;
   chromePath: string;
   builtAtEt: string;
+  onProgress?: (note: string) => Promise<void>;
+  onResult?: (params: { text: string; mediaUrl: string; runId: string }) => Promise<void>;
 }) => {
   if (params.payload.request.kind !== "theme") {
     throw new Error("Theme quick research runner received a non-theme payload");
@@ -347,6 +851,7 @@ const runThemeQuickResearch = async (params: {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
   const { runThemePipelineV2 } = await import("../../v2/pipeline/v2-pipeline.js");
+  await params.onProgress?.("Started universe resolution and memo draft.");
 
   const themeLabel = sanitizeThemeLabel(params.payload.request.theme);
   const explicitUniverse = Array.from(
@@ -409,7 +914,7 @@ const runThemeQuickResearch = async (params: {
   }
   if (!universe.length) {
     await delay(Math.max(0, params.payload.deliverAtMs - Date.now()));
-    await safeSend({
+    await deliverQuickResearchReply({
       cfg: params.cfg,
       route: params.payload.route,
       isError: true,
@@ -424,6 +929,8 @@ const runThemeQuickResearch = async (params: {
     return;
   }
 
+  await params.onProgress?.(`Universe resolved (${universe.length} names). Building memo.`);
+
   const result = await runThemePipelineV2({
     themeName: themeLabel,
     universe,
@@ -432,10 +939,11 @@ const runThemeQuickResearch = async (params: {
         ? inferredUniverse.inferred_entities
         : undefined,
     timeboxMinutes: params.payload.request.minutes,
+    llmProfile: params.payload.researchProfile,
   });
   if (!result.passed) {
     await delay(Math.max(0, params.payload.deliverAtMs - Date.now()));
-    await safeSend({
+    await deliverQuickResearchReply({
       cfg: params.cfg,
       route: params.payload.route,
       isError: true,
@@ -450,6 +958,8 @@ const runThemeQuickResearch = async (params: {
     });
     return;
   }
+
+  await params.onProgress?.("Draft passed quality gate. Rendering PDF.");
 
   const outDir = path.join(path.dirname(result.reportMarkdownPath), "artifacts");
   await fs.mkdir(outDir, { recursive: true });
@@ -466,6 +976,9 @@ const runThemeQuickResearch = async (params: {
   });
 
   const pdfBuffer = await fs.readFile(pdfPath);
+  const reportJson = JSON.parse(
+    await fs.readFile(result.reportJsonPath, "utf8"),
+  ) as QuickResearchReportShape;
   const diag = await diagnosePdfBuffer({
     buffer: new Uint8Array(pdfBuffer),
     maxPages: 50,
@@ -473,7 +986,7 @@ const runThemeQuickResearch = async (params: {
   });
   if (diag.errors.length) {
     await delay(Math.max(0, params.payload.deliverAtMs - Date.now()));
-    await safeSend({
+    await deliverQuickResearchReply({
       cfg: params.cfg,
       route: params.payload.route,
       isError: true,
@@ -482,9 +995,16 @@ const runThemeQuickResearch = async (params: {
     return;
   }
 
+  await params.onProgress?.("PDF passed diagnostics. Waiting for delivery window.");
+
   const stateDir = resolveStateDir(process.env, os.homedir);
-  const seriesKey = `quickrun_theme_${slugify(themeLabel)}`;
-  const seriesManifestPath = path.join(stateDir, "research", "quickrun", `${seriesKey}.artifact.json`);
+  const seriesKey = resolveQuickResearchSeriesKey(params.payload.request);
+  const seriesManifestPath = path.join(
+    stateDir,
+    "research",
+    "quickrun",
+    `${seriesKey}.artifact.json`,
+  );
   await fs.mkdir(path.dirname(seriesManifestPath), { recursive: true, mode: 0o700 });
   const manifestRes = await writeFileArtifactManifest({
     kind: "theme_report",
@@ -501,7 +1021,7 @@ const runThemeQuickResearch = async (params: {
   });
   if (manifestRes.manifest.unchangedFromPrevious) {
     await delay(Math.max(0, params.payload.deliverAtMs - Date.now()));
-    await safeSend({
+    await deliverQuickResearchReply({
       cfg: params.cfg,
       route: params.payload.route,
       isError: true,
@@ -510,25 +1030,35 @@ const runThemeQuickResearch = async (params: {
     return;
   }
 
+  const summaryText = [
+    buildQuickResearchTelegramSummary({
+      kind: "theme",
+      subject: themeLabel,
+      jobId: params.payload.jobId,
+      runId: result.runId,
+      builtAtEt: params.builtAtEt,
+      pdfBytes: pdfBuffer.length,
+      sha256: manifestRes.manifest.sha256,
+      report: reportJson,
+    }),
+    `Universe: ${universe.join(", ")}`,
+    inferredUniverse
+      ? `Universe bootstrap: scanned_docs=${inferredUniverse.scanned_docs} inferred_domains=${inferredUniverse.inferred_domains.slice(0, 10).join(", ")}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  await params.onResult?.({
+    text: summaryText,
+    mediaUrl: pdfPath,
+    runId: result.runId,
+  });
   await delay(Math.max(0, params.payload.deliverAtMs - Date.now()));
-  await safeSend({
+  await deliverQuickResearchReply({
     cfg: params.cfg,
     route: params.payload.route,
     mediaUrl: pdfPath,
-    text: [
-      "v2 theme memo",
-      `job_id=${params.payload.jobId}`,
-      `run_id=${result.runId}`,
-      `Universe: ${universe.join(", ")}`,
-      inferredUniverse
-        ? `Universe bootstrap: scanned_docs=${inferredUniverse.scanned_docs} inferred_domains=${inferredUniverse.inferred_domains.slice(0, 10).join(", ")}`
-        : null,
-      `Built: ${params.builtAtEt}`,
-      `sha256=${manifestRes.manifest.sha256}`,
-      `bytes=${pdfBuffer.length}`,
-    ]
-      .filter(Boolean)
-      .join("\n"),
+    text: summaryText,
   });
 };
 
@@ -537,6 +1067,33 @@ export const executeQuickResearchJob = async (
   cfg: OpenClawConfig,
 ) => {
   const payload = job.payload;
+  const store = QuickrunJobStore.open();
+  let lastProgress = "";
+  const updateProgress = async (note: string) => {
+    const normalized = note.trim();
+    if (!normalized || normalized === lastProgress) return;
+    lastProgress = normalized;
+    store.setProgress({
+      id: job.id,
+      workerId: job.lockedBy ?? "",
+      note: normalized,
+    });
+    await maybeSendQuickResearchProgress({
+      cfg,
+      route: payload.route,
+      jobId: payload.jobId,
+      note: normalized,
+    });
+  };
+  const updateResult = async (result: { text: string; mediaUrl: string; runId: string }) => {
+    store.setResult({
+      id: job.id,
+      workerId: job.lockedBy ?? "",
+      text: result.text,
+      mediaUrl: result.mediaUrl,
+      runId: result.runId,
+    });
+  };
   try {
     const chromePath = resolveChromeExecutablePath();
     if (!chromePath) {
@@ -547,14 +1104,28 @@ export const executeQuickResearchJob = async (
     const builtAtEt = formatBuiltAtEt(new Date());
 
     if (payload.request.kind === "company") {
-      await runCompanyQuickResearch({ payload, cfg, chromePath, builtAtEt });
+      await runCompanyQuickResearch({
+        payload,
+        cfg,
+        chromePath,
+        builtAtEt,
+        onProgress: updateProgress,
+        onResult: updateResult,
+      });
     } else {
-      await runThemeQuickResearch({ payload, cfg, chromePath, builtAtEt });
+      await runThemeQuickResearch({
+        payload,
+        cfg,
+        chromePath,
+        builtAtEt,
+        onProgress: updateProgress,
+        onResult: updateResult,
+      });
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await delay(Math.max(0, payload.deliverAtMs - Date.now()));
-    await safeSend({
+    await deliverQuickResearchReply({
       cfg,
       route: payload.route,
       isError: true,
@@ -564,9 +1135,7 @@ export const executeQuickResearchJob = async (
   }
 };
 
-let singleton:
-  | ReturnType<typeof createQuickrunJobRunner<QuickResearchJobPayload>>
-  | null = null;
+let singleton: ReturnType<typeof createQuickrunJobRunner<QuickResearchJobPayload>> | null = null;
 let currentCfg: OpenClawConfig | null = null;
 
 const getOrCreateRunner = (cfg: OpenClawConfig, dbPath?: string) => {

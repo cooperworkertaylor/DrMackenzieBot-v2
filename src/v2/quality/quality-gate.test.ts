@@ -349,6 +349,18 @@ describe("v2 quality gate", () => {
     expect(res.passed).toBe(false);
     expect(res.issues.map((i) => i.code)).toContain("style_placeholder_language");
   });
+
+  it("rejects the literal word placeholder", () => {
+    const report = demoCompanyReport();
+    report.sections[0].blocks.push({
+      tag: "INTERPRETATION",
+      text: "This section still contains placeholder wording that must be removed.",
+    });
+
+    const res = runV2QualityGate({ kind: "company", report });
+    expect(res.passed).toBe(false);
+    expect(res.issues.map((i) => i.code)).toContain("style_placeholder_language");
+  });
 });
 
 const demoThemeReport = () => ({

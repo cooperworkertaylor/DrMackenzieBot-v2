@@ -1,6 +1,10 @@
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { setStoredResearchExecutionProfile } from "../../research/research-model-profile.js";
 import {
   extractBestEffortAssistantText,
+  resolveResearchV2ExecutionProfile,
   resolveResearchV2FallbackModelRefs,
   resolveResearchV2ModelRef,
   supportsTemperatureForResearchV2Model,
@@ -29,6 +33,39 @@ describe("resolveResearchV2ModelRef", () => {
       >,
     });
     expect(ref).toBe("anthropic/claude-opus-4-5");
+  });
+});
+
+describe("resolveResearchV2ExecutionProfile", () => {
+  it("uses a stored research model profile ahead of the general env default", () => {
+    const dbPath = path.join(
+      os.tmpdir(),
+      `openclaw-research-profile-${Date.now()}-${Math.random()}.db`,
+    );
+    setStoredResearchExecutionProfile({
+      dbPath,
+      profile: {
+        key: "openrouter-auto",
+        label: "OpenRouter Auto",
+        modelRef: "openrouter/auto",
+        profileId: "openrouter:default",
+        source: "preset",
+      },
+    });
+
+    const profile = resolveResearchV2ExecutionProfile({
+      purpose: "writer",
+      dbPath,
+      env: { OPENCLAW_RESEARCH_V2_MODEL: "openai/gpt-5.4" } as NodeJS.ProcessEnv,
+      cfg: { agents: { defaults: { model: {} } } } as unknown as ReturnType<
+        typeof import("../../config/config.js").loadConfig
+      >,
+    });
+
+    expect(profile).toEqual({
+      modelRef: "openrouter/auto",
+      profileId: "openrouter:default",
+    });
   });
 });
 

@@ -62,6 +62,15 @@ async function resolveCliEntrypointPathForService(): Promise<string> {
   );
 }
 
+function resolveServiceWorkingDirectory(cliEntrypointPath: string): string | undefined {
+  const normalized = path.resolve(cliEntrypointPath);
+  const distMatch = normalized.match(/^(.*?)[/\\]dist[/\\][^/\\]+\.(?:cjs|js|mjs)$/);
+  if (distMatch?.[1]) {
+    return distMatch[1];
+  }
+  return undefined;
+}
+
 async function resolveRealpathSafe(inputPath: string): Promise<string> {
   try {
     return await fs.realpath(inputPath);
@@ -181,6 +190,7 @@ async function resolveCliProgramArguments(params: {
     const cliEntrypointPath = await resolveCliEntrypointPathForService();
     return {
       programArguments: [nodePath, cliEntrypointPath, ...params.args],
+      workingDirectory: resolveServiceWorkingDirectory(cliEntrypointPath),
     };
   }
 
@@ -200,6 +210,7 @@ async function resolveCliProgramArguments(params: {
     const cliEntrypointPath = await resolveCliEntrypointPathForService();
     return {
       programArguments: [bunPath, cliEntrypointPath, ...params.args],
+      workingDirectory: resolveServiceWorkingDirectory(cliEntrypointPath),
     };
   }
 
@@ -208,6 +219,7 @@ async function resolveCliProgramArguments(params: {
       const cliEntrypointPath = await resolveCliEntrypointPathForService();
       return {
         programArguments: [execPath, cliEntrypointPath, ...params.args],
+        workingDirectory: resolveServiceWorkingDirectory(cliEntrypointPath),
       };
     } catch (error) {
       // If running under bun or another runtime that can execute TS directly

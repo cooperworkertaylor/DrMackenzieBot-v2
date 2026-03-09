@@ -13,8 +13,13 @@ import { createOpenClawTools } from "../../agents/openclaw-tools.js";
 import { getChannelDock } from "../../channels/dock.js";
 import { logVerbose } from "../../globals.js";
 import { getLogger } from "../../logging/logger.js";
-import { parseQuickResearchRequest } from "../../research/quick-research-request.js";
 import {
+  parseQuickResearchRequest,
+  type QuickResearchRequest,
+} from "../../research/quick-research-request.js";
+import {
+  buildQuickResearchPdfFollowupReply,
+  buildQuickResearchStatusReply,
   enqueueQuickResearchJob,
   formatBuiltAtEt,
 } from "../../research/quickrun/quick-research-jobs.js";
@@ -95,6 +100,66 @@ const looksLikeQuickResearch = (value: string): boolean => {
   return hasIntent || mentionsPdfOrAttach;
 };
 
+export const looksLikeQuickResearchStatusPrompt = (value: string): boolean => {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  return /^(?:\/qstatus|update|status|quick status|quick update|progress|eta)(?:\?+)?$/.test(
+    normalized,
+  );
+};
+
+export const looksLikeQuickResearchPdfFollowupPrompt = (value: string): boolean => {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  return /^(?:send|attach|post|share)(?:\s+me)?\s+(?:the\s+)?(?:pdf|memo|report)(?:\s+(?:here|again|now))?$/.test(
+    normalized,
+  );
+};
+
+const resolveQuickResearchStatusPrompt = (params: {
+  ctx: MsgContext;
+  cleanedBody: string;
+  command: Parameters<typeof handleCommands>[0]["command"];
+}): string | null => {
+  const candidates = [
+    typeof params.ctx.BodyForCommands === "string" ? params.ctx.BodyForCommands : "",
+    typeof params.ctx.CommandBody === "string" ? params.ctx.CommandBody : "",
+    params.command.commandBodyNormalized ?? "",
+    params.command.rawBodyNormalized ?? "",
+    params.cleanedBody,
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const candidate of candidates) {
+    if (looksLikeQuickResearchStatusPrompt(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+const resolveQuickResearchPdfFollowupPrompt = (params: {
+  ctx: MsgContext;
+  cleanedBody: string;
+  command: Parameters<typeof handleCommands>[0]["command"];
+}): string | null => {
+  const candidates = [
+    typeof params.ctx.BodyForCommands === "string" ? params.ctx.BodyForCommands : "",
+    typeof params.ctx.CommandBody === "string" ? params.ctx.CommandBody : "",
+    params.command.commandBodyNormalized ?? "",
+    params.command.rawBodyNormalized ?? "",
+    params.cleanedBody,
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const candidate of candidates) {
+    if (looksLikeQuickResearchPdfFollowupPrompt(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
 async function maybeHandleQuickResearchPdfRequest(params: {
   ctx: MsgContext;
   cleanedBody: string;
@@ -105,6 +170,11 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   typing: TypingController;
   agentId: string;
 }): Promise<InlineActionResult | null> {
+  const quickResearchResolution = resolveQuickResearchRequest({
+    ctx: params.ctx,
+    cleanedBody: params.cleanedBody,
+    command: params.command,
+  });
   const explicitQuickResearchCommand = /^\/research(?:[_-]?(?:fast|deep))?\b/i.test(
     (params.command.commandBodyNormalized ?? "").trim(),
   );
@@ -125,11 +195,11 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   // Also hard-intercept explicit /research* commands and parseable quick-research prompts
   // so they never fall through to free-form LLM confirmations.
   const isTelegram = channelResolved === "telegram" || channelRaw.includes("telegram");
-  const req = parseQuickResearchRequest(params.cleanedBody);
+  const req = quickResearchResolution.request;
   if (!isTelegram && !explicitQuickResearchCommand && !req) return null;
 
   if (!req) {
-    if (!looksLikeQuickResearch(params.cleanedBody)) {
+    if (!quickResearchResolution.looksLikeQuickResearch) {
       return null;
     }
     // Fail closed: if it looks like a timeboxed "send PDF" research request but we can't parse it,
@@ -239,7 +309,12 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   const deliverAtEt = formatBuiltAtEt(new Date(deliverAtMs));
 
   const crypto = await import("node:crypto");
+  const { resolveActiveResearchDbPath, resolveResearchExecutionProfile } =
+    await import("../../research/research-model-profile.js");
   const jobId = crypto.randomUUID?.() ?? `${createdAtMs}-${Math.random().toString(16).slice(2)}`;
+  const activeResearchProfile = resolveResearchExecutionProfile({
+    dbPath: resolveActiveResearchDbPath(),
+  });
 
   enqueueQuickResearchJob({
     cfg: params.cfg,
@@ -248,6 +323,12 @@ async function maybeHandleQuickResearchPdfRequest(params: {
       request: req,
       createdAtMs,
       deliverAtMs,
+      researchProfile: {
+        key: activeResearchProfile.key,
+        label: activeResearchProfile.label,
+        modelRef: activeResearchProfile.modelRef,
+        ...(activeResearchProfile.profileId ? { profileId: activeResearchProfile.profileId } : {}),
+      },
       route: {
         channel: originChannel,
         to: originTo,
@@ -279,8 +360,48 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   return {
     kind: "reply",
     reply: {
-      text: `Run accepted: ${req.kind} v2 (${req.minutes} min). Will post PDF at/after ${deliverAtEt} if it passes strict quality + strict PDF diagnostics.\njob_id=${jobId}\nagent_commit=${commit}`,
+      text: `Run accepted: ${req.kind} v2 (${req.minutes} min). Will post PDF at/after ${deliverAtEt} if it passes strict quality + strict PDF diagnostics.\njob_id=${jobId}\nresearch_profile=${activeResearchProfile.key}\nresearch_model=${activeResearchProfile.modelRef}\nagent_commit=${commit}`,
     },
+  };
+}
+
+export function resolveQuickResearchRequest(params: {
+  ctx: MsgContext;
+  cleanedBody: string;
+  command: Parameters<typeof handleCommands>[0]["command"];
+}): {
+  request: QuickResearchRequest | null;
+  source: string | null;
+  looksLikeQuickResearch: boolean;
+} {
+  const candidates = [
+    typeof params.ctx.BodyForCommands === "string" ? params.ctx.BodyForCommands : "",
+    typeof params.ctx.CommandBody === "string" ? params.ctx.CommandBody : "",
+    params.command.commandBodyNormalized ?? "",
+    params.command.rawBodyNormalized ?? "",
+    params.cleanedBody,
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    const request = parseQuickResearchRequest(candidate);
+    if (request) {
+      return {
+        request,
+        source: candidate,
+        looksLikeQuickResearch: true,
+      };
+    }
+  }
+
+  return {
+    request: null,
+    source: null,
+    looksLikeQuickResearch: Array.from(seen).some((candidate) => looksLikeQuickResearch(candidate)),
   };
 }
 
@@ -482,6 +603,76 @@ export async function handleInlineActions(params: {
   });
   if (quickRun) {
     return quickRun;
+  }
+
+  const quickResearchStatusPrompt = resolveQuickResearchStatusPrompt({
+    ctx,
+    cleanedBody,
+    command,
+  });
+  if (quickResearchStatusPrompt) {
+    const { resolveActiveResearchDbPath } =
+      await import("../../research/research-model-profile.js");
+    const route = {
+      channel:
+        resolveGatewayMessageChannel(ctx.OriginatingChannel) ??
+        resolveGatewayMessageChannel(ctx.Surface) ??
+        resolveGatewayMessageChannel(ctx.Provider) ??
+        "telegram",
+      to: String(ctx.OriginatingTo ?? ctx.To ?? "").trim(),
+      accountId: ctx.AccountId != null ? String(ctx.AccountId) : undefined,
+      threadId: ctx.MessageThreadId != null ? String(ctx.MessageThreadId) : undefined,
+      sessionKey: ctx.SessionKey != null ? String(ctx.SessionKey) : undefined,
+    };
+    if (route.to) {
+      const statusReply = buildQuickResearchStatusReply({
+        route,
+        dbPath: resolveActiveResearchDbPath(),
+      });
+      if (statusReply) {
+        typing.cleanup();
+        return {
+          kind: "reply",
+          reply: {
+            text: statusReply,
+          },
+        };
+      }
+    }
+  }
+
+  const quickResearchPdfFollowupPrompt = resolveQuickResearchPdfFollowupPrompt({
+    ctx,
+    cleanedBody,
+    command,
+  });
+  if (quickResearchPdfFollowupPrompt) {
+    const { resolveActiveResearchDbPath } =
+      await import("../../research/research-model-profile.js");
+    const route = {
+      channel:
+        resolveGatewayMessageChannel(ctx.OriginatingChannel) ??
+        resolveGatewayMessageChannel(ctx.Surface) ??
+        resolveGatewayMessageChannel(ctx.Provider) ??
+        "telegram",
+      to: String(ctx.OriginatingTo ?? ctx.To ?? "").trim(),
+      accountId: ctx.AccountId != null ? String(ctx.AccountId) : undefined,
+      threadId: ctx.MessageThreadId != null ? String(ctx.MessageThreadId) : undefined,
+      sessionKey: ctx.SessionKey != null ? String(ctx.SessionKey) : undefined,
+    };
+    if (route.to) {
+      const deliveryReply = buildQuickResearchPdfFollowupReply({
+        route,
+        dbPath: resolveActiveResearchDbPath(),
+      });
+      if (deliveryReply) {
+        typing.cleanup();
+        return {
+          kind: "reply",
+          reply: deliveryReply,
+        };
+      }
+    }
   }
 
   const handleInlineStatus =

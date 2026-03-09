@@ -63,6 +63,7 @@ describe("resolveGatewayProgramArguments", () => {
     // Should use the symlinked path, not the realpath-resolved versioned path
     expect(result.programArguments[1]).toBe(symlinkPath);
     expect(result.programArguments[1]).not.toContain("@2026.1.21-2");
+    expect(result.workingDirectory).toBe("/Users/test/Library/pnpm/global/5/node_modules/openclaw");
   });
 
   it("falls back to node_modules package dist when .bin path is not resolved", async () => {

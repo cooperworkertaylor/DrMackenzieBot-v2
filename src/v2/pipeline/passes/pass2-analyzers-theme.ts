@@ -65,6 +65,10 @@ export async function pass2ThemeAnalyzersV2(params: {
   universe: string[];
   universeEntities?: ThemeUniverseEntityV2[];
   evidence: EvidenceItem[];
+  llmProfile?: {
+    modelRef?: string;
+    profileId?: string;
+  };
 }): Promise<ThemeAnalyzerOutputV2> {
   const themeName = params.themeName.trim();
   const universe = params.universe.map((t) => t.trim().toUpperCase()).filter(Boolean);
@@ -163,7 +167,8 @@ export async function pass2ThemeAnalyzersV2(params: {
       prompt,
       maxTokens: 2200,
       temperature: 0.2,
-      profileId: process.env.OPENCLAW_RESEARCH_V2_PROFILE?.trim() || undefined,
+      modelRefOverride: params.llmProfile?.modelRef,
+      profileId: params.llmProfile?.profileId ?? process.env.OPENCLAW_RESEARCH_V2_PROFILE?.trim(),
     })) as ThemeAnalyzerOutputV2;
 
     // Ensure stable metadata even if the model forgets.

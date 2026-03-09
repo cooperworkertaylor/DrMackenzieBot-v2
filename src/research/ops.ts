@@ -3,20 +3,23 @@ import path from "node:path";
 import { loadConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
+import { resolveResearchDbPath, openResearchDb } from "./db.js";
+import { getLatestExternalResearchStructuredReport } from "./external-research-report.js";
 import {
   buildDailyWatchlistBrief,
   listResearchWatchlists,
   storeDailyWatchlistBrief,
   type ResearchRefreshQueueItem,
 } from "./external-research-watchlists.js";
-import { getLatestExternalResearchStructuredReport } from "./external-research-report.js";
-import { resolveResearchDbPath, openResearchDb } from "./db.js";
-import { stopQuickResearchWorker, startQuickResearchWorker } from "./quickrun/quick-research-jobs.js";
 import {
   QuickrunJobStore,
   type QuickrunJobRecord,
   type QuickrunJobStatus,
 } from "./quickrun/job-store.js";
+import {
+  stopQuickResearchWorker,
+  startQuickResearchWorker,
+} from "./quickrun/quick-research-jobs.js";
 
 const DEFAULT_WORKER_POLL_MS = 60_000;
 const DEFAULT_SCHEDULER_INTERVAL_MS = 300_000;
@@ -102,6 +105,9 @@ const resolveResearchStateDir = (): string => {
   return path.join(stateDir, "research");
 };
 
+export const resolveResearchBackupDir = (): string =>
+  path.join(resolveResearchStateDir(), "backups");
+
 const listBackups = (dir: string): Array<{ path: string; mtimeMs: number }> => {
   if (!fs.existsSync(dir)) return [];
   return fs
@@ -122,10 +128,8 @@ const copyIfExists = (srcPath: string, destPath: string, copiedPaths: string[]) 
   copiedPaths.push(destPath);
 };
 
-const countQuickrunStatus = (
-  store: QuickrunJobStore,
-  status: QuickrunJobStatus,
-): number => store.list({ status, limit: 10_000 }).length;
+const countQuickrunStatus = (store: QuickrunJobStore, status: QuickrunJobStatus): number =>
+  store.list({ status, limit: 10_000 }).length;
 
 const oldestQuickrunQueuedAgeHours = (store: QuickrunJobStore): number | null => {
   const jobs = store.list({ status: "queued", limit: 10_000 });
@@ -178,10 +182,12 @@ export const getResearchHealthSnapshot = (params?: {
   const store = QuickrunJobStore.open(dbPath);
   const now = Date.now();
   const refreshRows = selectRefreshQueueRows(dbPath);
-  const backupDir = path.resolve(params?.backupDir ?? path.join(resolveResearchStateDir(), "backups"));
+  const backupDir = path.resolve(params?.backupDir ?? resolveResearchBackupDir());
   const latestBackup = listBackups(backupDir)[0];
 
-  const latestDocument = db.prepare(`SELECT MAX(fetched_at) AS ts FROM external_documents`).get() as {
+  const latestDocument = db
+    .prepare(`SELECT MAX(fetched_at) AS ts FROM external_documents`)
+    .get() as {
     ts?: number;
   };
   const latestReport = db.prepare(`SELECT MAX(generated_at) AS ts FROM research_reports`).get() as {
@@ -190,9 +196,9 @@ export const getResearchHealthSnapshot = (params?: {
   const latestBrief = db.prepare(`SELECT MAX(updated_at) AS ts FROM research_briefs`).get() as {
     ts?: number;
   };
-  const unresolvedThesisAlerts = db.prepare(
-    `SELECT COUNT(*) AS count FROM thesis_alerts WHERE resolved=0`,
-  ).get() as { count: number };
+  const unresolvedThesisAlerts = db
+    .prepare(`SELECT COUNT(*) AS count FROM thesis_alerts WHERE resolved=0`)
+    .get() as { count: number };
 
   const queuedRefreshes = refreshRows.filter((row) => row.status === "queued");
   const oldestQueuedRefresh = queuedRefreshes.reduce<number | null>(
@@ -272,7 +278,11 @@ export const createResearchBackup = (params: {
   fs.copyFileSync(dbPath, dbOut);
   copiedPaths.push(dbOut);
 
-  copyIfExists(path.join(stateDir, "raw-artifacts"), path.join(backupDir, "raw-artifacts"), copiedPaths);
+  copyIfExists(
+    path.join(stateDir, "raw-artifacts"),
+    path.join(backupDir, "raw-artifacts"),
+    copiedPaths,
+  );
   copyIfExists(path.join(stateDir, "quickrun"), path.join(backupDir, "quickrun"), copiedPaths);
 
   const manifestPath = path.join(backupDir, "manifest.json");
@@ -383,9 +393,11 @@ export const runResearchSchedulerPass = (params?: {
 
   for (const watchlist of watchlists.filter((item) => item.isDefault)) {
     const briefDate = params?.briefDate ?? new Date().toISOString().slice(0, 10);
-    const existing = db.prepare(
-      `SELECT id FROM research_briefs WHERE watchlist_id=? AND brief_type='daily_watchlist' AND brief_date=?`,
-    ).get(watchlist.id, briefDate) as { id: number } | undefined;
+    const existing = db
+      .prepare(
+        `SELECT id FROM research_briefs WHERE watchlist_id=? AND brief_type='daily_watchlist' AND brief_date=?`,
+      )
+      .get(watchlist.id, briefDate) as { id: number } | undefined;
     if (!existing) {
       const brief = buildDailyWatchlistBrief({
         watchlistId: watchlist.id,
@@ -419,9 +431,9 @@ export const runResearchSchedulerPass = (params?: {
     processedRefreshes += 1;
   }
 
-  const remaining = db.prepare(
-    `SELECT COUNT(*) AS count FROM research_refresh_queue WHERE status='queued'`,
-  ).get() as { count: number };
+  const remaining = db
+    .prepare(`SELECT COUNT(*) AS count FROM research_refresh_queue WHERE status='queued'`)
+    .get() as { count: number };
 
   return {
     processedRefreshes,
@@ -443,10 +455,7 @@ const registerShutdownHandlers = (onStop: () => Promise<void> | void) => {
   process.once("SIGINT", handler);
 };
 
-export const runResearchWorkerLoop = async (params?: {
-  dbPath?: string;
-  runtime?: RuntimeEnv;
-}) => {
+export const runResearchWorkerLoop = async (params?: { dbPath?: string; runtime?: RuntimeEnv }) => {
   const cfg = loadConfig();
   startQuickResearchWorker({ cfg, dbPath: params?.dbPath });
   registerShutdownHandlers(() => {
@@ -469,7 +478,10 @@ export const runResearchSchedulerLoop = async (params?: {
     stopped = true;
   });
   const runtime = params?.runtime ?? defaultRuntime;
-  const intervalMs = Math.max(10_000, Math.floor(params?.intervalMs ?? DEFAULT_SCHEDULER_INTERVAL_MS));
+  const intervalMs = Math.max(
+    10_000,
+    Math.floor(params?.intervalMs ?? DEFAULT_SCHEDULER_INTERVAL_MS),
+  );
   runtime.log("research scheduler started");
   while (!stopped) {
     const result = runResearchSchedulerPass({ dbPath: params?.dbPath });

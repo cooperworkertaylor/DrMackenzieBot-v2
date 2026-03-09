@@ -47,6 +47,23 @@ describe("parseQuickResearchRequest", () => {
     expect(res.question).toContain("PLTR");
   });
 
+  it("parses shorthand '<ticker> <minutes> min' as a company request", () => {
+    const res = parseQuickResearchRequest("NVDA 10 min");
+    expect(res?.kind).toBe("company");
+    if (res?.kind !== "company") throw new Error("expected company");
+    expect(res.minutes).toBe(10);
+    expect(res.ticker).toBe("NVDA");
+    expect(res.question).toContain("NVDA");
+  });
+
+  it("parses shorthand '<ticker> <minutes>' as a company request", () => {
+    const res = parseQuickResearchRequest("NVDA 5");
+    expect(res?.kind).toBe("company");
+    if (res?.kind !== "company") throw new Error("expected company");
+    expect(res.minutes).toBe(5);
+    expect(res.ticker).toBe("NVDA");
+  });
+
   it("parses /research_fast ticker prompts with default 30-minute timebox", () => {
     const res = parseQuickResearchRequest(
       "/research_fast KLAR as a long term investment opportunity.",

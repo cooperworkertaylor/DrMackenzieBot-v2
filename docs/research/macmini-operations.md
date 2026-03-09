@@ -10,6 +10,21 @@
 - `OPENCLAW_RESEARCH_V2_MODEL=openai/gpt-5.4` if you want the research model pinned explicitly. If unset, research v2 now defaults to `openai/gpt-5.4`.
 
 Telegram, model, and API secrets should stay in the existing env / 1Password reference flow.
+For a vault-driven setup, generate the repo env files directly from the real
+`OpenClaw` 1Password vault items:
+
+```bash
+eval "$(op signin --account my.1password.com)"
+pnpm secrets:sync
+```
+
+That writes:
+
+- `.env.1password` with stable 1Password references
+- `.env.resolved.sh` with locally resolved exports for process startup
+
+Items whose titles match env-var names are included automatically, plus keys declared
+in `config/op-env.example` when those items exist.
 
 ## Processes
 
@@ -33,6 +48,12 @@ One-shot scheduler validation:
 
 ```bash
 openclaw research scheduler-pass
+```
+
+Sync the repo-scoped 1Password env file:
+
+```bash
+pnpm secrets:sync
 ```
 
 Install the worker service:

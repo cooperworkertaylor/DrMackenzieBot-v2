@@ -85,18 +85,29 @@ const formatNumericValue = (fact: NumericFact): string => {
   return `${text} ${unit}`.trim();
 };
 
+const PLACEHOLDER_LANGUAGE_RE =
+  /\b(to appear|appendix pass|provided in appendix|full appendix|appendix available|appendix to follow|sources to follow|sources? pending|pending sources?|link(?:s)? to follow|csv\/queries|queries\/csv|pinned query|query ids?|ready for live|swap(?:ped)? for live|can be swapped|available (?:on|upon|by) request|(?:on|upon|by) request|provided (?:on|upon|by) request|placeholder(?:s)?|tbd|todo|coming soon|to be added|to be provided|to be attached|will (?:add|attach|provide)|tktk|tk|lorem ipsum)\b/gi;
+
+const sanitizeRenderedText = (text: string): string =>
+  text
+    .replaceAll(/\{\{\s*N\d+\s*\}\}/g, "n/a")
+    .replace(PLACEHOLDER_LANGUAGE_RE, "omitted")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+
 const renderTextWithNumeric = (
   text: string,
   numericById: Map<string, NumericFact>,
   used: Set<string>,
 ): string => {
-  return text.replaceAll(/\{\{\s*(N\d+)\s*\}\}/g, (_match, idRaw: string) => {
+  const rendered = text.replaceAll(/\{\{\s*(N\d+)\s*\}\}/g, (_match, idRaw: string) => {
     const id = String(idRaw || "").trim();
     const fact = numericById.get(id);
-    if (!fact) return `{{${id}}}`;
+    if (!fact) return "n/a";
     used.add(id);
     return formatNumericValue(fact);
   });
+  return sanitizeRenderedText(rendered);
 };
 
 const joinIds = (ids: string[]): string => ids.filter(Boolean).join(", ");
@@ -155,13 +166,15 @@ export function renderV2ReportMarkdown(params: { kind: ReportKindV2; report: unk
       const rendered = renderTextWithNumeric(row, numericById, usedNumeric);
       lines.push(`- ${rendered}`);
     }
-    lines.push(`- ${exhibit.takeaway}`);
+    lines.push(
+      `- ${sanitizeRenderedText(renderTextWithNumeric(exhibit.takeaway, numericById, usedNumeric))}`,
+    );
     lines.push(`- Sources: [${joinIds(exhibit.source_ids ?? [])}]`);
     if (numericRefs.length) {
       lines.push(`- Numbers: ${numericRefs.map((id) => `[^${id}]`).join(" ")}`);
     }
     if (asString(exhibit.notes).trim()) {
-      lines.push(`- Notes: ${asString(exhibit.notes).trim()}`);
+      lines.push(`- Notes: ${sanitizeRenderedText(asString(exhibit.notes).trim())}`);
     }
     lines.push("");
   }
@@ -177,7 +190,7 @@ export function renderV2ReportMarkdown(params: { kind: ReportKindV2; report: unk
   lines.push("");
   lines.push("### What's Missing");
   for (const item of report.appendix?.whats_missing ?? []) {
-    lines.push(`- ${item}`);
+    lines.push(`- ${sanitizeRenderedText(item)}`);
   }
   lines.push("");
 

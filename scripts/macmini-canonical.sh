@@ -15,6 +15,7 @@ Usage: ./scripts/macmini-canonical.sh <command>
 
 Commands:
   env              Show canonical paths and required checks
+  sync-secrets     Generate .env.1password from the configured 1Password vault
   secrets          Validate required secrets via 1Password-backed env
   status           Show OpenClaw status via repo scoped runtime
   start-gateway    Start gateway via 1Password-backed runtime
@@ -108,6 +109,9 @@ main() {
       echo "SECRETS_EXISTS=$(test -f "$CANONICAL_SECRETS_FILE" && echo yes || echo no)"
       echo "Openclaw binary: $(command -v openclaw || echo none)"
       echo "1Password signed in: $(op whoami >/dev/null 2>&1 && echo yes || echo no)"
+      ;;
+    sync-secrets)
+      node ./scripts/sync-op-env.mjs
       ;;
     secrets)
       check_secrets_file

@@ -34,6 +34,9 @@ type BuildServicePathOptions = MinimalServicePathOptions & {
   env?: Record<string, string | undefined>;
 };
 
+const SERVICE_SECRET_KEY_RE =
+  /^(?:[A-Z0-9_]+_(?:API_KEY|TOKEN|COOKIE|SECRET|PASSWORD)|OPENCLAW_[A-Z0-9_]+|AWS_[A-Z0-9_]+)$/;
+
 function resolveSystemPathDirs(platform: NodeJS.Platform): string[] {
   if (platform === "darwin") {
     return ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
@@ -151,6 +154,25 @@ export function buildMinimalServicePath(options: BuildServicePathOptions = {}): 
   return getMinimalServicePathPartsFromEnv({ ...options, env }).join(path.posix.delimiter);
 }
 
+function pickServicePassthroughEnv(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== "string" || !value.trim()) {
+      continue;
+    }
+    if (key === "HOME" || key === "PATH") {
+      continue;
+    }
+    if (!SERVICE_SECRET_KEY_RE.test(key)) {
+      continue;
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
 export function buildServiceEnvironment(params: {
   env: Record<string, string | undefined>;
   port: number;
@@ -166,6 +188,7 @@ export function buildServiceEnvironment(params: {
   const stateDir = env.OPENCLAW_STATE_DIR;
   const configPath = env.OPENCLAW_CONFIG_PATH;
   return {
+    ...pickServicePassthroughEnv(env),
     HOME: env.HOME,
     PATH: buildMinimalServicePath({ env }),
     OPENCLAW_PROFILE: profile,
@@ -188,6 +211,7 @@ export function buildNodeServiceEnvironment(params: {
   const stateDir = env.OPENCLAW_STATE_DIR;
   const configPath = env.OPENCLAW_CONFIG_PATH;
   return {
+    ...pickServicePassthroughEnv(env),
     HOME: env.HOME,
     PATH: buildMinimalServicePath({ env }),
     OPENCLAW_STATE_DIR: stateDir,
@@ -212,6 +236,7 @@ export function buildResearchServiceEnvironment(params: {
   const configPath = env.OPENCLAW_CONFIG_PATH;
   const isWorker = kind === "worker";
   return {
+    ...pickServicePassthroughEnv(env),
     HOME: env.HOME,
     PATH: buildMinimalServicePath({ env }),
     OPENCLAW_STATE_DIR: stateDir,
