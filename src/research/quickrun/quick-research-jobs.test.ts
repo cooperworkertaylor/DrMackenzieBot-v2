@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { QuickrunJobStore } from "./job-store.js";
 import {
+  buildQuickResearchPdfFollowupReply,
   buildQuickResearchStatusReply,
   buildQuickResearchTelegramSummary,
 } from "./quick-research-jobs.js";
@@ -133,5 +134,60 @@ describe("buildQuickResearchTelegramSummary", () => {
     expect(text).toContain("Model: openai/gpt-5.4");
     expect(text).toContain("Progress: Draft passed quality gate. Rendering PDF.");
     expect(text).toContain("job_id=job-789");
+  });
+
+  it("builds a deterministic PDF re-delivery reply for the latest completed route job", () => {
+    const dbPath = makeDbPath();
+    const store = QuickrunJobStore.open(dbPath);
+    store.enqueue({
+      id: "job-900",
+      jobType: "quick_research_pdf_v2",
+      runAfterMs: 0,
+      payload: {
+        jobId: "job-900",
+        request: {
+          kind: "company",
+          ticker: "NVDA",
+          minutes: 5,
+        },
+        createdAtMs: Date.UTC(2026, 2, 9, 19, 25),
+        deliverAtMs: Date.UTC(2026, 2, 9, 19, 30),
+        route: {
+          channel: "telegram",
+          to: "telegram:123",
+          sessionKey: "agent:main:main",
+        },
+      },
+    });
+    store.claimNext({
+      jobType: "quick_research_pdf_v2",
+      workerId: "worker-a",
+      nowMs: Date.UTC(2026, 2, 9, 19, 26),
+    });
+    store.setResult({
+      id: "job-900",
+      workerId: "worker-a",
+      text: "Company memo ready: NVDA",
+      mediaUrl: "/tmp/nvda.pdf",
+      runId: "run-900",
+      nowMs: Date.UTC(2026, 2, 9, 19, 27),
+    });
+    store.markCompleted({
+      id: "job-900",
+      workerId: "worker-a",
+      nowMs: Date.UTC(2026, 2, 9, 19, 28),
+    });
+
+    const reply = buildQuickResearchPdfFollowupReply({
+      dbPath,
+      route: {
+        channel: "telegram",
+        to: "telegram:123",
+        sessionKey: "agent:main:main",
+      },
+    });
+
+    expect(reply?.text).toContain("Company memo ready: NVDA");
+    expect(reply?.mediaUrl).toBe("/tmp/nvda.pdf");
   });
 });

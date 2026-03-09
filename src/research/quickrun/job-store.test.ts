@@ -110,4 +110,34 @@ describe("QuickrunJobStore", () => {
     expect(updated?.progressNote).toBe("Draft passed quality gate. Rendering PDF.");
     expect(updated?.progressUpdatedAtMs).toBe(20);
   });
+
+  it("persists final delivery metadata for completed job re-sends", () => {
+    const store = QuickrunJobStore.open(makeDbPath());
+    store.enqueue({
+      id: "job-4",
+      jobType: "quick_research_pdf_v2",
+      payload: { ok: true },
+      runAfterMs: 0,
+    });
+
+    store.claimNext({
+      jobType: "quick_research_pdf_v2",
+      workerId: "worker-a",
+      nowMs: 10,
+    });
+
+    store.setResult({
+      id: "job-4",
+      workerId: "worker-a",
+      text: "Company memo ready: NVDA",
+      mediaUrl: "/tmp/nvda.pdf",
+      runId: "run-4",
+      nowMs: 20,
+    });
+
+    const updated = store.getById<{ ok: boolean }>("job-4");
+    expect(updated?.resultText).toBe("Company memo ready: NVDA");
+    expect(updated?.resultMediaUrl).toBe("/tmp/nvda.pdf");
+    expect(updated?.resultRunId).toBe("run-4");
+  });
 });

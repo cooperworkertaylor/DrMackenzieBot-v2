@@ -9,6 +9,9 @@ export type QuickrunJobRecord<TPayload = unknown> = {
   payload: TPayload;
   progressNote?: string;
   progressUpdatedAtMs?: number;
+  resultText?: string;
+  resultMediaUrl?: string;
+  resultRunId?: string;
   runAfterMs: number;
   attempts: number;
   maxAttempts: number;
@@ -54,6 +57,9 @@ const mapRow = <TPayload>(row: {
   payload: string;
   progress_note?: string;
   progress_updated_at_ms?: number;
+  result_text?: string;
+  result_media_url?: string;
+  result_run_id?: string;
   run_after_ms: number;
   attempts: number;
   max_attempts: number;
@@ -71,6 +77,9 @@ const mapRow = <TPayload>(row: {
   payload: parseJson<TPayload>(row.payload),
   progressNote: row.progress_note || undefined,
   progressUpdatedAtMs: row.progress_updated_at_ms ?? undefined,
+  resultText: row.result_text || undefined,
+  resultMediaUrl: row.result_media_url || undefined,
+  resultRunId: row.result_run_id || undefined,
   runAfterMs: row.run_after_ms,
   attempts: row.attempts,
   maxAttempts: row.max_attempts,
@@ -95,10 +104,10 @@ export class QuickrunJobStore {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO quickrun_jobs (
-           id, job_type, status, payload, progress_note, progress_updated_at_ms, run_after_ms, attempts, max_attempts,
+           id, job_type, status, payload, progress_note, progress_updated_at_ms, result_text, result_media_url, result_run_id, run_after_ms, attempts, max_attempts,
            locked_by, locked_at_ms, heartbeat_at_ms, completed_at_ms, last_error,
            created_at_ms, updated_at_ms
-         ) VALUES (?, ?, 'queued', ?, '', NULL, ?, 0, ?, '', NULL, NULL, NULL, '', ?, ?)`,
+         ) VALUES (?, ?, 'queued', ?, '', NULL, '', '', '', ?, 0, ?, '', NULL, NULL, NULL, '', ?, ?)`,
       )
       .run(
         params.id,
@@ -116,7 +125,7 @@ export class QuickrunJobStore {
     const row = this.db
       .prepare(
         `SELECT
-           id, job_type, status, payload, progress_note, progress_updated_at_ms, run_after_ms, attempts, max_attempts,
+           id, job_type, status, payload, progress_note, progress_updated_at_ms, result_text, result_media_url, result_run_id, run_after_ms, attempts, max_attempts,
            locked_by, locked_at_ms, heartbeat_at_ms, completed_at_ms, last_error,
            created_at_ms, updated_at_ms
          FROM quickrun_jobs
@@ -130,6 +139,9 @@ export class QuickrunJobStore {
           payload: string;
           progress_note?: string;
           progress_updated_at_ms?: number;
+          result_text?: string;
+          result_media_url?: string;
+          result_run_id?: string;
           run_after_ms: number;
           attempts: number;
           max_attempts: number;
@@ -157,7 +169,7 @@ export class QuickrunJobStore {
       const row = this.db
         .prepare(
           `SELECT
-             id, job_type, status, payload, progress_note, progress_updated_at_ms, run_after_ms, attempts, max_attempts,
+             id, job_type, status, payload, progress_note, progress_updated_at_ms, result_text, result_media_url, result_run_id, run_after_ms, attempts, max_attempts,
              locked_by, locked_at_ms, heartbeat_at_ms, completed_at_ms, last_error,
              created_at_ms, updated_at_ms
            FROM quickrun_jobs
@@ -180,6 +192,9 @@ export class QuickrunJobStore {
             payload: string;
             progress_note?: string;
             progress_updated_at_ms?: number;
+            result_text?: string;
+            result_media_url?: string;
+            result_run_id?: string;
             run_after_ms: number;
             attempts: number;
             max_attempts: number;
@@ -231,6 +246,31 @@ export class QuickrunJobStore {
          WHERE id = ? AND status = 'running' AND locked_by = ?`,
       )
       .run(params.note, nowMs, nowMs, params.id, params.workerId);
+  }
+
+  setResult(params: {
+    id: string;
+    workerId: string;
+    text?: string;
+    mediaUrl?: string;
+    runId?: string;
+    nowMs?: number;
+  }): void {
+    const nowMs = params.nowMs ?? Date.now();
+    this.db
+      .prepare(
+        `UPDATE quickrun_jobs
+         SET result_text = ?, result_media_url = ?, result_run_id = ?, updated_at_ms = ?
+         WHERE id = ? AND status = 'running' AND locked_by = ?`,
+      )
+      .run(
+        params.text?.trim() ?? "",
+        params.mediaUrl?.trim() ?? "",
+        params.runId?.trim() ?? "",
+        nowMs,
+        params.id,
+        params.workerId,
+      );
   }
 
   markCompleted(params: { id: string; workerId: string; nowMs?: number }): void {
@@ -351,7 +391,7 @@ export class QuickrunJobStore {
     const rows = this.db
       .prepare(
         `SELECT
-           id, job_type, status, payload, progress_note, progress_updated_at_ms, run_after_ms, attempts, max_attempts,
+           id, job_type, status, payload, progress_note, progress_updated_at_ms, result_text, result_media_url, result_run_id, run_after_ms, attempts, max_attempts,
            locked_by, locked_at_ms, heartbeat_at_ms, completed_at_ms, last_error,
            created_at_ms, updated_at_ms
          FROM quickrun_jobs
@@ -366,6 +406,9 @@ export class QuickrunJobStore {
       payload: string;
       progress_note?: string;
       progress_updated_at_ms?: number;
+      result_text?: string;
+      result_media_url?: string;
+      result_run_id?: string;
       run_after_ms: number;
       attempts: number;
       max_attempts: number;

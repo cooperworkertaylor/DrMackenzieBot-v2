@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  looksLikeQuickResearchPdfFollowupPrompt,
   looksLikeQuickResearchStatusPrompt,
   resolveQuickResearchRequest,
 } from "./get-reply-inline-actions.js";
@@ -32,5 +33,12 @@ describe("resolveQuickResearchRequest", () => {
     expect(looksLikeQuickResearchStatusPrompt("status")).toBe(true);
     expect(looksLikeQuickResearchStatusPrompt("/qstatus")).toBe(true);
     expect(looksLikeQuickResearchStatusPrompt("what changed with NVDA")).toBe(false);
+  });
+
+  it("recognizes deterministic quick research PDF follow-ups", () => {
+    expect(looksLikeQuickResearchPdfFollowupPrompt("send the pdf here")).toBe(true);
+    expect(looksLikeQuickResearchPdfFollowupPrompt("attach the report")).toBe(true);
+    expect(looksLikeQuickResearchPdfFollowupPrompt("post the memo here")).toBe(true);
+    expect(looksLikeQuickResearchPdfFollowupPrompt("what changed with NVDA")).toBe(false);
   });
 });

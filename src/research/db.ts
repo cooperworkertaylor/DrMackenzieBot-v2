@@ -999,6 +999,9 @@ const migrate = (db: ResearchDb) => {
       job_type text not null,
       status text not null default 'queued',
       payload text not null default '{}',
+      result_text text not null default '',
+      result_media_url text not null default '',
+      result_run_id text not null default '',
       run_after_ms integer not null,
       attempts integer not null default 0,
       max_attempts integer not null default 3,
@@ -1227,6 +1230,9 @@ const migrate = (db: ResearchDb) => {
   ensureColumn(db, "research_vectors", "model", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "quickrun_jobs", "progress_note", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "quickrun_jobs", "progress_updated_at_ms", "INTEGER");
+  ensureColumn(db, "quickrun_jobs", "result_text", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "quickrun_jobs", "result_media_url", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "quickrun_jobs", "result_run_id", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "task_outcomes", "policy_name", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "task_outcomes", "policy_role", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn(db, "task_outcomes", "experiment_group", "TEXT NOT NULL DEFAULT ''");

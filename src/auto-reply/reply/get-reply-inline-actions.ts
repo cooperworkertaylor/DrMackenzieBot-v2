@@ -18,6 +18,7 @@ import {
   type QuickResearchRequest,
 } from "../../research/quick-research-request.js";
 import {
+  buildQuickResearchPdfFollowupReply,
   buildQuickResearchStatusReply,
   enqueueQuickResearchJob,
   formatBuiltAtEt,
@@ -107,6 +108,14 @@ export const looksLikeQuickResearchStatusPrompt = (value: string): boolean => {
   );
 };
 
+export const looksLikeQuickResearchPdfFollowupPrompt = (value: string): boolean => {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  return /^(?:send|attach|post|share)(?:\s+me)?\s+(?:the\s+)?(?:pdf|memo|report)(?:\s+(?:here|again|now))?$/.test(
+    normalized,
+  );
+};
+
 const resolveQuickResearchStatusPrompt = (params: {
   ctx: MsgContext;
   cleanedBody: string;
@@ -123,6 +132,28 @@ const resolveQuickResearchStatusPrompt = (params: {
     .filter(Boolean);
   for (const candidate of candidates) {
     if (looksLikeQuickResearchStatusPrompt(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+const resolveQuickResearchPdfFollowupPrompt = (params: {
+  ctx: MsgContext;
+  cleanedBody: string;
+  command: Parameters<typeof handleCommands>[0]["command"];
+}): string | null => {
+  const candidates = [
+    typeof params.ctx.BodyForCommands === "string" ? params.ctx.BodyForCommands : "",
+    typeof params.ctx.CommandBody === "string" ? params.ctx.CommandBody : "",
+    params.command.commandBodyNormalized ?? "",
+    params.command.rawBodyNormalized ?? "",
+    params.cleanedBody,
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const candidate of candidates) {
+    if (looksLikeQuickResearchPdfFollowupPrompt(candidate)) {
       return candidate;
     }
   }
@@ -605,6 +636,40 @@ export async function handleInlineActions(params: {
           reply: {
             text: statusReply,
           },
+        };
+      }
+    }
+  }
+
+  const quickResearchPdfFollowupPrompt = resolveQuickResearchPdfFollowupPrompt({
+    ctx,
+    cleanedBody,
+    command,
+  });
+  if (quickResearchPdfFollowupPrompt) {
+    const { resolveActiveResearchDbPath } =
+      await import("../../research/research-model-profile.js");
+    const route = {
+      channel:
+        resolveGatewayMessageChannel(ctx.OriginatingChannel) ??
+        resolveGatewayMessageChannel(ctx.Surface) ??
+        resolveGatewayMessageChannel(ctx.Provider) ??
+        "telegram",
+      to: String(ctx.OriginatingTo ?? ctx.To ?? "").trim(),
+      accountId: ctx.AccountId != null ? String(ctx.AccountId) : undefined,
+      threadId: ctx.MessageThreadId != null ? String(ctx.MessageThreadId) : undefined,
+      sessionKey: ctx.SessionKey != null ? String(ctx.SessionKey) : undefined,
+    };
+    if (route.to) {
+      const deliveryReply = buildQuickResearchPdfFollowupReply({
+        route,
+        dbPath: resolveActiveResearchDbPath(),
+      });
+      if (deliveryReply) {
+        typing.cleanup();
+        return {
+          kind: "reply",
+          reply: deliveryReply,
         };
       }
     }
