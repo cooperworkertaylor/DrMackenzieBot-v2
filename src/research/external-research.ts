@@ -3,6 +3,36 @@ import { parseHTML } from "linkedom";
 import { createHash } from "node:crypto";
 import { chunkText } from "./chunker.js";
 import { openResearchDb } from "./db.js";
+import {
+  buildSourceKey,
+  fingerprintExternalDocument,
+  inferDocumentTrustTier,
+  normalizeDocumentText,
+  safeCanonicalizeUrl,
+  scoreExternalDocumentMateriality,
+  writeRawExternalDocumentArtifactSync,
+} from "./ingestion-utils.js";
+import { upsertResearchSource } from "./source-registry.js";
+import { extractStructuredResearchFromExternalDocument } from "./structured-extraction.js";
+import {
+  buildExternalResearchStructuredReport,
+  storeExternalResearchStructuredReport,
+} from "./external-research-report.js";
+import {
+  buildExternalResearchThesisFromReport,
+  getLatestExternalResearchThesis,
+  persistExternalResearchThesisBreakAlert,
+  storeExternalResearchThesis,
+  storeExternalResearchThesisDiff,
+} from "./external-research-thesis.js";
+import { enqueueWatchlistRefresh } from "./external-research-watchlists.js";
+import {
+  recordResearchToolRun,
+  requireApprovedResearchCapability,
+  resolveGovernedSecret,
+} from "./external-research-governance.js";
+
+const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 
 export type ExternalResearchSourceType = "email_research" | "newsletter" | "manual";
 export type NewsletterProvider = "substack" | "stratechery" | "diff" | "semianalysis" | "other";
@@ -31,6 +61,11 @@ export type IngestExternalResearchResult = {
   provider: string;
   ticker?: string;
   title: string;
+  reportId?: number;
+  thesisId?: number;
+  thesisDiffId?: number;
+  thesisAlertId?: number;
+  watchlistRefreshId?: number;
 };
 
 export type ParsedHookEmail = {
@@ -114,8 +149,6 @@ const NEWSLETTER_SOURCE_DEFAULT_MAX_LINKS = 10;
 const NEWSLETTER_SOURCE_DEFAULT_MAX_DOCS = 50;
 const NEWSLETTER_SITEMAP_MAX_URLS = 5000;
 const NEWSLETTER_SITEMAP_MAX_FILES = 64;
-
-const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 
 const normalizeEmail = (value?: string): string => {
   if (!value) return "";
@@ -355,6 +388,12 @@ const providerCookieEnv = (provider: string, env: NodeJS.ProcessEnv): string => 
   if (provider === "diff") return (env.OPENCLAW_RESEARCH_DIFF_COOKIE ?? "").trim();
   if (provider === "semianalysis") return (env.OPENCLAW_RESEARCH_SEMIANALYSIS_COOKIE ?? "").trim();
   return "";
+};
+
+const providerCookieEnvRef = (provider: string, env: NodeJS.ProcessEnv): string => {
+  const providerCookie = providerCookieEnv(provider, env);
+  if (providerCookie) return providerCookie;
+  return (env.OPENCLAW_RESEARCH_NEWSLETTER_COOKIE ?? "").trim();
 };
 
 const parseSourceSpecLine = (line: string): NewsletterSyncSource | null => {
@@ -795,74 +834,160 @@ export const ingestExternalResearchDocument = (
   const provider = providerRaw || "other";
   const subject = (params.subject ?? title).trim();
   const url = (params.url ?? "").trim();
+  const canonicalUrl = safeCanonicalizeUrl(url);
   const ticker = normalizeTicker(params.ticker);
   const publishedAt = normalizeDate(params.publishedAt);
   const receivedAt = normalizeDate(params.receivedAt) || new Date(now).toISOString();
   const tags = parseCsv((params.tags ?? []).join(","));
+  const normalizedContent = normalizeDocumentText(content);
+  const sourceKey = buildSourceKey({
+    sourceType,
+    provider,
+    sender,
+    canonicalUrl,
+  });
+  const trustTier = inferDocumentTrustTier({
+    canonicalUrl,
+    sourceType,
+    provider,
+  });
+  const materialityScore = scoreExternalDocumentMateriality({
+    sourceType,
+    ticker,
+    title,
+    content: normalizedContent,
+    tags,
+    canonicalUrl,
+  });
   const metadata = {
     ...(params.metadata ?? {}),
     tags,
+    sourceKey,
+    canonicalUrl,
+    trustTier,
+    materialityScore,
   };
 
-  const contentHash = sha256(
-    JSON.stringify({
+  const contentHash = fingerprintExternalDocument({
+    sourceType,
+    provider,
+    sender,
+    title,
+    subject,
+    url: canonicalUrl || url,
+    content: normalizedContent,
+    ticker,
+  });
+
+  const externalId = (params.externalId ?? "").trim();
+  const baseUrl = (() => {
+    try {
+      const target = canonicalUrl || url;
+      if (!target) return "";
+      const parsed = new URL(target);
+      return `${parsed.protocol}//${parsed.hostname}`;
+    } catch {
+      return "";
+    }
+  })();
+
+  upsertResearchSource({
+    dbPath: params.dbPath,
+    sourceKey,
+    sourceType,
+    provider,
+    sender,
+    baseUrl,
+    trustTier,
+    metadata: {
+      tags,
+      lastSeenAt: new Date(now).toISOString(),
+    },
+  });
+
+  const rawArtifactPath = writeRawExternalDocumentArtifactSync({
+    sourceKey,
+    contentHash,
+    payload: {
       sourceType,
       provider,
+      externalId,
       sender,
       title,
       subject,
       url,
-      content,
+      canonicalUrl,
       ticker,
-    }),
-  );
-
-  const externalId = (params.externalId ?? "").trim();
+      publishedAt,
+      receivedAt,
+      content,
+      normalizedContent,
+      metadata,
+    },
+  });
 
   const insertDocument = db.prepare(`
     INSERT INTO external_documents (
       source_type,
       provider,
+      source_key,
       external_id,
       sender,
       title,
       subject,
       url,
+      canonical_url,
       ticker,
       published_at,
       received_at,
       content,
+      normalized_content,
       content_hash,
+      trust_tier,
+      materiality_score,
+      raw_artifact_path,
       metadata,
       fetched_at
     )
     VALUES (
       @source_type,
       @provider,
+      @source_key,
       @external_id,
       @sender,
       @title,
       @subject,
       @url,
+      @canonical_url,
       @ticker,
       @published_at,
       @received_at,
       @content,
+      @normalized_content,
       @content_hash,
+      @trust_tier,
+      @materiality_score,
+      @raw_artifact_path,
       @metadata,
       @fetched_at
     )
     ON CONFLICT(content_hash) DO UPDATE SET
       provider=excluded.provider,
+      source_key=excluded.source_key,
       external_id=CASE WHEN excluded.external_id<>'' THEN excluded.external_id ELSE external_documents.external_id END,
       sender=excluded.sender,
       title=excluded.title,
       subject=excluded.subject,
       url=excluded.url,
+      canonical_url=excluded.canonical_url,
       ticker=excluded.ticker,
       published_at=excluded.published_at,
       received_at=excluded.received_at,
       content=excluded.content,
+      normalized_content=excluded.normalized_content,
+      trust_tier=excluded.trust_tier,
+      materiality_score=excluded.materiality_score,
+      raw_artifact_path=excluded.raw_artifact_path,
       metadata=excluded.metadata,
       fetched_at=excluded.fetched_at
     RETURNING id
@@ -883,16 +1008,22 @@ export const ingestExternalResearchDocument = (
   const row = insertDocument.get({
     source_type: sourceType,
     provider,
+    source_key: sourceKey,
     external_id: externalId,
     sender,
     title,
     subject,
     url,
+    canonical_url: canonicalUrl,
     ticker,
     published_at: publishedAt,
     received_at: receivedAt,
     content,
+    normalized_content: normalizedContent,
     content_hash: contentHash,
+    trust_tier: trustTier,
+    materiality_score: materialityScore,
+    raw_artifact_path: rawArtifactPath,
     metadata: JSON.stringify(metadata),
     fetched_at: now,
   }) as { id: number };
@@ -900,16 +1031,20 @@ export const ingestExternalResearchDocument = (
   const chunkMeta = JSON.stringify({
     sourceType,
     provider,
+    sourceKey,
     sender,
     title,
     subject,
     url,
+    canonicalUrl,
     ticker,
     publishedAt: publishedAt || undefined,
     receivedAt,
     tags,
+    trustTier,
+    materialityScore,
   });
-  const chunks = chunkText(content, 220);
+  const chunks = chunkText(normalizedContent, 220);
   db.exec("BEGIN");
   try {
     for (const chunk of chunks) {
@@ -927,6 +1062,62 @@ export const ingestExternalResearchDocument = (
     throw error;
   }
 
+  extractStructuredResearchFromExternalDocument({
+    documentId: row.id,
+    dbPath: params.dbPath,
+  });
+
+  let reportId: number | undefined;
+  let thesisId: number | undefined;
+  let thesisDiffId: number | undefined;
+  let thesisAlertId: number | undefined;
+  let watchlistRefreshId: number | undefined;
+  if (ticker) {
+    const report = buildExternalResearchStructuredReport({
+      ticker,
+      dbPath: params.dbPath,
+    });
+    const storedReport = storeExternalResearchStructuredReport({
+      report,
+      dbPath: params.dbPath,
+    });
+    reportId = storedReport.id;
+
+    const previousThesis = getLatestExternalResearchThesis({
+      ticker,
+      dbPath: params.dbPath,
+    });
+    const storedThesis = storeExternalResearchThesis({
+      thesis: buildExternalResearchThesisFromReport({
+        report,
+        reportId,
+      }),
+      dbPath: params.dbPath,
+    });
+    thesisId = storedThesis.id;
+    const storedDiff = storeExternalResearchThesisDiff({
+      previous: previousThesis,
+      current: storedThesis,
+      dbPath: params.dbPath,
+    });
+    thesisDiffId = storedDiff.id;
+    thesisAlertId =
+      persistExternalResearchThesisBreakAlert({
+        thesis: storedThesis,
+        diff: storedDiff,
+        dbPath: params.dbPath,
+      }) ?? undefined;
+
+    watchlistRefreshId =
+      enqueueWatchlistRefresh({
+        ticker,
+        sourceDocumentId: row.id,
+        materialityScore,
+        reason: `${sourceType}:${title}`,
+        dbPath: params.dbPath,
+      })?.id ?? undefined;
+  }
+
   return {
     id: row.id,
     chunks: chunks.length,
@@ -934,6 +1125,11 @@ export const ingestExternalResearchDocument = (
     provider,
     ticker: ticker || undefined,
     title,
+    reportId,
+    thesisId,
+    thesisDiffId,
+    thesisAlertId,
+    watchlistRefreshId,
   };
 };
 
@@ -1138,6 +1334,9 @@ export const syncNewsletterSources = async (params: {
   maxDocs?: number;
   userAgent?: string;
   cookies?: Record<string, string>;
+  approvalRef?: string;
+  requestedBy?: string;
+  secretResolver?: (ref: string) => string;
   fetchFn?: typeof fetch;
   env?: NodeJS.ProcessEnv;
 }): Promise<NewsletterSyncResult> => {
@@ -1183,10 +1382,44 @@ export const syncNewsletterSources = async (params: {
     const provider = normalizeProvider(source.provider);
     const sourceUrl = parseUrlSafe(source.url);
     if (!sourceUrl) continue;
-    const cookie = params.cookies?.[provider] ?? "";
+    const rawCookie =
+      (params.cookies?.[provider] ?? "").trim() || providerCookieEnvRef(provider, env);
+    let cookie = "";
+    if (rawCookie) {
+      const approval = requireApprovedResearchCapability({
+        workflow: "newsletter_sync",
+        capability: "newsletter_cookie_access",
+        subject: `${provider}:${sourceUrl}`,
+        approvalRef: params.approvalRef,
+        requestedBy: params.requestedBy,
+        details: { provider, sourceUrl },
+        dbPath: params.dbPath,
+      });
+      if (!approval.approved) {
+        docs.push({
+          provider,
+          sourceUrl,
+          url: sourceUrl,
+          title: sourceUrl,
+          ingested: false,
+          reason: `approval required: ${approval.approvalRef}`,
+        });
+        failures += 1;
+        continue;
+      }
+      cookie = resolveGovernedSecret({
+        refOrValue: rawCookie,
+        workflow: "newsletter_sync",
+        capability: "newsletter_cookie_access",
+        subject: `${provider}:${sourceUrl}`,
+        dbPath: params.dbPath,
+        secretResolver: params.secretResolver,
+      });
+    }
     let archiveHtml = "";
     let archiveUrl = sourceUrl;
     try {
+      const startedAt = Date.now();
       const archive = await fetchHtmlWithAuth({
         url: sourceUrl,
         provider,
@@ -1197,7 +1430,29 @@ export const syncNewsletterSources = async (params: {
       });
       archiveHtml = archive.html;
       archiveUrl = archive.finalUrl;
+      recordResearchToolRun({
+        workflow: "newsletter_sync",
+        toolName: "fetch.archive",
+        capabilityKey: cookie ? "newsletter_authenticated_fetch" : "newsletter_archive_fetch",
+        status: "ok",
+        subject: `${provider}:${sourceUrl}`,
+        latencyMs: Date.now() - startedAt,
+        requestMetadata: { provider, sourceUrl, authenticated: Boolean(cookie) },
+        responseMetadata: { finalUrl: archive.finalUrl },
+        dbPath: params.dbPath,
+      });
     } catch (error) {
+      recordResearchToolRun({
+        workflow: "newsletter_sync",
+        toolName: "fetch.archive",
+        capabilityKey: cookie ? "newsletter_authenticated_fetch" : "newsletter_archive_fetch",
+        status: "error",
+        subject: `${provider}:${sourceUrl}`,
+        latencyMs: 0,
+        requestMetadata: { provider, sourceUrl, authenticated: Boolean(cookie) },
+        errorText: error instanceof Error ? error.message : String(error),
+        dbPath: params.dbPath,
+      });
       docs.push({
         provider,
         sourceUrl,

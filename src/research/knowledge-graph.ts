@@ -539,6 +539,84 @@ const factAction = (
   return { inserted: 0, updated: 1 };
 };
 
+export const upsertPointInTimeEvent = (params: {
+  ticker: string;
+  eventType: string;
+  title: string;
+  eventDate?: string;
+  sourceRefId: number;
+  sourceUrl?: string;
+  payload?: Record<string, unknown>;
+  dbPath?: string;
+}): { id: number; inserted: boolean; entityId: number } => {
+  const ticker = normalizeTicker(params.ticker);
+  if (!ticker) throw new Error("ticker is required");
+  const db = openResearchDb(params.dbPath);
+  const entity = ensureCompanyEntity({ db, ticker, name: ticker });
+  const eventTime = resolveEventTime({
+    dateCandidates: [params.eventDate],
+    fallbackMs: Date.now(),
+  });
+  const result = upsertGraphEvent({
+    db,
+    entityId: entity.id,
+    eventType: params.eventType,
+    eventTime,
+    periodStart: normalizeDate(params.eventDate),
+    periodEnd: normalizeDate(params.eventDate),
+    sourceTable: "external_documents",
+    sourceRefId: params.sourceRefId,
+    sourceUrl: params.sourceUrl,
+    title: params.title,
+    payload: params.payload,
+  });
+  return { ...result, entityId: entity.id };
+};
+
+export const upsertPointInTimeFact = (params: {
+  ticker: string;
+  eventId?: number;
+  metricKey: string;
+  metricKind: string;
+  valueNum?: number;
+  valueText?: string;
+  unit?: string;
+  direction?: string;
+  confidence?: number;
+  asOfDate?: string;
+  validFrom?: string;
+  validTo?: string;
+  sourceRefId: number;
+  sourceUrl?: string;
+  metadata?: Record<string, unknown>;
+  dbPath?: string;
+}): { id: number; inserted: boolean; entityId: number } => {
+  const ticker = normalizeTicker(params.ticker);
+  if (!ticker) throw new Error("ticker is required");
+  const db = openResearchDb(params.dbPath);
+  const entity = ensureCompanyEntity({ db, ticker, name: ticker });
+  const result = upsertGraphFact({
+    db,
+    entityId: entity.id,
+    eventId: params.eventId,
+    metricKey: params.metricKey,
+    metricKind: params.metricKind,
+    valueNum: params.valueNum,
+    valueText: params.valueText,
+    unit: params.unit,
+    direction: params.direction,
+    confidence: params.confidence,
+    asOfDate: params.asOfDate,
+    validFrom: params.validFrom,
+    validTo: params.validTo,
+    sourceTable: "external_documents",
+    sourceRefId: params.sourceRefId,
+    sourceUrl: params.sourceUrl,
+    metadata: params.metadata,
+  });
+  return { ...result, entityId: entity.id };
+};
+
 export const buildTickerPointInTimeGraph = (params: {
   ticker: string;
   dbPath?: string;

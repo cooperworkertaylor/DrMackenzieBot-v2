@@ -53,6 +53,23 @@ import {
   syncNewsletterSources,
 } from "../research/external-research.js";
 import {
+  createResearchBackup,
+  getResearchHealthSnapshot,
+  replayFailedQuickrunJobs,
+  restoreResearchBackup,
+  runResearchSchedulerLoop,
+  runResearchSchedulerPass,
+  runResearchWorkerLoop,
+} from "../research/ops.js";
+import {
+  runResearchServiceInstall,
+  runResearchServiceRestart,
+  runResearchServiceStart,
+  runResearchServiceStatus,
+  runResearchServiceStop,
+  runResearchServiceUninstall,
+} from "./research-daemon.js";
+import {
   ingestFilings,
   ingestExpectations,
   ingestFundamentals,
@@ -113,7 +130,7 @@ import {
 import { computeSectorResearch, computeThemeResearch } from "../research/theme-sector.js";
 import { computeValuation, resolveMatureForecasts } from "../research/valuation.js";
 import { computeVariantPerception } from "../research/variant.js";
-import { searchResearch, syncEmbeddings, writeBackup } from "../research/vector-search.js";
+import { searchResearch, syncEmbeddings } from "../research/vector-search.js";
 import { defaultRuntime } from "../runtime.js";
 import { formatDocsLink } from "../terminal/links.js";
 import { theme } from "../terminal/theme.js";
@@ -4251,64 +4268,223 @@ export function registerResearchCli(program: Command) {
 
   research
     .command("health")
-    .description("Check staleness of research data")
+    .description("Check research runtime health")
     .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--backup-dir <path>", "Backup directory")
+    .option("--json", "Output JSON", false)
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
-        const db = openResearchDb(opts.db as string);
-        const latestPrice = db.prepare(`SELECT MAX(fetched_at) as ts FROM prices`).get() as {
-          ts?: number;
-        };
-        const latestFiling = db.prepare(`SELECT MAX(fetched_at) as ts FROM filings`).get() as {
-          ts?: number;
-        };
-        const latestFundamentals = db
-          .prepare(`SELECT MAX(fetched_at) as ts FROM fundamental_facts`)
-          .get() as {
-          ts?: number;
-        };
-        const latestExpectations = db
-          .prepare(`SELECT MAX(fetched_at) as ts FROM earnings_expectations`)
-          .get() as {
-          ts?: number;
-        };
-        const now = Date.now();
-        const priceAgeH = latestPrice.ts ? (now - latestPrice.ts) / 36e5 : Infinity;
-        const filingAgeH = latestFiling.ts ? (now - latestFiling.ts) / 36e5 : Infinity;
-        const fundamentalsAgeH = latestFundamentals.ts
-          ? (now - latestFundamentals.ts) / 36e5
-          : Infinity;
-        const expectationsAgeH = latestExpectations.ts
-          ? (now - latestExpectations.ts) / 36e5
-          : Infinity;
+        const snapshot = getResearchHealthSnapshot({
+          dbPath: opts.db as string,
+          backupDir: opts["backupDir"] as string | undefined,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(snapshot, null, 2)}\n`);
+          return;
+        }
+        defaultRuntime.log(`checked_at=${snapshot.checkedAt}`);
+        defaultRuntime.log(`db_path=${snapshot.dbPath}`);
+        defaultRuntime.log(`state_dir=${snapshot.stateDir}`);
         defaultRuntime.log(
-          `prices age: ${Number.isFinite(priceAgeH) ? priceAgeH.toFixed(1) : "none"}h`,
+          `quickrun queued=${snapshot.quickrun.queued} running=${snapshot.quickrun.running} failed=${snapshot.quickrun.failed} completed=${snapshot.quickrun.completed} stale_running=${snapshot.quickrun.staleRunning}`,
         );
         defaultRuntime.log(
-          `filings age: ${Number.isFinite(filingAgeH) ? filingAgeH.toFixed(1) : "none"}h`,
+          `refresh_queue queued=${snapshot.refreshQueue.queued} high_priority=${snapshot.refreshQueue.highPriorityQueued} completed=${snapshot.refreshQueue.completed} skipped=${snapshot.refreshQueue.skipped}`,
         );
         defaultRuntime.log(
-          `fundamentals age: ${Number.isFinite(fundamentalsAgeH) ? fundamentalsAgeH.toFixed(1) : "none"}h`,
+          `external latest_document=${snapshot.externalResearch.latestDocument.iso ?? "none"} latest_report=${snapshot.externalResearch.latestReport.iso ?? "none"} latest_brief=${snapshot.externalResearch.latestBrief.iso ?? "none"} unresolved_thesis_alerts=${snapshot.externalResearch.unresolvedThesisAlerts}`,
         );
         defaultRuntime.log(
-          `expectations age: ${Number.isFinite(expectationsAgeH) ? expectationsAgeH.toFixed(1) : "none"}h`,
+          `backups latest=${snapshot.backups.latestBackupPath ?? "none"} created_at=${snapshot.backups.latestBackupAt ?? "none"}`,
         );
-        if (priceAgeH > 48) defaultRuntime.error("WARN: prices stale (>48h)");
-        if (filingAgeH > 24 * 14) defaultRuntime.error("WARN: filings stale (>14d)");
-        if (fundamentalsAgeH > 24 * 14) defaultRuntime.error("WARN: fundamentals stale (>14d)");
-        if (expectationsAgeH > 24 * 14) defaultRuntime.error("WARN: expectations stale (>14d)");
+        snapshot.warnings.forEach((warning) => defaultRuntime.error(`WARN: ${warning}`));
       });
     });
 
   research
     .command("backup")
-    .description("Backup research sqlite db")
+    .description("Backup the research runtime (db plus local research artifacts)")
     .option("--db <path>", "Database path", resolveResearchDbPath())
-    .option("--dest <dir>", "Backup destination", path.join(process.cwd(), "data", "backups"))
+    .option(
+      "--dest <dir>",
+      "Backup destination",
+      path.join(process.cwd(), "data", "research-backups"),
+    )
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
-        const out = writeBackup({ dbPath: opts.db as string, destDir: opts.dest as string });
-        defaultRuntime.log(`Backup created: ${out}`);
+        const out = createResearchBackup({
+          dbPath: opts.db as string,
+          destDir: opts.dest as string,
+        });
+        defaultRuntime.log(`Backup created: ${out.backupDir}`);
+        defaultRuntime.log(`Database copy: ${out.dbPath}`);
+        defaultRuntime.log(`Manifest: ${out.manifestPath}`);
+      });
+    });
+
+  research
+    .command("restore")
+    .description("Restore the research runtime from a backup directory")
+    .requiredOption("--src <dir>", "Backup directory to restore from")
+    .option("--db <path>", "Destination database path", resolveResearchDbPath())
+    .option("--state-dir <path>", "Destination research state dir")
+    .option("--force", "Overwrite destination files if they already exist", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const out = restoreResearchBackup({
+          backupDir: opts.src as string,
+          dbPath: opts.db as string,
+          stateDir: opts["stateDir"] as string | undefined,
+          force: Boolean(opts.force),
+        });
+        defaultRuntime.log(`Restored backup: ${out.backupDir}`);
+        defaultRuntime.log(`Database: ${out.restoredDbPath}`);
+        defaultRuntime.log(`State dir: ${out.restoredStateDir}`);
+      });
+    });
+
+  research
+    .command("replay-failed")
+    .description("Requeue failed quick research jobs")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--limit <n>", "Max failed jobs to replay", "25")
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const jobs = replayFailedQuickrunJobs({
+          dbPath: opts.db as string,
+          limit: Number.parseInt(opts.limit as string, 10) || 25,
+        });
+        defaultRuntime.log(`replayed=${jobs.length}`);
+        jobs.forEach((job) => {
+          defaultRuntime.log(`- ${job.id} status=${job.status}`);
+        });
+      });
+    });
+
+  research
+    .command("scheduler-pass")
+    .description("Run one research scheduler pass (brief generation + refresh completion)")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--brief-date <yyyy-mm-dd>", "Override brief date")
+    .option("--lookback-days <n>", "Brief lookback window in days")
+    .option("--limit <n>", "Max refresh queue items to process", "50")
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const result = runResearchSchedulerPass({
+          dbPath: opts.db as string,
+          briefDate: opts["briefDate"] as string | undefined,
+          lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? undefined,
+          limit: Number.parseInt(opts.limit as string, 10) || 50,
+        });
+        defaultRuntime.log(
+          `processed_refreshes=${result.processedRefreshes} generated_briefs=${result.generatedBriefs} queued_remaining=${result.queuedRefreshesRemaining}`,
+        );
+      });
+    });
+
+  const service = research
+    .command("service")
+    .description("Manage research worker/scheduler services (launchd/systemd/schtasks)");
+
+  service
+    .command("status")
+    .requiredOption("--kind <kind>", "worker|scheduler")
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runResearchServiceStatus({
+        kind: opts.kind as "worker" | "scheduler",
+        json: Boolean(opts.json),
+      });
+    });
+
+  service
+    .command("install")
+    .requiredOption("--kind <kind>", "worker|scheduler")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--interval-ms <n>", "Scheduler interval in ms", "300000")
+    .option("--runtime <runtime>", "Service runtime (node|bun). Default: node")
+    .option("--force", "Reinstall/overwrite if already installed", false)
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runResearchServiceInstall({
+        kind: opts.kind as "worker" | "scheduler",
+        db: opts.db as string,
+        intervalMs: opts["intervalMs"] as string,
+        runtime: opts.runtime as string | undefined,
+        force: Boolean(opts.force),
+        json: Boolean(opts.json),
+      });
+    });
+
+  service
+    .command("start")
+    .requiredOption("--kind <kind>", "worker|scheduler")
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runResearchServiceStart({
+        kind: opts.kind as "worker" | "scheduler",
+        json: Boolean(opts.json),
+      });
+    });
+
+  service
+    .command("stop")
+    .requiredOption("--kind <kind>", "worker|scheduler")
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runResearchServiceStop({
+        kind: opts.kind as "worker" | "scheduler",
+        json: Boolean(opts.json),
+      });
+    });
+
+  service
+    .command("restart")
+    .requiredOption("--kind <kind>", "worker|scheduler")
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runResearchServiceRestart({
+        kind: opts.kind as "worker" | "scheduler",
+        json: Boolean(opts.json),
+      });
+    });
+
+  service
+    .command("uninstall")
+    .requiredOption("--kind <kind>", "worker|scheduler")
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runResearchServiceUninstall({
+        kind: opts.kind as "worker" | "scheduler",
+        json: Boolean(opts.json),
+      });
+    });
+
+  research
+    .command("scheduler")
+    .description("Run the research scheduler loop for Mac mini deployment")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--interval-ms <n>", "Scheduler poll interval in ms", "300000")
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        await runResearchSchedulerLoop({
+          dbPath: opts.db as string,
+          intervalMs: Number.parseInt(opts["intervalMs"] as string, 10) || 300_000,
+          runtime: defaultRuntime,
+        });
+      });
+    });
+
+  research
+    .command("worker")
+    .description("Run the dedicated quick research worker loop for Mac mini deployment")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        await runResearchWorkerLoop({
+          dbPath: opts.db as string,
+          runtime: defaultRuntime,
+        });
       });
     });
 }

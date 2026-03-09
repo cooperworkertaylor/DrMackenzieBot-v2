@@ -12,6 +12,7 @@ import {
   renderWeeklyNewsletterDigestMarkdown,
   syncNewsletterSources,
 } from "./external-research.js";
+import { safeCanonicalizeUrl } from "./ingestion-utils.js";
 
 const testDbPath = (name: string) =>
   path.join(os.tmpdir(), `openclaw-external-research-${name}-${Date.now()}-${Math.random()}.db`);
@@ -154,6 +155,110 @@ describe("external research ingestion", () => {
     const markdown = renderWeeklyNewsletterDigestMarkdown(digest);
     expect(markdown).toContain("Weekly Research Newsletter Digest");
     expect(markdown).toContain("Read In Full");
+  });
+
+  it("canonicalizes URLs, registers sources, and dedupes newsletter documents", () => {
+    const dbPath = testDbPath("canonical-dedupe");
+
+    ingestExternalResearchDocument({
+      dbPath,
+      sourceType: "newsletter",
+      provider: "substack",
+      sender: "author@substack.com",
+      title: "AI infra pricing power",
+      subject: "AI infra pricing power",
+      content: "Pricing discipline and supply constraints matter for margins.",
+      url: "https://www.example.com/p/ai-infra?utm_source=test&a=2&b=1",
+      tags: ["newsletter", "ai"],
+    });
+
+    ingestExternalResearchDocument({
+      dbPath,
+      sourceType: "newsletter",
+      provider: "substack",
+      sender: "author@substack.com",
+      title: "AI infra pricing power",
+      subject: "AI infra pricing power",
+      content: "Pricing discipline and supply constraints matter for margins.",
+      url: "https://example.com/p/ai-infra?b=1&a=2&utm_source=other",
+      tags: ["newsletter", "ai", "duplicate"],
+    });
+
+    const db = openResearchDb(dbPath);
+    const docs = db.prepare(
+      `SELECT count(*) AS count, canonical_url, trust_tier, source_key, materiality_score
+       FROM external_documents`,
+    ).get() as {
+      count: number;
+      canonical_url: string;
+      trust_tier: number;
+      source_key: string;
+      materiality_score: number;
+    };
+    expect(docs.count).toBe(1);
+    expect(docs.canonical_url).toBe(safeCanonicalizeUrl("https://example.com/p/ai-infra?b=1&a=2"));
+    expect(docs.trust_tier).toBeGreaterThan(0);
+    expect(docs.source_key).toContain("newsletter:substack");
+    expect(docs.materiality_score).toBeGreaterThan(0);
+
+    const sources = db.prepare(`SELECT count(*) AS count FROM research_sources`).get() as {
+      count: number;
+    };
+    expect(sources.count).toBe(1);
+  });
+
+  it("extracts claims, events, and facts for ticker-linked documents", () => {
+    const dbPath = testDbPath("structured-extraction");
+
+    const ingested = ingestExternalResearchDocument({
+      dbPath,
+      sourceType: "email_research",
+      provider: "other",
+      sender: "cooptaylor1@gmail.com",
+      title: "NVDA earnings and capex setup",
+      subject: "RESEARCH NVDA earnings and capex setup",
+      ticker: "NVDA",
+      content: [
+        "NVDA earnings setup looks favorable because revenue growth could sustain 24% as supply constraints ease and pricing remains disciplined.",
+        "Gross margin could hold around 72% while operating margin remains above 45% if mix stays tilted toward high-end accelerators.",
+        "Management guidance and capex discipline suggest capex could stay near $2.5 billion while demand remains strong.",
+      ].join(" "),
+      url: "https://example.com/research/nvda-earnings-setup",
+      tags: ["research-email", "variant"],
+      publishedAt: "2026-03-01T10:00:00Z",
+    });
+
+    expect(ingested.chunks).toBeGreaterThan(0);
+    expect(ingested.reportId).toBeGreaterThan(0);
+
+    const db = openResearchDb(dbPath);
+    const claims = db.prepare(`SELECT COUNT(*) AS count FROM research_claims`).get() as {
+      count: number;
+    };
+    const events = db.prepare(`SELECT COUNT(*) AS count FROM research_events`).get() as {
+      count: number;
+    };
+    const facts = db.prepare(`SELECT COUNT(*) AS count FROM research_facts`).get() as {
+      count: number;
+    };
+    const doc = db.prepare(
+      `SELECT metadata FROM external_documents WHERE id=?`,
+    ).get(ingested.id) as { metadata?: string };
+    const parsed = JSON.parse(doc.metadata ?? "{}") as {
+      extraction?: { status?: string; claimsCreated?: number; eventsCreated?: number; factsCreated?: number };
+    };
+    const reports = db.prepare(`SELECT COUNT(*) AS count FROM research_reports`).get() as {
+      count: number;
+    };
+
+    expect(claims.count).toBeGreaterThan(0);
+    expect(events.count).toBeGreaterThan(0);
+    expect(facts.count).toBeGreaterThan(0);
+    expect(reports.count).toBeGreaterThan(0);
+    expect(parsed.extraction?.status).toBe("completed");
+    expect(parsed.extraction?.claimsCreated).toBeGreaterThan(0);
+    expect(parsed.extraction?.eventsCreated).toBeGreaterThan(0);
+    expect(parsed.extraction?.factsCreated).toBeGreaterThan(0);
   });
 
   it("parses newsletter source specs and env defaults", () => {

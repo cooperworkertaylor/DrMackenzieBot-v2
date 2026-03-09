@@ -569,10 +569,10 @@ let singleton:
   | null = null;
 let currentCfg: OpenClawConfig | null = null;
 
-const getOrCreateRunner = (cfg: OpenClawConfig) => {
+const getOrCreateRunner = (cfg: OpenClawConfig, dbPath?: string) => {
   currentCfg = cfg;
   if (singleton) return singleton;
-  const store = QuickrunJobStore.open();
+  const store = QuickrunJobStore.open(dbPath);
   singleton = createQuickrunJobRunner<QuickResearchJobPayload>({
     store,
     jobType: QUICK_RESEARCH_JOB_TYPE,
@@ -589,6 +589,15 @@ const getOrCreateRunner = (cfg: OpenClawConfig) => {
   singleton.start();
   getLogger().info({ jobType: QUICK_RESEARCH_JOB_TYPE }, "quickrun worker started");
   return singleton;
+};
+
+export const startQuickResearchWorker = (params: { cfg: OpenClawConfig; dbPath?: string }) =>
+  getOrCreateRunner(params.cfg, params.dbPath);
+
+export const stopQuickResearchWorker = () => {
+  singleton?.stop();
+  singleton = null;
+  currentCfg = null;
 };
 
 export const enqueueQuickResearchJob = (params: {

@@ -675,22 +675,166 @@ const migrate = (db: ResearchDb) => {
       unique (entity_id, fact_hash)
     );
 
+    create table if not exists research_reports (
+      id integer primary key,
+      entity_id integer not null,
+      ticker text not null default '',
+      report_type text not null default 'external_structured',
+      title text not null default '',
+      summary text not null default '',
+      markdown text not null default '',
+      report_json text not null default '{}',
+      confidence real not null default 0,
+      source_count integer not null default 0,
+      lookback_days integer not null default 30,
+      generated_at integer not null,
+      created_at integer not null,
+      updated_at integer not null
+    );
+
+    create table if not exists research_theses (
+      id integer primary key,
+      entity_id integer not null,
+      ticker text not null default '',
+      thesis_type text not null default 'external_structured',
+      version_number integer not null,
+      stance text not null default 'neutral',
+      summary text not null default '',
+      confidence real not null default 0,
+      bull_case text not null default '[]',
+      bear_case text not null default '[]',
+      open_questions text not null default '[]',
+      supporting_evidence text not null default '[]',
+      report_id integer,
+      created_at integer not null,
+      updated_at integer not null,
+      unique (ticker, thesis_type, version_number)
+    );
+
+    create table if not exists research_thesis_diffs (
+      id integer primary key,
+      entity_id integer not null,
+      ticker text not null default '',
+      thesis_type text not null default 'external_structured',
+      previous_thesis_id integer,
+      current_thesis_id integer not null,
+      report_id integer,
+      thesis_break integer not null default 0,
+      confidence_delta real not null default 0,
+      summary text not null default '',
+      delta_json text not null default '{}',
+      created_at integer not null
+    );
+
+    create table if not exists research_watchlists (
+      id integer primary key,
+      name text not null unique,
+      description text not null default '',
+      is_default integer not null default 0,
+      created_at integer not null,
+      updated_at integer not null
+    );
+
+    create table if not exists research_watchlist_memberships (
+      id integer primary key,
+      watchlist_id integer not null,
+      ticker text not null,
+      priority integer not null default 3,
+      tags text not null default '[]',
+      created_at integer not null,
+      updated_at integer not null,
+      unique (watchlist_id, ticker)
+    );
+
+    create table if not exists research_refresh_queue (
+      id integer primary key,
+      watchlist_id integer not null,
+      ticker text not null,
+      source_document_id integer not null,
+      priority text not null default 'medium',
+      reason text not null default '',
+      status text not null default 'queued',
+      created_at integer not null,
+      updated_at integer not null,
+      unique (watchlist_id, ticker, source_document_id)
+    );
+
+    create table if not exists research_briefs (
+      id integer primary key,
+      watchlist_id integer not null,
+      brief_type text not null default 'daily_watchlist',
+      brief_date text not null,
+      title text not null default '',
+      markdown text not null default '',
+      brief_json text not null default '{}',
+      created_at integer not null,
+      updated_at integer not null,
+      unique (watchlist_id, brief_type, brief_date)
+    );
+
+    create table if not exists research_tool_runs (
+      id integer primary key,
+      workflow text not null default '',
+      tool_name text not null default '',
+      capability_key text not null default '',
+      status text not null default 'ok',
+      subject text not null default '',
+      latency_ms integer not null default 0,
+      request_metadata text not null default '{}',
+      response_metadata text not null default '{}',
+      error_text text not null default '',
+      created_at integer not null
+    );
+
+    create table if not exists research_approval_requests (
+      id integer primary key,
+      workflow text not null default '',
+      capability_key text not null default '',
+      subject text not null default '',
+      status text not null default 'pending',
+      requested_by text not null default '',
+      resolved_by text not null default '',
+      details text not null default '{}',
+      created_at integer not null,
+      updated_at integer not null
+    );
+
     create table if not exists external_documents (
       id integer primary key,
       source_type text not null default 'manual',
       provider text not null default 'other',
+      source_key text not null default '',
       external_id text not null default '',
       sender text not null default '',
       title text not null default '',
       subject text not null default '',
       url text not null default '',
+      canonical_url text not null default '',
       ticker text not null default '',
       published_at text not null default '',
       received_at text not null default '',
       content text not null default '',
+      normalized_content text not null default '',
       content_hash text not null unique,
+      trust_tier integer not null default 4,
+      materiality_score real not null default 0,
+      raw_artifact_path text not null default '',
       metadata text not null default '{}',
       fetched_at integer not null
+    );
+
+    create table if not exists research_sources (
+      id integer primary key,
+      source_key text not null unique,
+      source_type text not null default '',
+      provider text not null default '',
+      sender text not null default '',
+      base_url text not null default '',
+      trust_tier integer not null default 4,
+      active integer not null default 1,
+      metadata text not null default '{}',
+      created_at integer not null,
+      updated_at integer not null
     );
 
     create table if not exists chunks (
@@ -803,6 +947,15 @@ const migrate = (db: ResearchDb) => {
     create index if not exists idx_external_documents_ticker_fetched
       on external_documents (ticker, fetched_at desc);
 
+    create index if not exists idx_external_documents_source_key_fetched
+      on external_documents (source_key, fetched_at desc);
+
+    create index if not exists idx_external_documents_canonical_url
+      on external_documents (canonical_url, fetched_at desc);
+
+    create index if not exists idx_research_sources_type_provider
+      on research_sources (source_type, provider, active, updated_at desc);
+
     create index if not exists idx_thesis_forecasts_resolution
       on thesis_forecasts (ticker, resolved, created_at);
 
@@ -911,6 +1064,36 @@ const migrate = (db: ResearchDb) => {
     create index if not exists idx_research_facts_event
       on research_facts (event_id, metric_key, as_of_date desc);
 
+    create index if not exists idx_research_reports_lookup
+      on research_reports (entity_id, report_type, generated_at desc);
+
+    create index if not exists idx_research_reports_ticker
+      on research_reports (ticker, report_type, generated_at desc);
+
+    create index if not exists idx_research_theses_lookup
+      on research_theses (ticker, thesis_type, version_number desc);
+
+    create index if not exists idx_research_thesis_diffs_lookup
+      on research_thesis_diffs (ticker, thesis_type, created_at desc);
+
+    create index if not exists idx_research_watchlists_default
+      on research_watchlists (is_default, updated_at desc);
+
+    create index if not exists idx_research_watchlist_memberships_lookup
+      on research_watchlist_memberships (watchlist_id, priority, ticker);
+
+    create index if not exists idx_research_refresh_queue_lookup
+      on research_refresh_queue (watchlist_id, status, priority, created_at desc);
+
+    create index if not exists idx_research_briefs_lookup
+      on research_briefs (watchlist_id, brief_type, brief_date desc);
+
+    create index if not exists idx_research_tool_runs_lookup
+      on research_tool_runs (workflow, capability_key, created_at desc);
+
+    create index if not exists idx_research_approval_requests_lookup
+      on research_approval_requests (workflow, capability_key, status, created_at desc);
+
     create index if not exists idx_quickrun_jobs_status_run_after
       on quickrun_jobs (status, run_after_ms, created_at_ms);
 
@@ -924,6 +1107,12 @@ const migrate = (db: ResearchDb) => {
   ensureColumn(db, "filings", "as_of_date", "TEXT");
   ensureColumn(db, "filings", "source_url", "TEXT");
   ensureColumn(db, "filings", "filing_hash", "TEXT");
+  ensureColumn(db, "external_documents", "source_key", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "external_documents", "canonical_url", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "external_documents", "normalized_content", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "external_documents", "trust_tier", "INTEGER NOT NULL DEFAULT 4");
+  ensureColumn(db, "external_documents", "materiality_score", "REAL NOT NULL DEFAULT 0");
+  ensureColumn(db, "external_documents", "raw_artifact_path", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "research_vectors", "provider", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "research_vectors", "model", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "task_outcomes", "policy_name", "TEXT NOT NULL DEFAULT ''");
