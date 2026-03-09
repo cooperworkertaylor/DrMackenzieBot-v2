@@ -108,6 +108,10 @@ export async function runCompanyPipelineV2(params: {
   runId?: string;
   timeboxMinutes?: number;
   dbPath?: string;
+  llmProfile?: {
+    modelRef?: string;
+    profileId?: string;
+  };
 }): Promise<PipelineRunResultV2> {
   const ticker = params.ticker.trim().toUpperCase();
   const runId = (params.runId ?? "").trim() || runIdDefault(`v2-company-${slugify(ticker)}`);
@@ -198,6 +202,7 @@ export async function runCompanyPipelineV2(params: {
     evidence: evidencePass.evidence,
     analyzers,
     risk,
+    llmProfile: params.llmProfile,
   });
   const reportJsonPath = await writeRunJson({
     runDir,
@@ -242,6 +247,10 @@ export async function runThemePipelineV2(params: {
   runId?: string;
   timeboxMinutes?: number;
   dbPath?: string;
+  llmProfile?: {
+    modelRef?: string;
+    profileId?: string;
+  };
 }): Promise<PipelineRunResultV2> {
   const themeName = params.themeName.trim();
   const universe = params.universe.map((t) => t.trim().toUpperCase()).filter(Boolean);
@@ -330,6 +339,7 @@ export async function runThemePipelineV2(params: {
     universe,
     universeEntities: params.universeEntities,
     evidence: evidencePass.evidence,
+    llmProfile: params.llmProfile,
   });
   await writeRunJson({ runDir, filename: "Analyzers.theme.json", value: analyzers });
 
@@ -344,6 +354,7 @@ export async function runThemePipelineV2(params: {
     evidence: evidencePass.evidence,
     analyzers,
     risk,
+    llmProfile: params.llmProfile,
   });
   const reportJsonPath = await writeRunJson({
     runDir,

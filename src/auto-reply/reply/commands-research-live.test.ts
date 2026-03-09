@@ -12,6 +12,7 @@ import {
   storeExternalResearchThesis,
 } from "../../research/external-research-thesis.js";
 import { ingestExternalResearchDocument } from "../../research/external-research.js";
+import { getStoredResearchExecutionProfile } from "../../research/research-model-profile.js";
 import { buildCommandContext, handleCommands } from "./commands.js";
 import { parseInlineDirectives } from "./directive-handling.js";
 
@@ -215,5 +216,27 @@ describe("live research commands", () => {
 
     expect(result.shouldContinue).toBe(false);
     expect(result.reply?.text).toContain("Usage: /thesis <ticker>");
+  });
+
+  it("persists and reports the research model profile", async () => {
+    const dbPath = testDbPath("rprofile");
+    process.env.OPENCLAW_RESEARCH_DB_PATH = dbPath;
+
+    const cfg = {
+      commands: { text: true },
+      channels: { telegram: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+
+    const setResult = await handleCommands(buildParams("/rprofile set primary", cfg));
+    expect(setResult.shouldContinue).toBe(false);
+    expect(setResult.reply?.text).toContain("Research profile updated.");
+
+    const stored = getStoredResearchExecutionProfile({ dbPath });
+    expect(stored?.modelRef).toBe("openai/gpt-5.4");
+
+    const statusResult = await handleCommands(buildParams("/rprofile", cfg));
+    expect(statusResult.shouldContinue).toBe(false);
+    expect(statusResult.reply?.text).toContain("Research model profile");
+    expect(statusResult.reply?.text).toContain("openai/gpt-5.4");
   });
 });

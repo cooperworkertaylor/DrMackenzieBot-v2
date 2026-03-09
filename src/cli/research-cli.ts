@@ -138,6 +138,14 @@ import {
   type QualityGateArtifactType,
 } from "../research/quality-gate.js";
 import { indexRepo } from "../research/repo-index.js";
+import {
+  buildResearchExecutionProfile,
+  clearStoredResearchExecutionProfile,
+  getStoredResearchExecutionProfile,
+  listResearchExecutionProfilePresets,
+  resolveResearchExecutionProfile,
+  setStoredResearchExecutionProfile,
+} from "../research/research-model-profile.js";
 import { runResearchSecurityAudit } from "../research/security.js";
 import {
   getThemeConstituents,
@@ -1041,6 +1049,85 @@ export function registerResearchCli(program: Command) {
         });
         defaultRuntime.log(
           `preference key=${row.key} value=${row.valueText || JSON.stringify(row.valueJson)}`,
+        );
+      });
+    });
+
+  research
+    .command("model-profile")
+    .description("Show or set the persisted research model profile used by queued memo runs")
+    .argument("[action]", "status | list | set | reset", "status")
+    .argument("[value]", "Preset name or provider/model ref")
+    .argument("[profileId]", "Optional auth profile id")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (actionRaw, value, profileId, opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const action = String(actionRaw ?? "status")
+          .trim()
+          .toLowerCase();
+        const dbPath = opts.db as string;
+        if (action === "status") {
+          const active = resolveResearchExecutionProfile({ dbPath });
+          const stored = getStoredResearchExecutionProfile({ dbPath });
+          const payload = { active, stored, presets: listResearchExecutionProfilePresets() };
+          if (opts.json) {
+            defaultRuntime.log(`${JSON.stringify(payload, null, 2)}\n`);
+            return;
+          }
+          defaultRuntime.log(
+            [
+              "Research model profile",
+              `- Active: ${active.key} -> ${active.modelRef}${active.profileId ? ` (${active.profileId})` : ""}`,
+              `- Source: ${active.source}`,
+              `- Stored override: ${stored ? stored.key : "none"}`,
+            ].join("\n"),
+          );
+          return;
+        }
+        if (action === "list") {
+          const payload = {
+            presets: listResearchExecutionProfilePresets(),
+            stored: getStoredResearchExecutionProfile({ dbPath }),
+          };
+          if (opts.json) {
+            defaultRuntime.log(`${JSON.stringify(payload, null, 2)}\n`);
+            return;
+          }
+          defaultRuntime.log(
+            payload.presets
+              .map(
+                (preset) =>
+                  `- ${preset.key}: ${preset.modelRef}${preset.profileId ? ` (${preset.profileId})` : ""} — ${preset.description}`,
+              )
+              .join("\n"),
+          );
+          return;
+        }
+        if (action === "reset") {
+          clearStoredResearchExecutionProfile({ dbPath });
+          const active = resolveResearchExecutionProfile({ dbPath });
+          defaultRuntime.log(
+            `research_model_profile reset -> ${active.modelRef}${active.profileId ? ` (${active.profileId})` : ""}`,
+          );
+          return;
+        }
+        if (action !== "set" || !String(value ?? "").trim()) {
+          throw new Error(
+            "Usage: openclaw research model-profile [status|list|set|reset] [preset|provider/model] [profileId]",
+          );
+        }
+        const profile = buildResearchExecutionProfile({
+          rawSelection: String(value),
+          profileId: typeof profileId === "string" ? profileId : undefined,
+        });
+        const stored = setStoredResearchExecutionProfile({ profile, dbPath });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(stored, null, 2)}\n`);
+          return;
+        }
+        defaultRuntime.log(
+          `research_model_profile=${stored.key} model=${stored.modelRef}${stored.profileId ? ` profile=${stored.profileId}` : ""}`,
         );
       });
     });

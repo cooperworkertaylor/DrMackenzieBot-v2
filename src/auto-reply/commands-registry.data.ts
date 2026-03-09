@@ -620,6 +620,27 @@ function buildChatCommands(): ChatCommandDefinition[] {
       ],
     }),
     defineChatCommand({
+      key: "rprofile",
+      nativeName: "rprofile",
+      description: "Show or set the research model profile used by queued memo runs.",
+      textAlias: "/rprofile",
+      acceptsArgs: true,
+      category: "options",
+      args: [
+        {
+          name: "action",
+          description: "status | list | set | reset",
+          type: "string",
+        },
+        {
+          name: "value",
+          description: "Preset or provider/model ref",
+          type: "string",
+          captureRemaining: true,
+        },
+      ],
+    }),
+    defineChatCommand({
       key: "icmemo",
       nativeName: "icmemo",
       description: "Build an institutional company memo template.",

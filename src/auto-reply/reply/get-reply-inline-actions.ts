@@ -247,7 +247,12 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   const deliverAtEt = formatBuiltAtEt(new Date(deliverAtMs));
 
   const crypto = await import("node:crypto");
+  const { resolveActiveResearchDbPath, resolveResearchExecutionProfile } =
+    await import("../../research/research-model-profile.js");
   const jobId = crypto.randomUUID?.() ?? `${createdAtMs}-${Math.random().toString(16).slice(2)}`;
+  const activeResearchProfile = resolveResearchExecutionProfile({
+    dbPath: resolveActiveResearchDbPath(),
+  });
 
   enqueueQuickResearchJob({
     cfg: params.cfg,
@@ -256,6 +261,12 @@ async function maybeHandleQuickResearchPdfRequest(params: {
       request: req,
       createdAtMs,
       deliverAtMs,
+      researchProfile: {
+        key: activeResearchProfile.key,
+        label: activeResearchProfile.label,
+        modelRef: activeResearchProfile.modelRef,
+        ...(activeResearchProfile.profileId ? { profileId: activeResearchProfile.profileId } : {}),
+      },
       route: {
         channel: originChannel,
         to: originTo,
@@ -287,7 +298,7 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   return {
     kind: "reply",
     reply: {
-      text: `Run accepted: ${req.kind} v2 (${req.minutes} min). Will post PDF at/after ${deliverAtEt} if it passes strict quality + strict PDF diagnostics.\njob_id=${jobId}\nagent_commit=${commit}`,
+      text: `Run accepted: ${req.kind} v2 (${req.minutes} min). Will post PDF at/after ${deliverAtEt} if it passes strict quality + strict PDF diagnostics.\njob_id=${jobId}\nresearch_profile=${activeResearchProfile.key}\nresearch_model=${activeResearchProfile.modelRef}\nagent_commit=${commit}`,
     },
   };
 }

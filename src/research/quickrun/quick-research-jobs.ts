@@ -22,6 +22,12 @@ export type QuickResearchJobPayload = {
   request: QuickResearchRequest;
   createdAtMs: number;
   deliverAtMs: number;
+  researchProfile?: {
+    key: string;
+    label: string;
+    modelRef: string;
+    profileId?: string;
+  };
   route: {
     channel: string;
     to: string;
@@ -392,6 +398,7 @@ const runCompanyQuickResearch = async (params: {
     ticker: params.payload.request.ticker,
     question: params.payload.request.question,
     timeboxMinutes: params.payload.request.minutes,
+    llmProfile: params.payload.researchProfile,
   });
   if (!result.passed) {
     await delay(Math.max(0, params.payload.deliverAtMs - Date.now()));
@@ -593,6 +600,7 @@ const runThemeQuickResearch = async (params: {
         ? inferredUniverse.inferred_entities
         : undefined,
     timeboxMinutes: params.payload.request.minutes,
+    llmProfile: params.payload.researchProfile,
   });
   if (!result.passed) {
     await delay(Math.max(0, params.payload.deliverAtMs - Date.now()));

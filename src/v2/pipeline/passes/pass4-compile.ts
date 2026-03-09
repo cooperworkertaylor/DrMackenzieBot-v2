@@ -1230,6 +1230,10 @@ export async function pass4CompileReportV2(params: {
   analyzers: CompanyAnalyzerOutputV2 | ThemeAnalyzerOutputV2;
   risk: RiskOfficerOutputV2;
   repairModel?: V2RepairModel;
+  llmProfile?: {
+    modelRef?: string;
+    profileId?: string;
+  };
 }): Promise<CompileResultV2> {
   const generatedAt = nowIso();
   const deterministicReport =
@@ -1432,7 +1436,8 @@ export async function pass4CompileReportV2(params: {
       prompt: mkPrompt("write"),
       maxTokens: 3600,
       temperature: 0.2,
-      profileId: process.env.OPENCLAW_RESEARCH_V2_PROFILE?.trim() || undefined,
+      modelRefOverride: params.llmProfile?.modelRef,
+      profileId: params.llmProfile?.profileId ?? process.env.OPENCLAW_RESEARCH_V2_PROFILE?.trim(),
     });
     const draft = normalizeLlmReportCandidateV2({
       kind: params.kind,
@@ -1447,7 +1452,9 @@ export async function pass4CompileReportV2(params: {
           prompt: mkPrompt("repair", report, issues),
           maxTokens: 3600,
           temperature: 0.2,
-          profileId: process.env.OPENCLAW_RESEARCH_V2_PROFILE?.trim() || undefined,
+          modelRefOverride: params.llmProfile?.modelRef,
+          profileId:
+            params.llmProfile?.profileId ?? process.env.OPENCLAW_RESEARCH_V2_PROFILE?.trim(),
         });
         return normalizeLlmReportCandidateV2({
           kind: params.kind,

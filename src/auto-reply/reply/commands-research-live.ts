@@ -1,4 +1,5 @@
 import type { CommandHandler } from "./commands-types.js";
+import { listProfilesForProvider, loadAuthProfileStore } from "../../agents/auth-profiles.js";
 import { logVerbose } from "../../globals.js";
 import { resolveResearchDbPath } from "../../research/db.js";
 import {
@@ -18,6 +19,15 @@ import {
   storeExternalResearchThesis,
   type ExternalResearchThesis,
 } from "../../research/external-research-thesis.js";
+import {
+  buildResearchExecutionProfile,
+  clearStoredResearchExecutionProfile,
+  getStoredResearchExecutionProfile,
+  listResearchExecutionProfilePresets,
+  resolveActiveResearchDbPath as resolveConfiguredResearchDbPath,
+  resolveResearchExecutionProfile,
+  setStoredResearchExecutionProfile,
+} from "../../research/research-model-profile.js";
 
 const parseArgs = (normalized: string, command: string): string[] =>
   normalized
@@ -81,11 +91,86 @@ const resolvePairArgs = (
 };
 
 const resolveActiveResearchDbPath = (): string =>
-  resolveResearchDbPath(
+  resolveResearchDbPath(resolveActiveResearchDbPathFromEnv());
+
+const resolveActiveResearchDbPathFromEnv = (): string =>
+  resolveConfiguredResearchDbPath(
     process.env.RESEARCH_DB_PATH?.trim() ||
       process.env.OPENCLAW_RESEARCH_DB_PATH?.trim() ||
       undefined,
   );
+
+const parseResearchProfileArgs = (
+  normalized: string,
+): { action: "status" | "list" | "set" | "reset"; target?: string; profileId?: string } | null => {
+  const args = normalized
+    .replace(/^\/rprofile\b/i, "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!args.length) return { action: "status" };
+  const action = args[0]?.trim().toLowerCase();
+  if (action === "status" || action === "list" || action === "reset") {
+    return { action };
+  }
+  if (action === "set") {
+    return {
+      action: "set",
+      target: args[1]?.trim(),
+      profileId: args[2]?.trim(),
+    };
+  }
+  return {
+    action: "set",
+    target: args[0]?.trim(),
+    profileId: args[1]?.trim(),
+  };
+};
+
+const buildResearchProfileStatusReply = (): string => {
+  const dbPath = resolveActiveResearchDbPathFromEnv();
+  const active = resolveResearchExecutionProfile({ dbPath });
+  const stored = getStoredResearchExecutionProfile({ dbPath });
+  const presets = listResearchExecutionProfilePresets();
+  const lines = [
+    "Research model profile",
+    `- Active: ${active.key} -> ${active.modelRef}${active.profileId ? ` (${active.profileId})` : ""}`,
+    `- Source: ${active.source}`,
+  ];
+  if (stored) {
+    lines.push(`- Stored override: ${stored.key}`);
+  } else {
+    lines.push("- Stored override: none");
+  }
+  lines.push("Presets");
+  for (const preset of presets) {
+    lines.push(
+      `- ${preset.key}: ${preset.modelRef}${preset.profileId ? ` (${preset.profileId})` : ""}`,
+    );
+  }
+  lines.push(
+    "Usage: /rprofile list | /rprofile set <preset|provider/model> [profileId] | /rprofile reset",
+  );
+  return lines.join("\n");
+};
+
+const buildResearchProfileListReply = (): string => {
+  const store = loadAuthProfileStore();
+  const openrouterProfiles = listProfilesForProvider(store, "openrouter");
+  const lines = ["Research model profiles"];
+  for (const preset of listResearchExecutionProfilePresets()) {
+    lines.push(
+      `- ${preset.key}: ${preset.modelRef}${preset.profileId ? ` (${preset.profileId})` : ""} — ${preset.description}`,
+    );
+  }
+  lines.push("- custom: /rprofile set openrouter/auto openrouter:default");
+  if (openrouterProfiles.length) {
+    lines.push(`- OpenRouter auth profiles: ${openrouterProfiles.join(", ")}`);
+  } else {
+    lines.push("- OpenRouter auth profiles: none detected");
+  }
+  return lines.join("\n");
+};
 
 const resolveReportAndThesis = (
   ticker: string,
@@ -245,7 +330,9 @@ export const handleLiveResearchCommands: CommandHandler = async (params, allowTe
     lower === "/snapshot" ||
     lower.startsWith("/snapshot ") ||
     lower === "/compare" ||
-    lower.startsWith("/compare ");
+    lower.startsWith("/compare ") ||
+    lower === "/rprofile" ||
+    lower.startsWith("/rprofile ");
   if (!supported) return null;
   if (!params.command.isAuthorizedSender) {
     logVerbose(
@@ -255,6 +342,54 @@ export const handleLiveResearchCommands: CommandHandler = async (params, allowTe
   }
 
   try {
+    if (lower === "/rprofile" || lower.startsWith("/rprofile ")) {
+      const parsed = parseResearchProfileArgs(normalized);
+      if (!parsed) {
+        return {
+          shouldContinue: false,
+          reply: {
+            text: "Usage: /rprofile list | /rprofile set <preset|provider/model> [profileId] | /rprofile reset",
+          },
+        };
+      }
+      const dbPath = resolveActiveResearchDbPathFromEnv();
+      if (parsed.action === "status") {
+        return { shouldContinue: false, reply: { text: buildResearchProfileStatusReply() } };
+      }
+      if (parsed.action === "list") {
+        return { shouldContinue: false, reply: { text: buildResearchProfileListReply() } };
+      }
+      if (parsed.action === "reset") {
+        clearStoredResearchExecutionProfile({ dbPath });
+        const profile = resolveResearchExecutionProfile({ dbPath });
+        return {
+          shouldContinue: false,
+          reply: {
+            text: `Research profile reset.\n- Active: ${profile.key} -> ${profile.modelRef}`,
+          },
+        };
+      }
+      if (!parsed.target) {
+        return {
+          shouldContinue: false,
+          reply: {
+            text: "Usage: /rprofile set <preset|provider/model> [profileId]",
+          },
+        };
+      }
+      const profile = buildResearchExecutionProfile({
+        rawSelection: parsed.target,
+        profileId: parsed.profileId,
+      });
+      const stored = setStoredResearchExecutionProfile({ profile, dbPath });
+      return {
+        shouldContinue: false,
+        reply: {
+          text: `Research profile updated.\n- Active: ${stored.key} -> ${stored.modelRef}${stored.profileId ? ` (${stored.profileId})` : ""}`,
+        },
+      };
+    }
+
     if (lower === "/compare" || lower.startsWith("/compare ")) {
       const { left, right, usage } = resolvePairArgs(normalized, "compare");
       if (!left || !right) {
