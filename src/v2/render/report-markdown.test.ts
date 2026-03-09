@@ -55,4 +55,67 @@ describe("renderV2ReportMarkdown", () => {
     expect(markdown).toContain("### Exhibit 1: Revenue Bridge");
     expect(markdown).toContain("- Exhibit ID: X1");
   });
+
+  it("sanitizes unresolved numeric placeholders and placeholder language before PDF render", () => {
+    const markdown = renderV2ReportMarkdown({
+      kind: "company",
+      report: {
+        version: 2,
+        kind: "company",
+        run_id: "run-test",
+        generated_at: "2026-02-12T14:45:00Z",
+        subject: { ticker: "NVDA" },
+        plan: {},
+        sources: [
+          {
+            id: "S1",
+            title: "Example Source",
+            publisher: "Example Publisher",
+            date_published: "2026-02-10",
+            accessed_at: "2026-02-12T14:40:00Z",
+            url: "https://example.com/source",
+            reliability_tier: 2,
+            excerpt_or_key_points: ["x"],
+            tags: ["company:NVDA"],
+          },
+        ],
+        numeric_facts: [],
+        sections: [
+          {
+            key: "executive_summary",
+            title: "Executive Summary",
+            blocks: [
+              {
+                tag: "FACT",
+                text: "Current baseline is {{N1}} and placeholder detail will be attached later.",
+                source_ids: ["S1"],
+                numeric_refs: ["N1"],
+              },
+            ],
+          },
+        ],
+        exhibits: [
+          {
+            id: "X1",
+            title: "Revenue Bridge",
+            question: "What drives growth?",
+            data_summary: ["Reported baseline: {{N1}}"],
+            takeaway: "Placeholder framing should not leak into the PDF.",
+            source_ids: ["S1"],
+          },
+        ],
+        appendix: {
+          evidence_table: [
+            { claim: "Growth is concentrated", evidence_ids: ["S1"], source_ids: ["S1"] },
+          ],
+          whats_missing: ["Placeholder source follow-up should be removed."],
+        },
+      },
+    });
+
+    expect(markdown).not.toContain("{{N1}}");
+    expect(markdown.toLowerCase()).not.toContain("placeholder");
+    expect(markdown).toContain("n/a");
+    expect(markdown).toContain("omitted");
+  });
 });
