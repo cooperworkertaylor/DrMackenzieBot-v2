@@ -772,6 +772,27 @@ const migrate = (db: ResearchDb) => {
       unique (watchlist_id, brief_type, brief_date)
     );
 
+    create table if not exists research_user_preferences (
+      id integer primary key,
+      preference_key text not null unique,
+      value_text text not null default '',
+      value_json text not null default '{}',
+      created_at integer not null,
+      updated_at integer not null
+    );
+
+    create table if not exists research_notebook_entries (
+      id integer primary key,
+      ticker text not null default '',
+      title text not null default '',
+      content text not null default '',
+      tags text not null default '[]',
+      source text not null default 'manual',
+      external_document_id integer,
+      created_at integer not null,
+      updated_at integer not null
+    );
+
     create table if not exists research_tool_runs (
       id integer primary key,
       workflow text not null default '',
@@ -1087,6 +1108,12 @@ const migrate = (db: ResearchDb) => {
 
     create index if not exists idx_research_briefs_lookup
       on research_briefs (watchlist_id, brief_type, brief_date desc);
+
+    create index if not exists idx_research_user_preferences_lookup
+      on research_user_preferences (preference_key, updated_at desc);
+
+    create index if not exists idx_research_notebook_entries_lookup
+      on research_notebook_entries (ticker, created_at desc);
 
     create index if not exists idx_research_tool_runs_lookup
       on research_tool_runs (workflow, capability_key, created_at desc);

@@ -57,6 +57,13 @@ import {
   detectExternalResearchSourceConflicts,
 } from "../research/external-research-advanced.js";
 import {
+  buildPersonalizedResearchSnapshot,
+  ingestResearchNotebookEntry,
+  listResearchNotebookEntries,
+  listResearchUserPreferences,
+  upsertResearchUserPreference,
+} from "../research/external-research-personalization.js";
+import {
   computeWeeklyNewsletterDigest,
   ingestExternalResearchDocument,
   parseNewsletterSourceSpecs,
@@ -997,6 +1004,136 @@ export function registerResearchCli(program: Command) {
           return;
         }
         defaultRuntime.log(report.markdown);
+      });
+    });
+
+  research
+    .command("prefs-set")
+    .description("Set a persisted research preference")
+    .requiredOption("--key <text>", "Preference key")
+    .option("--value <text>", "Preference text value")
+    .option("--value-json <json>", "Preference JSON value")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const valueJson =
+          typeof opts["valueJson"] === "string" && opts["valueJson"].trim()
+            ? (JSON.parse(opts["valueJson"] as string) as Record<string, unknown>)
+            : undefined;
+        const row = upsertResearchUserPreference({
+          key: opts.key as string,
+          valueText: opts.value as string | undefined,
+          valueJson,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `preference key=${row.key} value=${row.valueText || JSON.stringify(row.valueJson)}`,
+        );
+      });
+    });
+
+  research
+    .command("prefs-list")
+    .description("List persisted research preferences")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const rows = listResearchUserPreferences({ dbPath: opts.db as string });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(rows, null, 2)}\n`);
+          return;
+        }
+        if (!rows.length) {
+          defaultRuntime.log("No research preferences stored.");
+          return;
+        }
+        rows.forEach((row) => {
+          defaultRuntime.log(`- ${row.key}: ${row.valueText || JSON.stringify(row.valueJson)}`);
+        });
+      });
+    });
+
+  research
+    .command("notebook-add")
+    .description("Add a notebook entry and ingest it into the research evidence graph")
+    .requiredOption("--title <text>", "Notebook entry title")
+    .option("--content <text>", "Notebook entry content")
+    .option("--content-file <path>", "Path to notebook content file")
+    .option("--ticker <symbol>", "Optional ticker tag")
+    .option("--tags <csv>", "Comma-separated tags")
+    .option("--source <text>", "Notebook source tag", "manual")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const contentInline = (opts.content as string | undefined)?.trim();
+        const contentFile = (opts["contentFile"] as string | undefined)?.trim();
+        let content = contentInline ?? "";
+        if (!content && contentFile) {
+          content = (await fs.readFile(path.resolve(contentFile), "utf8")).trim();
+        }
+        if (!content) throw new Error("Provide --content or --content-file");
+        const result = ingestResearchNotebookEntry({
+          title: opts.title as string,
+          content,
+          ticker: opts.ticker as string | undefined,
+          tags: parseCsvListOption((opts.tags as string | undefined) ?? ""),
+          source: opts.source as string | undefined,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `notebook_entry id=${result.entry.id} external_document_id=${result.entry.externalDocumentId ?? "n/a"} report_id=${result.ingest.reportId ?? "n/a"}`,
+        );
+      });
+    });
+
+  research
+    .command("notebook-list")
+    .description("List stored research notebook entries")
+    .option("--ticker <symbol>", "Optional ticker filter")
+    .option("--limit <n>", "Rows to return", "20")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const rows = listResearchNotebookEntries({
+          ticker: opts.ticker as string | undefined,
+          limit: parseOptionalNumber(opts.limit) ?? 20,
+          dbPath: opts.db as string,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(rows, null, 2)}\n`);
+          return;
+        }
+        if (!rows.length) {
+          defaultRuntime.log("No notebook entries found.");
+          return;
+        }
+        rows.forEach((row) => {
+          defaultRuntime.log(
+            `- ${new Date(row.createdAt).toISOString()} ${row.ticker ?? "unscoped"} ${row.title}${row.tags.length ? ` tags=${row.tags.join(",")}` : ""}`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("personalized")
+    .description("Build a personalized ticker snapshot from preferences, notebook entries, and current thesis state")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const snapshot = buildPersonalizedResearchSnapshot({
+          ticker: opts.ticker as string,
+          dbPath: opts.db as string,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(snapshot, null, 2)}\n`);
+          return;
+        }
+        defaultRuntime.log(snapshot.markdown);
       });
     });
 
