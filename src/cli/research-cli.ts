@@ -40,6 +40,11 @@ import {
   runRetrievalEval,
 } from "../research/eval.js";
 import {
+  latestResearchEvalHarnessRuns,
+  loadResearchEvalTaskSet,
+  runResearchEvalTaskSet,
+} from "../research/eval-harness.js";
+import {
   executionTraceReport,
   logExecutionTrace,
   type ExecutionTraceStepInput,
@@ -4251,9 +4256,14 @@ export function registerResearchCli(program: Command) {
   research
     .command("eval-report")
     .description("Show recent eval trend")
-    .action(async () => {
+    .option("--run-type <type>", "Optional run type filter")
+    .option("--limit <n>", "Rows to show", "20")
+    .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
-        const rows = latestEvalReport();
+        const rows = latestEvalReport({
+          runType: opts["runType"] as string | undefined,
+          limit: parseOptionalNumber(opts.limit) ?? 20,
+        });
         if (!rows.length) {
           defaultRuntime.log("No eval runs yet.");
           return;
@@ -4261,6 +4271,52 @@ export function registerResearchCli(program: Command) {
         rows.forEach((r) => {
           defaultRuntime.log(
             `${new Date(r.created_at).toISOString()} ${r.run_type} score=${(r.score * 100).toFixed(1)}% (${r.passed}/${r.total})`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("eval-harness")
+    .description("Run a deterministic research eval task set from JSON")
+    .requiredOption("--taskset <path>", "Path to eval task set JSON")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const taskSet = loadResearchEvalTaskSet(opts.taskset as string);
+        const result = await runResearchEvalTaskSet({
+          taskSet,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `eval_harness name=${result.taskSetName} score=${(result.score * 100).toFixed(1)}% passed=${result.passed}/${result.total}`,
+        );
+        result.checks.forEach((check) => {
+          defaultRuntime.log(
+            `- ${check.passed ? "ok" : "fail"} ${check.name}: ${check.detail}`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("eval-harness-report")
+    .description("Show recent research eval harness runs")
+    .option("--taskset-name <name>", "Optional task set name filter")
+    .option("--limit <n>", "Rows to show", "20")
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const rows = latestResearchEvalHarnessRuns({
+          taskSetName: opts["tasksetName"] as string | undefined,
+          limit: parseOptionalNumber(opts.limit) ?? 20,
+        });
+        if (!rows.length) {
+          defaultRuntime.log("No eval harness runs yet.");
+          return;
+        }
+        rows.forEach((row) => {
+          defaultRuntime.log(
+            `${new Date(row.created_at).toISOString()} ${row.run_type} score=${(row.score * 100).toFixed(1)}% (${row.passed}/${row.total})`,
           );
         });
       });
