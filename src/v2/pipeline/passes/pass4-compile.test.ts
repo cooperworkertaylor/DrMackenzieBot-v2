@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { normalizeLlmReportCandidateV2 } from "./pass4-compile.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildPlanCompanyV2 } from "./pass0-plan.js";
+import { pass3RiskOfficerV2 } from "./pass3-risk-officer.js";
+import { normalizeLlmReportCandidateV2, pass4CompileReportV2 } from "./pass4-compile.js";
+
+const completeJsonWithResearchV2ModelMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../../llm/complete-json.js", () => ({
+  completeJsonWithResearchV2Model: completeJsonWithResearchV2ModelMock,
+}));
 
 const demoFallbackThemeReport = () => ({
   version: 2,
@@ -146,4 +154,145 @@ describe("normalizeLlmReportCandidateV2", () => {
     expect((normalized.plan as Record<string, unknown>).horizon).toBe("6-18 months");
     expect(Array.isArray(normalized.sections)).toBe(true);
   });
+
+  it("falls back to the deterministic report when the writer output fails the quality gate", async () => {
+    const previousWriterFlag = process.env.OPENCLAW_RESEARCH_V2_LLM_WRITER;
+    process.env.OPENCLAW_RESEARCH_V2_LLM_WRITER = "1";
+    completeJsonWithResearchV2ModelMock.mockReset();
+    completeJsonWithResearchV2ModelMock.mockResolvedValue({
+      version: 2,
+      kind: "company",
+      run_id: "bad-run",
+      generated_at: "2026-02-11T16:00:00Z",
+      subject: { ticker: "NVDA" },
+      plan: {
+        posture: "long-only",
+        horizon: "12-36 months",
+        timebox_minutes: 5,
+        key_questions: ["What matters?"],
+        required_exhibits: ["kpi_table"],
+      },
+      sources: [
+        {
+          id: "S1",
+          title: "Source 1",
+          publisher: "SEC",
+          date_published: "2026-02-11",
+          accessed_at: "2026-02-11T15:00:00Z",
+          url: "https://example.com/s1",
+          reliability_tier: 1,
+          raw_text_ref: "filings/nvda-10k.txt",
+          tags: ["company:NVDA", "source:sec", "type:filing"],
+        },
+        {
+          id: "S2",
+          title: "Source 2",
+          publisher: "NVIDIA IR",
+          date_published: "2026-02-11",
+          accessed_at: "2026-02-11T15:05:00Z",
+          url: "https://example.com/s2",
+          reliability_tier: 2,
+          tags: ["company:NVDA", "type:official_release"],
+        },
+      ],
+      numeric_facts: [],
+      sections: [
+        {
+          key: "executive_summary",
+          title: "Executive Summary",
+          blocks: [
+            { tag: "FACT", text: "Reported growth was 24 percent.", source_ids: ["S1"] },
+            { tag: "INTERPRETATION", text: "Demand remains strong.", source_ids: ["S1"] },
+          ],
+        },
+      ],
+      exhibits: [
+        {
+          id: "Exhibit 1",
+          title: "Exhibit",
+          question: "Q?",
+          data_summary: ["N/A"],
+          takeaway: "T",
+          source_ids: ["S1"],
+        },
+      ],
+      appendix: {
+        evidence_table: [{ claim: "c1", evidence_ids: ["S1"], source_ids: ["S1"] }],
+        whats_missing: ["m1"],
+      },
+    });
+
+    const result = await pass4CompileReportV2({
+      kind: "company",
+      runId: "run-company-1",
+      subject: { ticker: "NVDA", companyName: "NVIDIA" },
+      plan: buildPlanCompanyV2({
+        runId: "run-company-1",
+        ticker: "NVDA",
+        question: "What matters?",
+        timeboxMinutes: 5,
+      }),
+      evidence: [
+        {
+          id: "S1",
+          title: "Source 1",
+          publisher: "SEC",
+          date_published: "2026-02-11",
+          accessed_at: "2026-02-11T15:00:00Z",
+          url: "https://example.com/s1",
+          reliability_tier: 1,
+          raw_text_ref: "filings/nvda-10k.txt",
+          excerpt_or_key_points: ["k1"],
+          tags: ["company:NVDA", "source:sec", "type:filing"],
+        },
+        {
+          id: "S2",
+          title: "Source 2",
+          publisher: "NVIDIA IR",
+          date_published: "2026-02-11",
+          accessed_at: "2026-02-11T15:05:00Z",
+          url: "https://example.com/s2",
+          reliability_tier: 2,
+          excerpt_or_key_points: ["k2"],
+          tags: ["company:NVDA", "type:official_release"],
+        },
+      ],
+      analyzers: {
+        version: 1,
+        generated_at: "2026-02-11T16:00:00Z",
+        ticker: "NVDA",
+        notes: [],
+        extracts: { filings: [], transcripts: [] },
+        risk_factor_buckets: [],
+        accounting_flags: [],
+        catalyst_candidates: [],
+        catalyst_calendar: [],
+        catalyst_ranked: [],
+        numeric_facts: [],
+        kpi_table: [],
+      },
+      risk: pass3RiskOfficerV2({ kind: "company", subject: "NVDA" }),
+    });
+
+    expect(result.gate.passed).toBe(true);
+    const report = result.reportJson as {
+      sections: Array<{ key: string; blocks: Array<{ tag: string; text: string }> }>;
+    };
+    expect(
+      report.sections
+        .find((section) => section.key === "variant_perception")
+        ?.blocks.some((block) => block.tag === "ASSUMPTION"),
+    ).toBe(true);
+    expect(result.reportMarkdown).toContain("## Executive Summary (Base/Bull/Bear)");
+    if (typeof previousWriterFlag === "string") {
+      process.env.OPENCLAW_RESEARCH_V2_LLM_WRITER = previousWriterFlag;
+    } else {
+      delete process.env.OPENCLAW_RESEARCH_V2_LLM_WRITER;
+    }
+  });
+});
+
+afterEach(() => {
+  completeJsonWithResearchV2ModelMock.mockReset();
+  delete process.env.OPENCLAW_RESEARCH_V2_LLM_WRITER;
 });

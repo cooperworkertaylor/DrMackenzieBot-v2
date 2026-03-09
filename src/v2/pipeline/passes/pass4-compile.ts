@@ -1463,10 +1463,7 @@ export async function pass4CompileReportV2(params: {
       repairModel,
       maxAttempts: 2,
     });
-    if (
-      !repaired.gate.passed &&
-      repaired.gate.issues.some((issue) => issue.code === "schema_invalid")
-    ) {
+    if (!repaired.gate.passed) {
       const fallbackGate = runV2QualityGate({
         kind: params.kind,
         report: deterministicReport,
