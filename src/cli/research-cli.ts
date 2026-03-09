@@ -51,6 +51,10 @@ import {
   type ExecutionTraceStepInput,
 } from "../research/execution-trace.js";
 import {
+  compareExternalResearchPeers,
+  detectExternalResearchSourceConflicts,
+} from "../research/external-research-advanced.js";
+import {
   computeWeeklyNewsletterDigest,
   ingestExternalResearchDocument,
   parseNewsletterSourceSpecs,
@@ -901,6 +905,52 @@ export function registerResearchCli(program: Command) {
         defaultRuntime.log(
           `newsletter_digest total=${digest.totalDocs} read_in_full=${digest.readInFull.length} quick_scan=${digest.quickScan.length} lookback_days=${digest.lookbackDays}`,
         );
+      });
+    });
+
+  research
+    .command("source-conflicts")
+    .description("Detect material conflicts across external research sources for a ticker")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--lookback-days <n>", "Lookback window in days", "90")
+    .option("--limit <n>", "Max conflicts to return", "8")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const report = detectExternalResearchSourceConflicts({
+          ticker: opts.ticker as string,
+          dbPath: opts.db as string,
+          lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 90,
+          maxConflicts: parseOptionalNumber(opts.limit) ?? 8,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(report, null, 2)}\n`);
+          return;
+        }
+        defaultRuntime.log(report.markdown);
+      });
+    });
+
+  research
+    .command("compare-peers")
+    .description("Compare the latest external research posture across two tickers")
+    .requiredOption("--left <symbol>", "Left ticker")
+    .requiredOption("--right <symbol>", "Right ticker")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const comparison = compareExternalResearchPeers({
+          leftTicker: opts.left as string,
+          rightTicker: opts.right as string,
+          dbPath: opts.db as string,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(comparison, null, 2)}\n`);
+          return;
+        }
+        defaultRuntime.log(comparison.markdown);
       });
     });
 
