@@ -1,10 +1,13 @@
 # 1Password secret references for OpenClaw.
 # Copy to `.env.1password` at repo root and replace the vault/item/field names with your own.
+# This is the single repo source-of-truth for all API keys/cookies used by this checkout.
 # Format: op://<Vault>/<Item>/<Field>
 
 # Core models
 OPENAI_API_KEY=op://OpenClaw/openclaw-prod/OPENAI_API_KEY
 ANTHROPIC_API_KEY=op://OpenClaw/openclaw-prod/ANTHROPIC_API_KEY
+GEMINI_API_KEY=op://OpenClaw/openclaw-prod/GEMINI_API_KEY
+GOOGLE_API_KEY=op://OpenClaw/openclaw-prod/GOOGLE_API_KEY
 
 # Research market data
 MASSIVE_API_KEY=op://OpenClaw/openclaw-prod/MASSIVE_API_KEY
@@ -13,9 +16,15 @@ ALPHA_VANTAGE_API_KEY=op://OpenClaw/openclaw-prod/ALPHA_VANTAGE_API_KEY
 ALPHAVANTAGE_API_KEY=op://OpenClaw/openclaw-prod/ALPHAVANTAGE_API_KEY
 FRED_API_KEY=op://OpenClaw/openclaw-prod/FRED_API_KEY
 SEC_USER_AGENT=op://OpenClaw/openclaw-prod/SEC_USER_AGENT
+BRAVE_API_KEY=op://OpenClaw/openclaw-prod/BRAVE_API_KEY
 
 # Channels
 TELEGRAM_BOT_TOKEN=op://OpenClaw/openclaw-prod/TELEGRAM_BOT_TOKEN
+
+# Supabase
+OPENCLAW_SUPABASE_URL=op://OpenClaw/openclaw-prod/OPENCLAW_SUPABASE_URL
+OPENCLAW_SUPABASE_ANON_KEY=op://OpenClaw/openclaw-prod/OPENCLAW_SUPABASE_ANON_KEY
+OPENCLAW_SUPABASE_SERVICE_ROLE_KEY=op://OpenClaw/openclaw-prod/OPENCLAW_SUPABASE_SERVICE_ROLE_KEY
 
 # Research gated-source cookies
 OPENCLAW_RESEARCH_SUBSTACK_COOKIE=op://OpenClaw/openclaw-prod/OPENCLAW_RESEARCH_SUBSTACK_COOKIE

@@ -25,6 +25,34 @@
     "autoRecall": {
       "label": "Auto-Recall",
       "help": "Automatically inject relevant memories into context"
+    },
+    "retrieval.maxResults": {
+      "label": "Retrieval Result Limit",
+      "help": "Maximum snippets passed to model",
+      "advanced": true
+    },
+    "retrieval.hybridEnabled": {
+      "label": "Hybrid Search Enabled",
+      "help": "Enable BM25 + vector hybrid retrieval",
+      "advanced": true
+    },
+    "retrieval.maxTokensPerSnippet": {
+      "label": "Max Snippet Tokens",
+      "help": "Approximate token cap per snippet",
+      "advanced": true
+    },
+    "retrieval.maxTotalTokens": {
+      "label": "Max Retrieval Tokens",
+      "help": "Hard cap for total retrieval tokens sent to model",
+      "advanced": true
+    },
+    "chunking.targetTokens": {
+      "label": "Chunk Target Tokens",
+      "advanced": true
+    },
+    "chunking.overlapRatio": {
+      "label": "Chunk Overlap Ratio",
+      "advanced": true
     }
   },
   "configSchema": {
@@ -53,6 +81,30 @@
       },
       "autoRecall": {
         "type": "boolean"
+      },
+      "retrieval": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "hybridEnabled": { "type": "boolean" },
+          "maxResults": { "type": "number" },
+          "maxTokensPerSnippet": { "type": "number" },
+          "maxTotalTokens": { "type": "number" },
+          "vectorLimit": { "type": "number" },
+          "ftsLimit": { "type": "number" },
+          "rewriteCount": { "type": "number" },
+          "rrfK": { "type": "number" }
+        }
+      },
+      "chunking": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "targetTokens": { "type": "number" },
+          "minTokens": { "type": "number" },
+          "maxTokens": { "type": "number" },
+          "overlapRatio": { "type": "number" }
+        }
       }
     },
     "required": ["embedding"]

@@ -11,6 +11,22 @@ export type MemoryConfig = {
   dbPath?: string;
   autoCapture?: boolean;
   autoRecall?: boolean;
+  retrieval?: {
+    hybridEnabled?: boolean;
+    maxResults?: number;
+    maxTokensPerSnippet?: number;
+    maxTotalTokens?: number;
+    vectorLimit?: number;
+    ftsLimit?: number;
+    rewriteCount?: number;
+    rrfK?: number;
+  };
+  chunking?: {
+    targetTokens?: number;
+    minTokens?: number;
+    maxTokens?: number;
+    overlapRatio?: number;
+  };
 };
 
 export const MEMORY_CATEGORIES = ["preference", "fact", "decision", "entity", "other"] as const;
@@ -89,7 +105,11 @@ export const memoryConfigSchema = {
       throw new Error("memory config required");
     }
     const cfg = value as Record<string, unknown>;
-    assertAllowedKeys(cfg, ["embedding", "dbPath", "autoCapture", "autoRecall"], "memory config");
+    assertAllowedKeys(
+      cfg,
+      ["embedding", "dbPath", "autoCapture", "autoRecall", "retrieval", "chunking"],
+      "memory config",
+    );
 
     const embedding = cfg.embedding as Record<string, unknown> | undefined;
     if (!embedding || typeof embedding.apiKey !== "string") {
@@ -108,6 +128,61 @@ export const memoryConfigSchema = {
       dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : DEFAULT_DB_PATH,
       autoCapture: cfg.autoCapture !== false,
       autoRecall: cfg.autoRecall !== false,
+      retrieval: {
+        hybridEnabled:
+          typeof (cfg.retrieval as Record<string, unknown> | undefined)?.hybridEnabled ===
+          "boolean"
+            ? Boolean((cfg.retrieval as Record<string, unknown>).hybridEnabled)
+            : true,
+        maxResults:
+          typeof (cfg.retrieval as Record<string, unknown> | undefined)?.maxResults === "number"
+            ? Number((cfg.retrieval as Record<string, unknown>).maxResults)
+            : 8,
+        maxTokensPerSnippet:
+          typeof (cfg.retrieval as Record<string, unknown> | undefined)?.maxTokensPerSnippet ===
+          "number"
+            ? Number((cfg.retrieval as Record<string, unknown>).maxTokensPerSnippet)
+            : 220,
+        maxTotalTokens:
+          typeof (cfg.retrieval as Record<string, unknown> | undefined)?.maxTotalTokens ===
+          "number"
+            ? Number((cfg.retrieval as Record<string, unknown>).maxTotalTokens)
+            : 800,
+        vectorLimit:
+          typeof (cfg.retrieval as Record<string, unknown> | undefined)?.vectorLimit === "number"
+            ? Number((cfg.retrieval as Record<string, unknown>).vectorLimit)
+            : 40,
+        ftsLimit:
+          typeof (cfg.retrieval as Record<string, unknown> | undefined)?.ftsLimit === "number"
+            ? Number((cfg.retrieval as Record<string, unknown>).ftsLimit)
+            : 40,
+        rewriteCount:
+          typeof (cfg.retrieval as Record<string, unknown> | undefined)?.rewriteCount === "number"
+            ? Number((cfg.retrieval as Record<string, unknown>).rewriteCount)
+            : 5,
+        rrfK:
+          typeof (cfg.retrieval as Record<string, unknown> | undefined)?.rrfK === "number"
+            ? Number((cfg.retrieval as Record<string, unknown>).rrfK)
+            : 60,
+      },
+      chunking: {
+        targetTokens:
+          typeof (cfg.chunking as Record<string, unknown> | undefined)?.targetTokens === "number"
+            ? Number((cfg.chunking as Record<string, unknown>).targetTokens)
+            : 700,
+        minTokens:
+          typeof (cfg.chunking as Record<string, unknown> | undefined)?.minTokens === "number"
+            ? Number((cfg.chunking as Record<string, unknown>).minTokens)
+            : 500,
+        maxTokens:
+          typeof (cfg.chunking as Record<string, unknown> | undefined)?.maxTokens === "number"
+            ? Number((cfg.chunking as Record<string, unknown>).maxTokens)
+            : 900,
+        overlapRatio:
+          typeof (cfg.chunking as Record<string, unknown> | undefined)?.overlapRatio === "number"
+            ? Number((cfg.chunking as Record<string, unknown>).overlapRatio)
+            : 0.12,
+      },
     };
   },
   uiHints: {
@@ -134,6 +209,50 @@ export const memoryConfigSchema = {
     autoRecall: {
       label: "Auto-Recall",
       help: "Automatically inject relevant memories into context",
+    },
+    "retrieval.maxResults": {
+      label: "Retrieval Result Limit",
+      help: "Maximum snippets returned to the model (budget guardrail)",
+      advanced: true,
+    },
+    "retrieval.hybridEnabled": {
+      label: "Hybrid Search Enabled",
+      help: "Enable BM25 + vector hybrid retrieval with RRF (set false for vector-only fallback)",
+      advanced: true,
+    },
+    "retrieval.maxTokensPerSnippet": {
+      label: "Max Snippet Tokens",
+      help: "Truncate each snippet to this approximate token limit",
+      advanced: true,
+    },
+    "retrieval.maxTotalTokens": {
+      label: "Max Retrieval Tokens",
+      help: "Hard cap for total tokens sent from retrieval to model",
+      advanced: true,
+    },
+    "retrieval.vectorLimit": {
+      label: "Vector Candidate Limit",
+      advanced: true,
+    },
+    "retrieval.ftsLimit": {
+      label: "BM25 Candidate Limit",
+      advanced: true,
+    },
+    "retrieval.rewriteCount": {
+      label: "Query Rewrites",
+      advanced: true,
+    },
+    "retrieval.rrfK": {
+      label: "RRF K",
+      advanced: true,
+    },
+    "chunking.targetTokens": {
+      label: "Chunk Target Tokens",
+      advanced: true,
+    },
+    "chunking.overlapRatio": {
+      label: "Chunk Overlap Ratio",
+      advanced: true,
     },
   },
 };
