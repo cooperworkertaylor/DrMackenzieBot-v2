@@ -78,6 +78,71 @@ describe("buildQuickResearchTelegramSummary", () => {
     expect(text).toContain("Need one primary filing to validate the margin bridge.");
   });
 
+  it("surfaces why-now and diligence lines from richer company sections", () => {
+    const text = buildQuickResearchTelegramSummary({
+      kind: "company",
+      subject: "NVDA",
+      jobId: "job-125",
+      runId: "run-458",
+      builtAtEt: "2026-03-09 14:40 ET",
+      pdfBytes: 1024,
+      sha256: "abc123",
+      report: {
+        sections: [
+          {
+            key: "executive_summary",
+            blocks: [
+              {
+                tag: "INTERPRETATION",
+                text: "Base case: the current read centers on datacenter demand and networking attach rates.",
+              },
+            ],
+          },
+          {
+            key: "variant_perception",
+            blocks: [
+              {
+                tag: "INTERPRETATION",
+                text: "Variant perception is most likely to move on the next earnings transcript because it can confirm pricing discipline.",
+              },
+            ],
+          },
+          {
+            key: "catalysts",
+            blocks: [
+              {
+                tag: "INTERPRETATION",
+                text: "Primary catalyst to monitor: earnings transcript follow-through because it can change scenario weights through backlog confirmation.",
+              },
+            ],
+          },
+          {
+            key: "change_mind_triggers",
+            blocks: [
+              {
+                tag: "INTERPRETATION",
+                text: "Primary trigger: two consecutive KPI misses versus the demand thesis.",
+              },
+            ],
+          },
+        ],
+        appendix: {
+          whats_missing: ["Price tape and valuation inputs to quantify scenarios and sensitivity."],
+        },
+      },
+    });
+
+    expect(text).toContain("Why now / what changed");
+    expect(text).toContain(
+      "Variant perception is most likely to move on the next earnings transcript",
+    );
+    expect(text).toContain("Primary catalyst to monitor: earnings transcript follow-through");
+    expect(text).toContain("Next diligence");
+    expect(text).toContain(
+      "Price tape and valuation inputs to quantify scenarios and sensitivity.",
+    );
+  });
+
   it("sanitizes unresolved numeric placeholders and placeholder language in the Telegram summary", () => {
     const text = buildQuickResearchTelegramSummary({
       kind: "company",

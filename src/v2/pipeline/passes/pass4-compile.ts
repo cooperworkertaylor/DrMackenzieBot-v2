@@ -17,9 +17,9 @@ const firstSourceId = (evidence: EvidenceItem[]): string => evidence[0]?.id ?? "
 
 const normalizeSpaces = (value: string): string => value.replaceAll(/\s+/g, " ").trim();
 
-const toProseSafeFragment = (value: string): string =>
+const toProseSafeFragment = (value?: string): string =>
   normalizeSpaces(
-    value
+    String(value ?? "")
       .replaceAll(/\b\d{4}-\d{2}-\d{2}\b/g, "dated event")
       .replaceAll(/\b\d{4}\/\d{2}\/\d{2}\b/g, "dated event")
       .replaceAll(/\b10-[KQ]\b/gi, "filing")
@@ -46,6 +46,11 @@ const joinProseSafeFragments = (values: string[], fallback: string): string => {
   return cleaned.length ? cleaned.join("; ") : fallback;
 };
 
+const takeUnique = (values: Array<string | undefined>, limit: number): string[] =>
+  Array.from(
+    new Set(values.map((value) => (typeof value === "string" ? value.trim() : "")).filter(Boolean)),
+  ).slice(0, limit);
+
 const companySectionTemplate = (params: {
   evidence: EvidenceItem[];
   numericFacts: NumericFact[];
@@ -53,13 +58,61 @@ const companySectionTemplate = (params: {
   transcriptKeywordSummary?: { keywords: string[]; sourceIds: string[] };
   filingRiskBuckets?: Array<{ bucket: string; source_ids: string[] }>;
   accountingFlags?: Array<{ flag: string; source_ids: string[] }>;
-  catalystCandidates?: Array<{ label: string; source_ids: string[] }>;
+  catalystCandidates?: Array<{ label: string; rationale?: string; source_ids: string[] }>;
   risk: RiskOfficerOutputV2;
 }): Array<{ key: string; title: string; blocks: any[] }> => {
   const sid = firstSourceId(params.evidence);
   const n1 = params.numericFacts[0]?.id;
   const n1Text = n1 ? `{{${n1}}}` : "N/A";
   const n1Refs = n1 ? [n1] : [];
+  const filingBusinessKeywords = takeUnique(params.filingKeywordSummary?.business ?? [], 6);
+  const filingRiskKeywords = takeUnique(params.filingKeywordSummary?.risks ?? [], 6);
+  const transcriptKeywords = takeUnique(params.transcriptKeywordSummary?.keywords ?? [], 8);
+  const riskBucketLabels = takeUnique(
+    params.filingRiskBuckets?.map((bucket) => bucket.bucket) ?? [],
+    4,
+  );
+  const accountingFlagLabels = takeUnique(
+    params.accountingFlags?.map((flag) => flag.flag) ?? [],
+    4,
+  );
+  const catalystRanked = params.catalystCandidates ?? [];
+  const catalystLabels = takeUnique(
+    catalystRanked.map((candidate) => candidate.label),
+    4,
+  );
+  const filingDriverSummary = joinProseSafeFragments(
+    filingBusinessKeywords,
+    "Primary filing business-keyword extraction is not yet available.",
+  );
+  const transcriptDriverSummary = joinProseSafeFragments(
+    transcriptKeywords,
+    "Transcript emphasis extraction is not yet available.",
+  );
+  const riskBucketSummary = joinProseSafeFragments(
+    riskBucketLabels,
+    "No filing-derived risk buckets were detected in this run.",
+  );
+  const accountingFlagSummary = joinProseSafeFragments(
+    accountingFlagLabels,
+    "No filing-derived accounting flags were detected in this run.",
+  );
+  const catalystSummary = joinProseSafeFragments(
+    catalystLabels,
+    "No dated catalyst categories were ranked from primary sources in this run.",
+  );
+  const evidenceBalanceLine =
+    params.filingKeywordSummary?.sourceIds.length &&
+    params.transcriptKeywordSummary?.sourceIds.length
+      ? "The current evidence base includes both primary filings and transcript commentary, which is enough to frame a monitored first-pass thesis."
+      : params.filingKeywordSummary?.sourceIds.length
+        ? "The current evidence base is filing-heavy and transcript-light, so narrative claims should be treated as provisional until management commentary is ingested."
+        : params.transcriptKeywordSummary?.sourceIds.length
+          ? "The current evidence base leans on transcript commentary without enough filing detail, so accounting and disclosure checks remain open."
+          : "The current evidence base is thin; this memo is a scoped triage pass rather than a conviction memo.";
+  const firstCatalyst = params.catalystCandidates?.[0];
+  const firstFalsifier = params.risk.falsifiers[0];
+  const secondFalsifier = params.risk.falsifiers[1];
   const filingFacts =
     params.filingKeywordSummary && params.filingKeywordSummary.sourceIds.length
       ? {
@@ -131,17 +184,17 @@ const companySectionTemplate = (params: {
           tag: "FACT",
           text: n1
             ? `Anchor KPI baseline: reported metric is ${n1Text}.`
-            : "No Tier one numeric facts are present in this run.",
+            : "No Tier one numeric facts are present in this run, so sizing should stay conservative.",
           source_ids: [sid],
           numeric_refs: n1Refs,
         },
         {
           tag: "INTERPRETATION",
-          text: "Base case: the edge is durable only if reported KPIs continue to support the core drivers; size only after evidence coverage is broad.",
+          text: `Base case: the current read centers on ${filingDriverSummary}. The setup is only actionable if future KPIs continue to validate those operating drivers.`,
         },
         {
           tag: "ASSUMPTION",
-          text: "Assumption: we will ingest primary filings and transcripts to expand Tier one and Tier three coverage before taking a meaningful position.",
+          text: `Assumption: ${evidenceBalanceLine}`,
         },
       ],
     },
@@ -151,16 +204,18 @@ const companySectionTemplate = (params: {
       blocks: [
         {
           tag: "FACT",
-          text: "This report is constrained to collected evidence; claims not supported by sources are marked as assumptions or omitted.",
+          text: `Evidence coverage is anchored in collected primary and official sources, with business drivers from filings summarized as: ${filingDriverSummary}.`,
           source_ids: [sid],
         },
         {
           tag: "INTERPRETATION",
-          text: "Variant perception is the delta between what consensus must be underwriting and what our evidence can support today.",
+          text: firstCatalyst
+            ? `Variant perception is most likely to move on ${toProseSafeFragment(firstCatalyst.label)} because that event can confirm or break the current operating narrative faster than generic multiple debate.`
+            : "Variant perception is the delta between what consensus must be underwriting and what the current evidence base can actually support today.",
         },
         {
           tag: "ASSUMPTION",
-          text: "Assumption: incremental sources will reduce contradictions and make scenario work numerically stable.",
+          text: `Assumption: the main gap is not more narrative, but better evidence on ${riskBucketSummary.toLowerCase()} and transcript confirmation of the same drivers.`,
         },
       ],
     },
@@ -178,11 +233,13 @@ const companySectionTemplate = (params: {
         },
         {
           tag: "INTERPRETATION",
-          text: "The underwriting is that durable value drivers are visible in reported KPIs before they are visible in narrative. Falsifier: narrative claims persist without KPI confirmation across multiple periods.",
+          text: `The underwriting is that the core drivers now visible in the source set (${filingDriverSummary}) will keep showing up in reported KPIs before they fade from management narrative. Falsifier: narrative claims persist without KPI confirmation across multiple periods.`,
         },
         {
           tag: "ASSUMPTION",
-          text: "Assumption: capture mechanisms remain durable through the cycle. Falsifier: sustained evidence of pricing pressure or commoditization from independent sources.",
+          text: firstFalsifier
+            ? `${toProseSafeFragment(firstFalsifier.statement)} Falsifier: ${toProseSafeFragment(firstFalsifier.trigger)}.`
+            : "Assumption: capture mechanisms remain durable through the cycle. Falsifier: sustained evidence of pricing pressure or commoditization from independent sources.",
         },
       ],
     },
@@ -200,13 +257,13 @@ const companySectionTemplate = (params: {
         {
           tag: "INTERPRETATION",
           text: transcriptFacts
-            ? `Transcript-derived keywords suggest management emphasis on: ${transcriptFacts.keywords}.`
-            : "Decision-relevant overview should be limited to drivers we can verify and monitor, not generic company description.",
+            ? `Transcript-derived keywords suggest management emphasis on: ${transcriptFacts.keywords}. This is the operating narrative to reconcile against filings.`
+            : `Decision-relevant overview: focus on ${filingDriverSummary} and avoid generic company description until transcript emphasis is collected.`,
           source_ids: transcriptFacts ? transcriptFacts.source_ids : undefined,
         },
         {
           tag: "ASSUMPTION",
-          text: "Assumption: reported KPIs map to underwriting drivers without definition drift; reconcile definitions when full filings are ingested.",
+          text: "Assumption: reported KPIs map cleanly to these operating drivers without definition drift; reconcile definitions before upgrading conviction.",
         },
       ],
     },
@@ -216,16 +273,18 @@ const companySectionTemplate = (params: {
       blocks: [
         {
           tag: "FACT",
-          text: "Competitor primary sources are not collected in this demo run; moat claims are intentionally limited.",
+          text: transcriptFacts
+            ? `Primary sources show emphasis on ${transcriptDriverSummary}, but competitor primary sources are not yet collected.`
+            : "Competitor primary sources are not collected in this run, so moat claims are intentionally limited.",
           source_ids: [sid],
         },
         {
           tag: "INTERPRETATION",
-          text: "Moat assessment should separate durable switching costs and ecosystem gravity from transient product cycles.",
+          text: "Moat assessment should separate durable switching costs and ecosystem gravity from transient product-cycle excitement and one-quarter beats.",
         },
         {
           tag: "ASSUMPTION",
-          text: "Assumption: lock-in is durable; validate with churn proxies, attach trends, and competitive win-loss evidence.",
+          text: "Assumption: the current driver set reflects durable customer capture rather than temporary demand pull-forward; validate with competitive disclosures and retention proxies.",
         },
       ],
     },
@@ -237,16 +296,16 @@ const companySectionTemplate = (params: {
           tag: "FACT",
           text: accountingFacts
             ? `Filing-derived accounting flags present: ${accountingFacts.flags}.`
-            : "Numeric facts are structured with value, unit, period, source, and accessed timestamp to enable auditability.",
+            : `Numeric facts are structured with value, unit, period, source, and accessed timestamp to enable auditability; current accounting read is ${accountingFlagSummary.toLowerCase()}.`,
           source_ids: accountingFacts ? accountingFacts.source_ids : [sid],
         },
         {
           tag: "INTERPRETATION",
-          text: "Financial quality should be judged on cash conversion, margin durability, and dilution discipline, not single-quarter beats.",
+          text: `Financial quality should be judged on cash conversion, margin durability, and dilution discipline, with special attention to ${accountingFlagSummary.toLowerCase()}.`,
         },
         {
           tag: "ASSUMPTION",
-          text: "Assumption: KPI coverage is sufficient to compute margins and cash conversion; if not, add the missing concepts before inference.",
+          text: "Assumption: KPI coverage is sufficient to extend into margins and cash conversion; if not, add those concepts before doing valuation work.",
         },
       ],
     },
@@ -256,16 +315,16 @@ const companySectionTemplate = (params: {
       blocks: [
         {
           tag: "FACT",
-          text: "This demo run does not ingest market price data; valuation numbers are intentionally omitted until price tape is collected.",
+          text: "This run does not ingest market price data, so explicit valuation numbers are intentionally omitted until price tape is collected.",
           source_ids: [sid],
         },
         {
           tag: "INTERPRETATION",
-          text: "Scenario work should make drivers explicit and quantify what must be true for the current price to be rational.",
+          text: `Scenario work should make explicit what has to be true on ${filingDriverSummary.toLowerCase()} for the current price to be rational, rather than hiding behind narrative confidence.`,
         },
         {
           tag: "ASSUMPTION",
-          text: "Assumption: discount rate and terminal assumptions are within a reasonable band; verify via market data ingestion.",
+          text: "Assumption: price tape, multiple context, and sensitivity ranges will be added before any recommendation moves beyond monitored watchlist status.",
         },
       ],
     },
@@ -282,11 +341,13 @@ const companySectionTemplate = (params: {
         },
         {
           tag: "INTERPRETATION",
-          text: "Catalysts should be framed as information releases that change scenario weights, with explicit monitoring and what-would-change views.",
+          text: firstCatalyst
+            ? `Primary catalyst to monitor: ${toProseSafeFragment(firstCatalyst.label)} because it can change scenario weights through ${toProseSafeFragment(firstCatalyst.rationale)}.`
+            : "Catalysts should be framed as information releases that change scenario weights, with explicit monitoring and what-would-change views.",
         },
         {
           tag: "ASSUMPTION",
-          text: "Assumption: disclosure cadence will be consistent; validate via transcript ingestion and event tracking.",
+          text: `Assumption: disclosure cadence remains consistent enough to monitor ${catalystSummary.toLowerCase()} against the standing thesis.`,
         },
       ],
     },
@@ -298,7 +359,7 @@ const companySectionTemplate = (params: {
           tag: "FACT",
           text: bucketFacts
             ? `Filing-derived risk buckets: ${bucketFacts.buckets}.`
-            : "The risk officer pass enumerates disconfirming evidence to seek and falsifiers tied to measurable triggers.",
+            : `The risk officer pass focuses attention on ${riskBucketSummary.toLowerCase()} and disconfirming evidence tied to measurable triggers.`,
           source_ids: bucketFacts ? bucketFacts.source_ids : [sid],
         },
         {
@@ -310,7 +371,9 @@ const companySectionTemplate = (params: {
         },
         {
           tag: "ASSUMPTION",
-          text: "Assumption: additional Tier one and Tier three sources will materially improve decision quality; proceed only after evidence gaps close.",
+          text: secondFalsifier
+            ? `${toProseSafeFragment(secondFalsifier.statement)} Falsifier: ${toProseSafeFragment(secondFalsifier.trigger)}.`
+            : "Assumption: additional Tier one and Tier three sources will materially improve decision quality; proceed only after evidence gaps close.",
         },
       ],
     },
@@ -325,11 +388,13 @@ const companySectionTemplate = (params: {
         },
         {
           tag: "INTERPRETATION",
-          text: "We change our mind when disconfirming evidence persists across multiple independent sources and cannot be explained by timing.",
+          text: firstFalsifier
+            ? `Primary trigger: ${toProseSafeFragment(firstFalsifier.trigger)}. Verification plan: ${toProseSafeFragment(firstFalsifier.verification_plan)}.`
+            : "We change our mind when disconfirming evidence persists across multiple independent sources and cannot be explained by timing.",
         },
         {
           tag: "ASSUMPTION",
-          text: "Assumption: monitoring will include filings, transcripts, and price tape; until then, posture should remain conservative.",
+          text: "Assumption: monitoring will include filings, transcripts, and price tape; until then, posture should remain conservative and updates should be evidence-led.",
         },
       ],
     },
