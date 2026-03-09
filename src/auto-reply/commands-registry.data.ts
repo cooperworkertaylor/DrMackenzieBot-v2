@@ -525,6 +525,101 @@ function buildChatCommands(): ChatCommandDefinition[] {
       category: "options",
     }),
     defineChatCommand({
+      key: "thesis",
+      nativeName: "thesis",
+      description: "Show the latest thesis snapshot for a ticker.",
+      textAlias: "/thesis",
+      acceptsArgs: true,
+      category: "tools",
+      args: [
+        {
+          name: "ticker",
+          description: "Ticker symbol",
+          type: "string",
+        },
+      ],
+    }),
+    defineChatCommand({
+      key: "risks",
+      nativeName: "risks",
+      description: "Show the latest risks and change-mind triggers for a ticker.",
+      textAlias: "/risks",
+      acceptsArgs: true,
+      category: "tools",
+      args: [
+        {
+          name: "ticker",
+          description: "Ticker symbol",
+          type: "string",
+        },
+      ],
+    }),
+    defineChatCommand({
+      key: "sources",
+      nativeName: "sources",
+      description: "List the latest source coverage for a ticker.",
+      textAlias: "/sources",
+      acceptsArgs: true,
+      category: "tools",
+      args: [
+        {
+          name: "ticker",
+          description: "Ticker symbol",
+          type: "string",
+        },
+      ],
+    }),
+    defineChatCommand({
+      key: "changed",
+      nativeName: "changed",
+      description: "Show what changed most recently for a ticker.",
+      textAlias: "/changed",
+      acceptsArgs: true,
+      category: "tools",
+      args: [
+        {
+          name: "ticker",
+          description: "Ticker symbol",
+          type: "string",
+        },
+      ],
+    }),
+    defineChatCommand({
+      key: "snapshot",
+      nativeName: "snapshot",
+      description: "Show the personalized research snapshot for a ticker.",
+      textAlias: "/snapshot",
+      acceptsArgs: true,
+      category: "tools",
+      args: [
+        {
+          name: "ticker",
+          description: "Ticker symbol",
+          type: "string",
+        },
+      ],
+    }),
+    defineChatCommand({
+      key: "compare",
+      nativeName: "compare",
+      description: "Compare two tickers using stored research state.",
+      textAlias: "/compare",
+      acceptsArgs: true,
+      category: "tools",
+      args: [
+        {
+          name: "left_ticker",
+          description: "Left ticker symbol",
+          type: "string",
+        },
+        {
+          name: "right_ticker",
+          description: "Right ticker symbol",
+          type: "string",
+        },
+      ],
+    }),
+    defineChatCommand({
       key: "icmemo",
       nativeName: "icmemo",
       description: "Build an institutional company memo template.",

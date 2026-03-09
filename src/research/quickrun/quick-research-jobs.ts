@@ -1,9 +1,9 @@
 import fsSync from "node:fs";
 import os from "node:os";
 import type { OpenClawConfig } from "../../config/config.js";
+import type { QuickResearchRequest } from "../quick-research-request.js";
 import { resolveStateDir } from "../../config/paths.js";
 import { getLogger } from "../../logging/logger.js";
-import type { QuickResearchRequest } from "../quick-research-request.js";
 import { writeFileArtifactManifest } from "../artifact-manifest.js";
 import { diagnosePdfBuffer } from "../pdf-diagnostics.js";
 import { computeThemeResearch } from "../theme-sector.js";
@@ -105,6 +105,150 @@ const normalizeTickerList = (values: Iterable<unknown>): string[] =>
   Array.from(values)
     .map((value) => (typeof value === "string" ? value.trim().toUpperCase() : ""))
     .filter(Boolean);
+
+type ReportSectionBlock = {
+  tag?: string;
+  text?: string;
+};
+
+type ReportSection = {
+  key?: string;
+  title?: string;
+  blocks?: ReportSectionBlock[];
+};
+
+type QuickResearchReportShape = {
+  sections?: ReportSection[];
+  appendix?: {
+    whats_missing?: string[];
+  };
+};
+
+const normalizeTextLine = (value: string): string =>
+  value
+    .replaceAll(/\s+/g, " ")
+    .replaceAll(/\s+([,.;:!?])/g, "$1")
+    .trim();
+
+const takeDistinctLines = (values: Array<string | undefined>, limit: number): string[] => {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const normalized = normalizeTextLine(value ?? "");
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+    if (out.length >= limit) break;
+  }
+  return out;
+};
+
+const collectSectionLines = (
+  report: QuickResearchReportShape,
+  sectionKeys: string[],
+  preferredTags: string[],
+  limit: number,
+): string[] => {
+  const keySet = new Set(sectionKeys.map((value) => value.trim().toLowerCase()));
+  const tagSet = new Set(preferredTags.map((value) => value.trim().toUpperCase()));
+  const matchingSections = (report.sections ?? []).filter((section) =>
+    keySet.has(
+      String(section.key ?? "")
+        .trim()
+        .toLowerCase(),
+    ),
+  );
+  const tagged = matchingSections.flatMap((section) =>
+    (section.blocks ?? [])
+      .filter((block) =>
+        tagSet.has(
+          String(block.tag ?? "")
+            .trim()
+            .toUpperCase(),
+        ),
+      )
+      .map((block) => block.text),
+  );
+  const fallback = matchingSections.flatMap((section) =>
+    (section.blocks ?? []).map((block) => block.text),
+  );
+  return takeDistinctLines(tagged.length ? tagged : fallback, limit);
+};
+
+export const buildQuickResearchTelegramSummary = (params: {
+  kind: QuickResearchRequest["kind"];
+  subject: string;
+  jobId: string;
+  runId: string;
+  builtAtEt: string;
+  pdfBytes: number;
+  sha256: string;
+  report: QuickResearchReportShape;
+}): string => {
+  const overview = collectSectionLines(
+    params.report,
+    ["executive_summary", "what_it_is_isnt_why_now"],
+    ["INTERPRETATION", "FACT"],
+    2,
+  );
+  const thesis = collectSectionLines(
+    params.report,
+    ["thesis", "variant_perception"],
+    ["INTERPRETATION", "FACT", "ASSUMPTION"],
+    2,
+  );
+  const risks = collectSectionLines(
+    params.report,
+    ["risks_premortem", "risks_falsifiers", "change_mind_triggers"],
+    ["INTERPRETATION", "FACT", "ASSUMPTION"],
+    2,
+  );
+  const catalysts = collectSectionLines(
+    params.report,
+    ["catalysts", "catalysts_timeline"],
+    ["FACT", "INTERPRETATION"],
+    2,
+  );
+  const missing = takeDistinctLines(params.report.appendix?.whats_missing ?? [], 2);
+
+  const lines: string[] = [];
+  lines.push(
+    params.kind === "company"
+      ? `Company memo ready: ${params.subject}`
+      : `Theme memo ready: ${params.subject}`,
+  );
+  lines.push(`Built: ${params.builtAtEt}`);
+  lines.push("");
+  lines.push("Top line");
+  for (const line of overview) lines.push(`- ${line}`);
+  if (!overview.length) lines.push("- Memo completed; see PDF for the full investment case.");
+  lines.push("");
+  lines.push("Thesis / variant");
+  for (const line of thesis) lines.push(`- ${line}`);
+  if (!thesis.length) lines.push("- See thesis section in the attached PDF.");
+  lines.push("");
+  lines.push("Risks / change-mind triggers");
+  for (const line of risks) lines.push(`- ${line}`);
+  if (!risks.length) lines.push("- No concise risk lines extracted; use the PDF risks section.");
+  if (catalysts.length) {
+    lines.push("");
+    lines.push("Catalysts");
+    for (const line of catalysts) lines.push(`- ${line}`);
+  }
+  if (missing.length) {
+    lines.push("");
+    lines.push("Missing / next diligence");
+    for (const line of missing) lines.push(`- ${line}`);
+  }
+  lines.push("");
+  lines.push(`job_id=${params.jobId}`);
+  lines.push(`run_id=${params.runId}`);
+  lines.push(`sha256=${params.sha256}`);
+  lines.push(`bytes=${params.pdfBytes}`);
+  return lines.join("\n");
+};
 
 const safeSend = async (params: {
   cfg: OpenClawConfig;
@@ -282,6 +426,9 @@ const runCompanyQuickResearch = async (params: {
   });
 
   const pdfBuffer = await fs.readFile(pdfPath);
+  const reportJson = JSON.parse(
+    await fs.readFile(result.reportJsonPath, "utf8"),
+  ) as QuickResearchReportShape;
   const diag = await diagnosePdfBuffer({
     buffer: new Uint8Array(pdfBuffer),
     maxPages: 50,
@@ -300,7 +447,12 @@ const runCompanyQuickResearch = async (params: {
 
   const stateDir = resolveStateDir(process.env, os.homedir);
   const seriesKey = `quickrun_company_${slugify(params.payload.request.ticker)}`;
-  const seriesManifestPath = path.join(stateDir, "research", "quickrun", `${seriesKey}.artifact.json`);
+  const seriesManifestPath = path.join(
+    stateDir,
+    "research",
+    "quickrun",
+    `${seriesKey}.artifact.json`,
+  );
   await fs.mkdir(path.dirname(seriesManifestPath), { recursive: true, mode: 0o700 });
   const manifestRes = await writeFileArtifactManifest({
     kind: "memo",
@@ -331,7 +483,16 @@ const runCompanyQuickResearch = async (params: {
     cfg: params.cfg,
     route: params.payload.route,
     mediaUrl: pdfPath,
-    text: `v2 company memo\njob_id=${params.payload.jobId}\nrun_id=${result.runId}\nBuilt: ${params.builtAtEt}\nsha256=${manifestRes.manifest.sha256}\nbytes=${pdfBuffer.length}`,
+    text: buildQuickResearchTelegramSummary({
+      kind: "company",
+      subject: params.payload.request.ticker,
+      jobId: params.payload.jobId,
+      runId: result.runId,
+      builtAtEt: params.builtAtEt,
+      pdfBytes: pdfBuffer.length,
+      sha256: manifestRes.manifest.sha256,
+      report: reportJson,
+    }),
   });
 };
 
@@ -466,6 +627,9 @@ const runThemeQuickResearch = async (params: {
   });
 
   const pdfBuffer = await fs.readFile(pdfPath);
+  const reportJson = JSON.parse(
+    await fs.readFile(result.reportJsonPath, "utf8"),
+  ) as QuickResearchReportShape;
   const diag = await diagnosePdfBuffer({
     buffer: new Uint8Array(pdfBuffer),
     maxPages: 50,
@@ -484,7 +648,12 @@ const runThemeQuickResearch = async (params: {
 
   const stateDir = resolveStateDir(process.env, os.homedir);
   const seriesKey = `quickrun_theme_${slugify(themeLabel)}`;
-  const seriesManifestPath = path.join(stateDir, "research", "quickrun", `${seriesKey}.artifact.json`);
+  const seriesManifestPath = path.join(
+    stateDir,
+    "research",
+    "quickrun",
+    `${seriesKey}.artifact.json`,
+  );
   await fs.mkdir(path.dirname(seriesManifestPath), { recursive: true, mode: 0o700 });
   const manifestRes = await writeFileArtifactManifest({
     kind: "theme_report",
@@ -516,16 +685,20 @@ const runThemeQuickResearch = async (params: {
     route: params.payload.route,
     mediaUrl: pdfPath,
     text: [
-      "v2 theme memo",
-      `job_id=${params.payload.jobId}`,
-      `run_id=${result.runId}`,
+      buildQuickResearchTelegramSummary({
+        kind: "theme",
+        subject: themeLabel,
+        jobId: params.payload.jobId,
+        runId: result.runId,
+        builtAtEt: params.builtAtEt,
+        pdfBytes: pdfBuffer.length,
+        sha256: manifestRes.manifest.sha256,
+        report: reportJson,
+      }),
       `Universe: ${universe.join(", ")}`,
       inferredUniverse
         ? `Universe bootstrap: scanned_docs=${inferredUniverse.scanned_docs} inferred_domains=${inferredUniverse.inferred_domains.slice(0, 10).join(", ")}`
         : null,
-      `Built: ${params.builtAtEt}`,
-      `sha256=${manifestRes.manifest.sha256}`,
-      `bytes=${pdfBuffer.length}`,
     ]
       .filter(Boolean)
       .join("\n"),
@@ -564,9 +737,7 @@ export const executeQuickResearchJob = async (
   }
 };
 
-let singleton:
-  | ReturnType<typeof createQuickrunJobRunner<QuickResearchJobPayload>>
-  | null = null;
+let singleton: ReturnType<typeof createQuickrunJobRunner<QuickResearchJobPayload>> | null = null;
 let currentCfg: OpenClawConfig | null = null;
 
 const getOrCreateRunner = (cfg: OpenClawConfig, dbPath?: string) => {
