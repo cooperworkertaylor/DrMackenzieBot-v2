@@ -18,6 +18,7 @@ import {
   type QuickResearchRequest,
 } from "../../research/quick-research-request.js";
 import {
+  buildQuickResearchStatusReply,
   enqueueQuickResearchJob,
   formatBuiltAtEt,
 } from "../../research/quickrun/quick-research-jobs.js";
@@ -96,6 +97,36 @@ const looksLikeQuickResearch = (value: string): boolean => {
     lowered,
   );
   return hasIntent || mentionsPdfOrAttach;
+};
+
+export const looksLikeQuickResearchStatusPrompt = (value: string): boolean => {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  return /^(?:\/qstatus|update|status|quick status|quick update|progress|eta)(?:\?+)?$/.test(
+    normalized,
+  );
+};
+
+const resolveQuickResearchStatusPrompt = (params: {
+  ctx: MsgContext;
+  cleanedBody: string;
+  command: Parameters<typeof handleCommands>[0]["command"];
+}): string | null => {
+  const candidates = [
+    typeof params.ctx.BodyForCommands === "string" ? params.ctx.BodyForCommands : "",
+    typeof params.ctx.CommandBody === "string" ? params.ctx.CommandBody : "",
+    params.command.commandBodyNormalized ?? "",
+    params.command.rawBodyNormalized ?? "",
+    params.cleanedBody,
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const candidate of candidates) {
+    if (looksLikeQuickResearchStatusPrompt(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
 };
 
 async function maybeHandleQuickResearchPdfRequest(params: {
@@ -541,6 +572,42 @@ export async function handleInlineActions(params: {
   });
   if (quickRun) {
     return quickRun;
+  }
+
+  const quickResearchStatusPrompt = resolveQuickResearchStatusPrompt({
+    ctx,
+    cleanedBody,
+    command,
+  });
+  if (quickResearchStatusPrompt) {
+    const { resolveActiveResearchDbPath } =
+      await import("../../research/research-model-profile.js");
+    const route = {
+      channel:
+        resolveGatewayMessageChannel(ctx.OriginatingChannel) ??
+        resolveGatewayMessageChannel(ctx.Surface) ??
+        resolveGatewayMessageChannel(ctx.Provider) ??
+        "telegram",
+      to: String(ctx.OriginatingTo ?? ctx.To ?? "").trim(),
+      accountId: ctx.AccountId != null ? String(ctx.AccountId) : undefined,
+      threadId: ctx.MessageThreadId != null ? String(ctx.MessageThreadId) : undefined,
+      sessionKey: ctx.SessionKey != null ? String(ctx.SessionKey) : undefined,
+    };
+    if (route.to) {
+      const statusReply = buildQuickResearchStatusReply({
+        route,
+        dbPath: resolveActiveResearchDbPath(),
+      });
+      if (statusReply) {
+        typing.cleanup();
+        return {
+          kind: "reply",
+          reply: {
+            text: statusReply,
+          },
+        };
+      }
+    }
   }
 
   const handleInlineStatus =

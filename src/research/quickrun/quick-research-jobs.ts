@@ -37,6 +37,8 @@ export type QuickResearchJobPayload = {
   };
 };
 
+export type QuickResearchJobRoute = QuickResearchJobPayload["route"];
+
 const escapeHtml = (value: string): string =>
   value
     .replaceAll("&", "&amp;")
@@ -111,6 +113,26 @@ const normalizeTickerList = (values: Iterable<unknown>): string[] =>
   Array.from(values)
     .map((value) => (typeof value === "string" ? value.trim().toUpperCase() : ""))
     .filter(Boolean);
+
+const normalizeRoutePart = (value?: string): string => value?.trim().toLowerCase() ?? "";
+
+const matchesQuickResearchRoute = (
+  candidate: QuickResearchJobRoute | undefined,
+  expected: QuickResearchJobRoute,
+): boolean => {
+  if (!candidate) return false;
+  const expectedSessionKey = normalizeRoutePart(expected.sessionKey);
+  const candidateSessionKey = normalizeRoutePart(candidate.sessionKey);
+  if (expectedSessionKey && candidateSessionKey) {
+    return expectedSessionKey === candidateSessionKey;
+  }
+  return (
+    normalizeRoutePart(candidate.channel) === normalizeRoutePart(expected.channel) &&
+    normalizeRoutePart(candidate.to) === normalizeRoutePart(expected.to) &&
+    normalizeRoutePart(candidate.accountId) === normalizeRoutePart(expected.accountId) &&
+    normalizeRoutePart(candidate.threadId) === normalizeRoutePart(expected.threadId)
+  );
+};
 
 type ReportSectionBlock = {
   tag?: string;
@@ -253,6 +275,74 @@ export const buildQuickResearchTelegramSummary = (params: {
   lines.push(`run_id=${params.runId}`);
   lines.push(`sha256=${params.sha256}`);
   lines.push(`bytes=${params.pdfBytes}`);
+  return lines.join("\n");
+};
+
+const buildQuickResearchStatusLine = (
+  job: QuickrunJobRecord<QuickResearchJobPayload>,
+  nowMs: number,
+): string => {
+  if (job.status === "running") {
+    const ageMinutes = Math.max(0, Math.round((nowMs - job.updatedAtMs) / 60_000));
+    return `running (attempt ${job.attempts}/${job.maxAttempts}, last update ${ageMinutes}m ago)`;
+  }
+  if (job.status === "queued") {
+    const waitMinutes = Math.max(0, Math.ceil((job.runAfterMs - nowMs) / 60_000));
+    return waitMinutes > 0 ? `queued (${waitMinutes}m until eligible)` : "queued";
+  }
+  if (job.status === "failed") {
+    return `failed after ${job.attempts}/${job.maxAttempts} attempts`;
+  }
+  return `completed at ${formatBuiltAtEt(new Date(job.completedAtMs ?? job.updatedAtMs))}`;
+};
+
+export const getLatestQuickResearchJobForRoute = (params: {
+  route: QuickResearchJobRoute;
+  dbPath?: string;
+  includeTerminal?: boolean;
+  limit?: number;
+}): QuickrunJobRecord<QuickResearchJobPayload> | null => {
+  const store = QuickrunJobStore.open(params.dbPath);
+  const jobs = store.list<QuickResearchJobPayload>({
+    jobType: QUICK_RESEARCH_JOB_TYPE,
+    limit: params.limit ?? 40,
+  });
+  const matching = jobs.filter((job) => matchesQuickResearchRoute(job.payload.route, params.route));
+  if (!matching.length) return null;
+  const active = matching.find((job) => job.status === "queued" || job.status === "running");
+  if (active) return active;
+  if (params.includeTerminal ?? true) {
+    return matching[0] ?? null;
+  }
+  return null;
+};
+
+export const buildQuickResearchStatusReply = (params: {
+  route: QuickResearchJobRoute;
+  dbPath?: string;
+  nowMs?: number;
+}): string | null => {
+  const nowMs = params.nowMs ?? Date.now();
+  const job = getLatestQuickResearchJobForRoute({
+    route: params.route,
+    dbPath: params.dbPath,
+    includeTerminal: true,
+  });
+  if (!job) return null;
+  const request = job.payload.request;
+  const subject = request.kind === "company" ? request.ticker : request.theme;
+  const lines = ["Quick status:"];
+  lines.push(`- Job: ${request.kind} v2 ${subject} (${request.minutes} min)`);
+  lines.push(`- Status: ${buildQuickResearchStatusLine(job, nowMs)}`);
+  lines.push(`- Accepted: ${formatBuiltAtEt(new Date(job.payload.createdAtMs))}`);
+  lines.push(`- Target post-after: ${formatBuiltAtEt(new Date(job.payload.deliverAtMs))}`);
+  if (job.payload.researchProfile?.modelRef) {
+    lines.push(`- Model: ${job.payload.researchProfile.modelRef}`);
+  }
+  if (job.status === "failed" && job.lastError?.trim()) {
+    lines.push(`- Last error: ${job.lastError.trim()}`);
+  }
+  lines.push(`- job_id=${job.id}`);
   return lines.join("\n");
 };
 

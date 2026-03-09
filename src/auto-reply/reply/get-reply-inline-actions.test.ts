@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { resolveQuickResearchRequest } from "./get-reply-inline-actions.js";
+import {
+  looksLikeQuickResearchStatusPrompt,
+  resolveQuickResearchRequest,
+} from "./get-reply-inline-actions.js";
 
 describe("resolveQuickResearchRequest", () => {
   it("prefers the current inbound command body over expanded session text", () => {
@@ -22,5 +25,12 @@ describe("resolveQuickResearchRequest", () => {
     expect(result.request.ticker).toBe("NVDA");
     expect(result.request.minutes).toBe(10);
     expect(result.source).toBe("NVDA 10 min");
+  });
+
+  it("recognizes deterministic quick research status follow-ups", () => {
+    expect(looksLikeQuickResearchStatusPrompt("update?")).toBe(true);
+    expect(looksLikeQuickResearchStatusPrompt("status")).toBe(true);
+    expect(looksLikeQuickResearchStatusPrompt("/qstatus")).toBe(true);
+    expect(looksLikeQuickResearchStatusPrompt("what changed with NVDA")).toBe(false);
   });
 });

@@ -1,5 +1,27 @@
-import { describe, expect, it } from "vitest";
-import { buildQuickResearchTelegramSummary } from "./quick-research-jobs.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { QuickrunJobStore } from "./job-store.js";
+import {
+  buildQuickResearchStatusReply,
+  buildQuickResearchTelegramSummary,
+} from "./quick-research-jobs.js";
+
+const tempDirs: string[] = [];
+
+const makeDbPath = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "quickrun-jobs-"));
+  tempDirs.push(dir);
+  return path.join(dir, "research.db");
+};
+
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 describe("buildQuickResearchTelegramSummary", () => {
   it("extracts an investor digest from the v2 report shape", () => {
@@ -53,5 +75,56 @@ describe("buildQuickResearchTelegramSummary", () => {
     expect(text).toContain("Custom silicon competition could pressure pricing.");
     expect(text).toContain("Missing / next diligence");
     expect(text).toContain("Need one primary filing to validate the margin bridge.");
+  });
+
+  it("builds a deterministic status reply for the latest matching route", () => {
+    const dbPath = makeDbPath();
+    const store = QuickrunJobStore.open(dbPath);
+    store.enqueue({
+      id: "job-789",
+      jobType: "quick_research_pdf_v2",
+      runAfterMs: 0,
+      payload: {
+        jobId: "job-789",
+        request: {
+          kind: "company",
+          ticker: "NVDA",
+          minutes: 5,
+        },
+        createdAtMs: Date.UTC(2026, 2, 9, 19, 25),
+        deliverAtMs: Date.UTC(2026, 2, 9, 19, 30),
+        researchProfile: {
+          key: "primary",
+          label: "Primary",
+          modelRef: "openai/gpt-5.4",
+        },
+        route: {
+          channel: "telegram",
+          to: "telegram:123",
+          sessionKey: "agent:main:main",
+        },
+      },
+    });
+    store.claimNext({
+      jobType: "quick_research_pdf_v2",
+      workerId: "worker-a",
+      nowMs: Date.UTC(2026, 2, 9, 19, 26),
+    });
+
+    const text = buildQuickResearchStatusReply({
+      dbPath,
+      route: {
+        channel: "telegram",
+        to: "telegram:123",
+        sessionKey: "agent:main:main",
+      },
+      nowMs: Date.UTC(2026, 2, 9, 19, 27),
+    });
+
+    expect(text).toContain("Quick status:");
+    expect(text).toContain("Job: company v2 NVDA (5 min)");
+    expect(text).toContain("Status: running");
+    expect(text).toContain("Model: openai/gpt-5.4");
+    expect(text).toContain("job_id=job-789");
   });
 });
