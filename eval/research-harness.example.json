@@ -1,0 +1,41 @@
+{
+  "name": "external-research-core",
+  "description": "Baseline task set for retrieval, ticker memo quality, and watchlist brief quality.",
+  "thresholds": {
+    "minScore": 0.8,
+    "maxFailedChecks": 1
+  },
+  "tasks": [
+    {
+      "id": "nvda_retrieval_sources",
+      "kind": "retrieval",
+      "query": "NVDA guidance margin competition external research",
+      "ticker": "NVDA",
+      "source": "research",
+      "limit": 8,
+      "minHits": 4,
+      "minCitationRate": 0.6,
+      "minAverageScore": 0.45
+    },
+    {
+      "id": "nvda_structured_report",
+      "kind": "report",
+      "ticker": "NVDA",
+      "minSources": 2,
+      "minEvidence": 2,
+      "minBullCase": 1,
+      "minBearCase": 1,
+      "minWhatChanged": 1,
+      "minConfidence": 0.45,
+      "maxUnknowns": 4
+    },
+    {
+      "id": "default_watchlist_brief",
+      "kind": "watchlist_brief",
+      "watchlistId": 1,
+      "lookbackDays": 7,
+      "minMaterialChanges": 1,
+      "minNextActions": 1
+    }
+  ]
+}

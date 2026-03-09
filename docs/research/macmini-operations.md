@@ -7,6 +7,7 @@
 - `OPENCLAW_STATE_DIR=/opt/drmackenziebot/state`
 - `OPENCLAW_RESEARCH_DB_PATH=/opt/drmackenziebot/state/research/research.db`
 - `OPENCLAW_CHROME_PATH=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`
+- `OPENCLAW_RESEARCH_V2_MODEL=openai/gpt-5.4` if you want the research model pinned explicitly. If unset, research v2 now defaults to `openai/gpt-5.4`.
 
 Telegram, model, and API secrets should stay in the existing env / 1Password reference flow.
 

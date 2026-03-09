@@ -3,7 +3,14 @@ import { computeValuation, forecastDecisionMetrics, resolveMatureForecasts } fro
 import { computeVariantPerception } from "./variant.js";
 import { searchResearch, type SearchHit } from "./vector-search.js";
 
-type EvalCheck = { name: string; passed: boolean; detail: string };
+export type EvalCheck = { name: string; passed: boolean; detail: string };
+export type EvalRunResult = {
+  runType: string;
+  score: number;
+  passed: number;
+  total: number;
+  checks: EvalCheck[];
+};
 
 const tickersFromEnv = (): string[] =>
   (process.env.RESEARCH_TICKERS ?? "")
@@ -342,16 +349,26 @@ export const runDecisionEval = async () => {
   return persistEval("decision", checks);
 };
 
-export const latestEvalReport = () => {
+export const latestEvalReport = (params?: { runType?: string; limit?: number }) => {
   const db = openResearchDb();
-  const rows = db
-    .prepare(
-      `SELECT id, run_type, score, passed, total, details, created_at
-       FROM eval_runs
-       ORDER BY created_at DESC
-       LIMIT 20`,
-    )
-    .all() as Array<{
+  const rows = (params?.runType
+    ? db
+        .prepare(
+          `SELECT id, run_type, score, passed, total, details, created_at
+           FROM eval_runs
+           WHERE run_type = ?
+           ORDER BY created_at DESC
+           LIMIT ?`,
+        )
+        .all(params.runType, Math.max(1, Math.floor(params.limit ?? 20)))
+    : db
+        .prepare(
+          `SELECT id, run_type, score, passed, total, details, created_at
+           FROM eval_runs
+           ORDER BY created_at DESC
+           LIMIT ?`,
+        )
+        .all(Math.max(1, Math.floor(params?.limit ?? 20)))) as Array<{
     id: number;
     run_type: string;
     score: number;
@@ -363,7 +380,7 @@ export const latestEvalReport = () => {
   return rows;
 };
 
-const persistEval = (runType: string, checks: EvalCheck[]) => {
+export const persistEvalRun = (runType: string, checks: EvalCheck[]): EvalRunResult => {
   const passed = checks.filter((c) => c.passed).length;
   const total = checks.length;
   const score = total > 0 ? passed / total : 0;
@@ -374,3 +391,5 @@ const persistEval = (runType: string, checks: EvalCheck[]) => {
   ).run(runType, score, passed, total, JSON.stringify(checks), Date.now());
   return { runType, score, passed, total, checks };
 };
+
+const persistEval = (runType: string, checks: EvalCheck[]) => persistEvalRun(runType, checks);

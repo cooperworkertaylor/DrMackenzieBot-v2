@@ -9,6 +9,8 @@ import { loadConfig } from "../../config/config.js";
 
 export type ModelRef = { provider: string; model: string };
 
+const DEFAULT_RESEARCH_V2_MODEL_REF = "openai/gpt-5.4";
+
 const parseModelRef = (raw: string): ModelRef | null => {
   const trimmed = raw.trim();
   if (!trimmed) return null;
@@ -85,10 +87,20 @@ export function resolveResearchV2FallbackModelRefs(params: {
 
   const parsedPrimary = parseModelRef(pickedPrimary);
   if (parsedPrimary && isGpt5Family(parsedPrimary)) {
-    if (parsedPrimary.provider.trim().toLowerCase() === "openai") {
-      add("openai-codex/gpt-5.2-codex");
-    } else if (parsedPrimary.provider.trim().toLowerCase() === "openai-codex") {
+    const normalizedProvider = parsedPrimary.provider.trim().toLowerCase();
+    const normalizedModel = parsedPrimary.model.trim().toLowerCase();
+    const codexCompanion = `openai-codex/${normalizedModel}-codex`;
+    const openAiCompanion = normalizedModel.endsWith("-codex")
+      ? `openai/${normalizedModel.replace(/-codex$/, "")}`
+      : `openai/${normalizedModel}`;
+    if (normalizedProvider === "openai") {
+      add(codexCompanion);
+    } else if (normalizedProvider === "openai-codex") {
+      add(openAiCompanion);
+    }
+    if (normalizedModel !== "gpt-5.2") {
       add("openai/gpt-5.2");
+      add("openai-codex/gpt-5.2-codex");
     }
   }
 
@@ -274,7 +286,7 @@ export function resolveResearchV2ModelRef(params: {
     (cfg.agents?.defaults?.model?.fallbacks?.[0] ?? "").trim() ||
     "";
 
-  const picked = (explicit || fromCfg).trim();
+  const picked = (explicit || fromCfg || DEFAULT_RESEARCH_V2_MODEL_REF).trim();
   if (!picked) {
     throw new Error(
       "No model configured for v2 research LLM. Set OPENCLAW_RESEARCH_V2_MODEL (e.g. anthropic/claude-opus-4-5) or configure agents.defaults.model.primary in openclaw.json.",

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "report": {
+    "lookbackDays": 45,
+    "maxSources": 8,
+    "maxClaims": 8,
+    "maxEvents": 6,
+    "maxFacts": 6
+  },
+  "watchlistBrief": {
+    "lookbackDays": 1
+  }
+}

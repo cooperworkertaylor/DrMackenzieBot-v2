@@ -8,8 +8,8 @@ import {
 } from "./complete-json.js";
 
 describe("resolveResearchV2ModelRef", () => {
-  it("throws on missing model config", () => {
-    expect(() =>
+  it("defaults research v2 to openai/gpt-5.4 when unset", () => {
+    expect(
       resolveResearchV2ModelRef({
         purpose: "writer",
         env: {} as NodeJS.ProcessEnv,
@@ -17,7 +17,7 @@ describe("resolveResearchV2ModelRef", () => {
           typeof import("../../config/config.js").loadConfig
         >,
       }),
-    ).toThrow(/No model configured/i);
+    ).toBe("openai/gpt-5.4");
   });
 
   it("accepts provider/model from env", () => {
@@ -92,40 +92,47 @@ describe("extractBestEffortAssistantText", () => {
 describe("resolveResearchV2FallbackModelRefs", () => {
   it("includes primary, env fallbacks, and cfg fallbacks in order without duplicates", () => {
     const refs = resolveResearchV2FallbackModelRefs({
-      primary: "openai/gpt-5.2",
+      primary: "openai/gpt-5.4",
       purpose: "writer",
       env: {
         OPENCLAW_RESEARCH_V2_WRITER_FALLBACK_MODEL: "anthropic/claude-opus-4-5",
-        OPENCLAW_RESEARCH_V2_FALLBACK_MODELS: "openai/gpt-5.2, google/gemini-3-pro-preview",
+        OPENCLAW_RESEARCH_V2_FALLBACK_MODELS: "openai/gpt-5.4, google/gemini-3-pro-preview",
       } as NodeJS.ProcessEnv,
       cfg: {
         agents: {
           defaults: {
             model: {
-              fallbacks: ["openai/gpt-5.2-mini", "google/gemini-3-pro-preview"],
+              fallbacks: ["openai/gpt-5.4-mini", "google/gemini-3-pro-preview"],
             },
           },
         },
       } as unknown as ReturnType<typeof import("../../config/config.js").loadConfig>,
     });
     expect(refs).toEqual([
-      "openai/gpt-5.2",
+      "openai/gpt-5.4",
       "anthropic/claude-opus-4-5",
       "google/gemini-3-pro-preview",
-      "openai/gpt-5.2-mini",
+      "openai/gpt-5.4-mini",
+      "openai-codex/gpt-5.4-codex",
+      "openai/gpt-5.2",
       "openai-codex/gpt-5.2-codex",
     ]);
   });
 
   it("adds automatic OpenAI fallback for gpt-5 codex primary", () => {
     const refs = resolveResearchV2FallbackModelRefs({
-      primary: "openai-codex/gpt-5.2-codex",
+      primary: "openai-codex/gpt-5.4-codex",
       purpose: "analyzer",
       env: {} as NodeJS.ProcessEnv,
       cfg: { agents: { defaults: { model: {} } } } as unknown as ReturnType<
         typeof import("../../config/config.js").loadConfig
       >,
     });
-    expect(refs).toEqual(["openai-codex/gpt-5.2-codex", "openai/gpt-5.2"]);
+    expect(refs).toEqual([
+      "openai-codex/gpt-5.4-codex",
+      "openai/gpt-5.4",
+      "openai/gpt-5.2",
+      "openai-codex/gpt-5.2-codex",
+    ]);
   });
 });

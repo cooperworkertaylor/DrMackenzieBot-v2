@@ -40,10 +40,33 @@ import {
   runRetrievalEval,
 } from "../research/eval.js";
 import {
+  renderResearchEvalScorecard,
+  latestResearchEvalHarnessRuns,
+  loadResearchEvalTaskSet,
+  runResearchEvalTaskSet,
+} from "../research/eval-harness.js";
+import {
+  loadResearchEvalImprovementProfile,
+  runResearchEvalSelfImproveLoop,
+} from "../research/eval-self-improve.js";
+import {
   executionTraceReport,
   logExecutionTrace,
   type ExecutionTraceStepInput,
 } from "../research/execution-trace.js";
+import {
+  analyzeExternalResearchGuidanceDrift,
+  analyzeExternalResearchManagementCredibility,
+  compareExternalResearchPeers,
+  detectExternalResearchSourceConflicts,
+} from "../research/external-research-advanced.js";
+import {
+  buildPersonalizedResearchSnapshot,
+  ingestResearchNotebookEntry,
+  listResearchNotebookEntries,
+  listResearchUserPreferences,
+  upsertResearchUserPreference,
+} from "../research/external-research-personalization.js";
 import {
   computeWeeklyNewsletterDigest,
   ingestExternalResearchDocument,
@@ -895,6 +918,226 @@ export function registerResearchCli(program: Command) {
         defaultRuntime.log(
           `newsletter_digest total=${digest.totalDocs} read_in_full=${digest.readInFull.length} quick_scan=${digest.quickScan.length} lookback_days=${digest.lookbackDays}`,
         );
+      });
+    });
+
+  research
+    .command("source-conflicts")
+    .description("Detect material conflicts across external research sources for a ticker")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--lookback-days <n>", "Lookback window in days", "90")
+    .option("--limit <n>", "Max conflicts to return", "8")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const report = detectExternalResearchSourceConflicts({
+          ticker: opts.ticker as string,
+          dbPath: opts.db as string,
+          lookbackDays: parseOptionalNumber(opts["lookbackDays"]) ?? 90,
+          maxConflicts: parseOptionalNumber(opts.limit) ?? 8,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(report, null, 2)}\n`);
+          return;
+        }
+        defaultRuntime.log(report.markdown);
+      });
+    });
+
+  research
+    .command("compare-peers")
+    .description("Compare the latest external research posture across two tickers")
+    .requiredOption("--left <symbol>", "Left ticker")
+    .requiredOption("--right <symbol>", "Right ticker")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const comparison = compareExternalResearchPeers({
+          leftTicker: opts.left as string,
+          rightTicker: opts.right as string,
+          dbPath: opts.db as string,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(comparison, null, 2)}\n`);
+          return;
+        }
+        defaultRuntime.log(comparison.markdown);
+      });
+    });
+
+  research
+    .command("guidance-drift")
+    .description("Analyze drift in external-research guidance and key metrics for a ticker")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--limit <n>", "Max drift items to return", "6")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const report = analyzeExternalResearchGuidanceDrift({
+          ticker: opts.ticker as string,
+          dbPath: opts.db as string,
+          limit: parseOptionalNumber(opts.limit) ?? 6,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(report, null, 2)}\n`);
+          return;
+        }
+        defaultRuntime.log(report.markdown);
+      });
+    });
+
+  research
+    .command("management-credibility")
+    .description("Track contradictions in management/guidance language across external research evidence")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--limit <n>", "Max contradiction alerts to return", "6")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const report = analyzeExternalResearchManagementCredibility({
+          ticker: opts.ticker as string,
+          dbPath: opts.db as string,
+          maxAlerts: parseOptionalNumber(opts.limit) ?? 6,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(report, null, 2)}\n`);
+          return;
+        }
+        defaultRuntime.log(report.markdown);
+      });
+    });
+
+  research
+    .command("prefs-set")
+    .description("Set a persisted research preference")
+    .requiredOption("--key <text>", "Preference key")
+    .option("--value <text>", "Preference text value")
+    .option("--value-json <json>", "Preference JSON value")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const valueJson =
+          typeof opts["valueJson"] === "string" && opts["valueJson"].trim()
+            ? (JSON.parse(opts["valueJson"] as string) as Record<string, unknown>)
+            : undefined;
+        const row = upsertResearchUserPreference({
+          key: opts.key as string,
+          valueText: opts.value as string | undefined,
+          valueJson,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `preference key=${row.key} value=${row.valueText || JSON.stringify(row.valueJson)}`,
+        );
+      });
+    });
+
+  research
+    .command("prefs-list")
+    .description("List persisted research preferences")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const rows = listResearchUserPreferences({ dbPath: opts.db as string });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(rows, null, 2)}\n`);
+          return;
+        }
+        if (!rows.length) {
+          defaultRuntime.log("No research preferences stored.");
+          return;
+        }
+        rows.forEach((row) => {
+          defaultRuntime.log(`- ${row.key}: ${row.valueText || JSON.stringify(row.valueJson)}`);
+        });
+      });
+    });
+
+  research
+    .command("notebook-add")
+    .description("Add a notebook entry and ingest it into the research evidence graph")
+    .requiredOption("--title <text>", "Notebook entry title")
+    .option("--content <text>", "Notebook entry content")
+    .option("--content-file <path>", "Path to notebook content file")
+    .option("--ticker <symbol>", "Optional ticker tag")
+    .option("--tags <csv>", "Comma-separated tags")
+    .option("--source <text>", "Notebook source tag", "manual")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const contentInline = (opts.content as string | undefined)?.trim();
+        const contentFile = (opts["contentFile"] as string | undefined)?.trim();
+        let content = contentInline ?? "";
+        if (!content && contentFile) {
+          content = (await fs.readFile(path.resolve(contentFile), "utf8")).trim();
+        }
+        if (!content) throw new Error("Provide --content or --content-file");
+        const result = ingestResearchNotebookEntry({
+          title: opts.title as string,
+          content,
+          ticker: opts.ticker as string | undefined,
+          tags: parseCsvListOption((opts.tags as string | undefined) ?? ""),
+          source: opts.source as string | undefined,
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `notebook_entry id=${result.entry.id} external_document_id=${result.entry.externalDocumentId ?? "n/a"} report_id=${result.ingest.reportId ?? "n/a"}`,
+        );
+      });
+    });
+
+  research
+    .command("notebook-list")
+    .description("List stored research notebook entries")
+    .option("--ticker <symbol>", "Optional ticker filter")
+    .option("--limit <n>", "Rows to return", "20")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const rows = listResearchNotebookEntries({
+          ticker: opts.ticker as string | undefined,
+          limit: parseOptionalNumber(opts.limit) ?? 20,
+          dbPath: opts.db as string,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(rows, null, 2)}\n`);
+          return;
+        }
+        if (!rows.length) {
+          defaultRuntime.log("No notebook entries found.");
+          return;
+        }
+        rows.forEach((row) => {
+          defaultRuntime.log(
+            `- ${new Date(row.createdAt).toISOString()} ${row.ticker ?? "unscoped"} ${row.title}${row.tags.length ? ` tags=${row.tags.join(",")}` : ""}`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("personalized")
+    .description("Build a personalized ticker snapshot from preferences, notebook entries, and current thesis state")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const snapshot = buildPersonalizedResearchSnapshot({
+          ticker: opts.ticker as string,
+          dbPath: opts.db as string,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(snapshot, null, 2)}\n`);
+          return;
+        }
+        defaultRuntime.log(snapshot.markdown);
       });
     });
 
@@ -4251,9 +4494,14 @@ export function registerResearchCli(program: Command) {
   research
     .command("eval-report")
     .description("Show recent eval trend")
-    .action(async () => {
+    .option("--run-type <type>", "Optional run type filter")
+    .option("--limit <n>", "Rows to show", "20")
+    .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
-        const rows = latestEvalReport();
+        const rows = latestEvalReport({
+          runType: opts["runType"] as string | undefined,
+          limit: parseOptionalNumber(opts.limit) ?? 20,
+        });
         if (!rows.length) {
           defaultRuntime.log("No eval runs yet.");
           return;
@@ -4263,6 +4511,122 @@ export function registerResearchCli(program: Command) {
             `${new Date(r.created_at).toISOString()} ${r.run_type} score=${(r.score * 100).toFixed(1)}% (${r.passed}/${r.total})`,
           );
         });
+      });
+    });
+
+  research
+    .command("eval-harness")
+    .description("Run a deterministic research eval task set from JSON")
+    .requiredOption("--taskset <path>", "Path to eval task set JSON")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--out <path>", "Write markdown scorecard to file")
+    .option("--json", "Emit JSON result", false)
+    .option("--require-pass", "Exit non-zero if the eval gate fails", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const taskSet = loadResearchEvalTaskSet(opts.taskset as string);
+        const result = await runResearchEvalTaskSet({
+          taskSet,
+          dbPath: opts.db as string,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(result, null, 2)}\n`);
+        } else {
+          defaultRuntime.log(
+            `eval_harness name=${result.taskSetName} score=${(result.score * 100).toFixed(1)}% passed=${result.passed}/${result.total} gate=${result.passedGate ? "pass" : "fail"}`,
+          );
+          result.checks.forEach((check) => {
+            defaultRuntime.log(
+              `- ${check.passed ? "ok" : "fail"} ${check.name}: ${check.detail}`,
+            );
+          });
+          if (result.reasons.length) {
+            result.reasons.forEach((reason) => defaultRuntime.error(`GATE: ${reason}`));
+          }
+        }
+        if (opts.out) {
+          const outPath = path.resolve(opts.out as string);
+          await fs.mkdir(path.dirname(outPath), { recursive: true });
+          await fs.writeFile(outPath, `${renderResearchEvalScorecard(result)}\n`, "utf8");
+          defaultRuntime.log(`Scorecard written to ${outPath}`);
+        }
+        if (opts.requirePass && !result.passedGate) {
+          defaultRuntime.exit(1);
+        }
+      });
+    });
+
+  research
+    .command("eval-harness-report")
+    .description("Show recent research eval harness runs")
+    .option("--taskset-name <name>", "Optional task set name filter")
+    .option("--limit <n>", "Rows to show", "20")
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const rows = latestResearchEvalHarnessRuns({
+          taskSetName: opts["tasksetName"] as string | undefined,
+          limit: parseOptionalNumber(opts.limit) ?? 20,
+        });
+        if (!rows.length) {
+          defaultRuntime.log("No eval harness runs yet.");
+          return;
+        }
+        rows.forEach((row) => {
+          defaultRuntime.log(
+            `${new Date(row.created_at).toISOString()} ${row.run_type} score=${(row.score * 100).toFixed(1)}% (${row.passed}/${row.total})`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("eval-self-improve")
+    .description("Run a constrained self-improvement loop over the research eval harness")
+    .requiredOption("--taskset <path>", "Path to eval task set JSON")
+    .requiredOption("--profile <path>", "Path to the mutable improvement profile JSON")
+    .option("--attempts <n>", "Number of candidate mutations to evaluate", "8")
+    .option("--min-improvement <n>", "Minimum score delta required to keep a better candidate", "0.005")
+    .option("--seed <text>", "Deterministic seed")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--out <path>", "Write markdown run report to file")
+    .option("--json", "Emit JSON result", false)
+    .option("--no-write-best", "Do not write the accepted best profile back to disk")
+    .option("--require-pass", "Exit non-zero if the final best candidate fails the eval gate", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const taskSet = loadResearchEvalTaskSet(opts.taskset as string);
+        const result = await runResearchEvalSelfImproveLoop({
+          taskSet,
+          profilePath: opts.profile as string,
+          attempts: parseOptionalNumber(opts.attempts) ?? 8,
+          minImprovement: parseOptionalNumber(opts["minImprovement"]) ?? 0.005,
+          seed: opts.seed as string | undefined,
+          dbPath: opts.db as string,
+          writeBest: opts.writeBest as boolean,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(result, null, 2)}\n`);
+        } else {
+          defaultRuntime.log(
+            `eval_self_improve taskset=${result.taskSetName} baseline=${(result.baseline.score * 100).toFixed(1)}% best=${(result.best.score * 100).toFixed(1)}% applied=${result.appliedImprovement ? "yes" : "no"}`,
+          );
+          result.attempts.forEach((attempt) => {
+            defaultRuntime.log(
+              `- #${attempt.attempt} ${attempt.mutationPath} ${attempt.previousValue}->${attempt.candidateValue} ${attempt.decision} score=${(attempt.result.score * 100).toFixed(1)}% failed=${attempt.result.failedChecks} reason=${attempt.reason}`,
+            );
+          });
+        }
+        if (opts.out) {
+          const outPath = path.resolve(opts.out as string);
+          await fs.mkdir(path.dirname(outPath), { recursive: true });
+          await fs.writeFile(outPath, `${result.markdown}\n`, "utf8");
+          defaultRuntime.log(`Self-improve report written to ${outPath}`);
+        }
+        const profile = loadResearchEvalImprovementProfile(opts.profile as string);
+        defaultRuntime.log(`Profile now at ${path.resolve(opts.profile as string)} -> ${JSON.stringify(profile)}`);
+        if (opts.requirePass && !result.best.passedGate) {
+          defaultRuntime.exit(1);
+        }
       });
     });
 
