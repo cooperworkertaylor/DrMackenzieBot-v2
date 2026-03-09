@@ -67,6 +67,9 @@ const chooseSecretField = (item) => {
   return candidates[0];
 };
 
+const vaultDetail = runOpJson(["vault", "get", vaultName, "--format", "json"]);
+const vaultRef = typeof vaultDetail?.id === "string" && vaultDetail.id.trim() ? vaultDetail.id.trim() : vaultName;
+
 const itemList = runOpJson(["item", "list", "--vault", vaultName, "--format", "json"]);
 const itemsByTitle = new Map();
 for (const item of itemList) {
@@ -104,7 +107,9 @@ for (const envName of Array.from(envNames).sort()) {
     missingFields.push(envName);
     continue;
   }
-  resolvedLines.push(`${normalizeEnvName(envName)}=op://${vaultName}/${item.title.trim()}/${fieldRef}`);
+  const itemRef =
+    (typeof itemDetail?.id === "string" && itemDetail.id.trim()) || item.title.trim();
+  resolvedLines.push(`${normalizeEnvName(envName)}=op://${vaultRef}/${itemRef}/${fieldRef}`);
 }
 
 const header = [
