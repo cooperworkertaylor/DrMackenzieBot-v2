@@ -1,7 +1,25 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
-export const runsRoot = (): string => path.resolve(process.cwd(), "runs");
+const resolveUserPath = (value: string): string => {
+  if (!value.trim()) return value;
+  if (value.startsWith("~")) {
+    return path.resolve(value.replace(/^~(?=$|[\\/])/, os.homedir()));
+  }
+  return path.resolve(value);
+};
+
+export const runsRoot = (): string => {
+  const explicit = (process.env.OPENCLAW_RESEARCH_RUNS_DIR ?? "").trim();
+  if (explicit) {
+    return resolveUserPath(explicit);
+  }
+  const stateDir =
+    (process.env.OPENCLAW_STATE_DIR ?? process.env.CLAWDBOT_STATE_DIR ?? "").trim() ||
+    path.join(os.homedir(), ".openclaw");
+  return path.join(resolveUserPath(stateDir), "research", "runs");
+};
 
 export const runDirFor = (runId: string): string => path.join(runsRoot(), runId);
 
