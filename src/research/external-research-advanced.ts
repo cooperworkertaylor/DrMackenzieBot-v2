@@ -70,6 +70,50 @@ export type ExternalResearchPeerComparison = {
   markdown: string;
 };
 
+export type ExternalResearchGuidanceDriftItem = {
+  ticker: string;
+  metricKey: string;
+  metricLabel: string;
+  score: number;
+  direction: "up" | "down" | "flat";
+  summary: string;
+  latest: ExternalResearchConflictEntry & {
+    asOfDate?: string;
+    valueNum?: number;
+  };
+  previous: ExternalResearchConflictEntry & {
+    asOfDate?: string;
+    valueNum?: number;
+  };
+};
+
+export type ExternalResearchGuidanceDriftReport = {
+  ticker: string;
+  generatedAt: string;
+  items: ExternalResearchGuidanceDriftItem[];
+  markdown: string;
+};
+
+export type ExternalResearchCredibilityAlert = {
+  topic: string;
+  summary: string;
+  earlier: ExternalResearchConflictEntry;
+  later: ExternalResearchConflictEntry;
+  score: number;
+};
+
+export type ExternalResearchManagementCredibilityReport = {
+  ticker: string;
+  generatedAt: string;
+  trackedClaims: number;
+  reaffirmedClaims: number;
+  contradictedClaims: number;
+  openClaims: number;
+  credibilityScore: number;
+  alerts: ExternalResearchCredibilityAlert[];
+  markdown: string;
+};
+
 const DAY_MS = 86_400_000;
 
 const STOPWORDS = new Set([
@@ -246,6 +290,66 @@ const renderPeerComparisonMarkdown = (comparison: ExternalResearchPeerComparison
   lines.push("## Next Actions");
   lines.push("");
   comparison.nextActions.forEach((action) => lines.push(`- ${action}`));
+  lines.push("");
+  return lines.join("\n");
+};
+
+const renderGuidanceDriftMarkdown = (report: ExternalResearchGuidanceDriftReport): string => {
+  const lines: string[] = [];
+  lines.push(`# ${report.ticker} Guidance Drift`);
+  lines.push("");
+  lines.push(`- Generated at: ${report.generatedAt}`);
+  lines.push(`- Metrics with material drift: ${report.items.length}`);
+  lines.push("");
+  if (!report.items.length) {
+    lines.push("No material guidance drift detected.");
+    lines.push("");
+    return lines.join("\n");
+  }
+  report.items.forEach((item) => {
+    lines.push(`## ${item.metricLabel}`);
+    lines.push("");
+    lines.push(`- Direction: ${item.direction} | Score: ${item.score.toFixed(2)}`);
+    lines.push(`- Summary: ${item.summary}`);
+    lines.push(
+      `- Latest: ${item.latest.provider} | ${item.latest.valueText} | ${item.latest.asOfDate ?? item.latest.publishedAt ?? "undated"} | ${item.latest.title}`,
+    );
+    lines.push(
+      `- Previous: ${item.previous.provider} | ${item.previous.valueText} | ${item.previous.asOfDate ?? item.previous.publishedAt ?? "undated"} | ${item.previous.title}`,
+    );
+    lines.push("");
+  });
+  return lines.join("\n");
+};
+
+const renderManagementCredibilityMarkdown = (
+  report: ExternalResearchManagementCredibilityReport,
+): string => {
+  const lines: string[] = [];
+  lines.push(`# ${report.ticker} Management Credibility`);
+  lines.push("");
+  lines.push(`- Generated at: ${report.generatedAt}`);
+  lines.push(`- Credibility score: ${(report.credibilityScore * 100).toFixed(0)}%`);
+  lines.push(
+    `- Tracked claims: ${report.trackedClaims} | Reaffirmed: ${report.reaffirmedClaims} | Contradicted: ${report.contradictedClaims} | Open: ${report.openClaims}`,
+  );
+  lines.push("");
+  if (!report.alerts.length) {
+    lines.push("No management credibility breaks detected in the tracked evidence set.");
+    lines.push("");
+    return lines.join("\n");
+  }
+  lines.push("## Contradictions");
+  lines.push("");
+  report.alerts.forEach((alert) => {
+    lines.push(`- ${alert.summary} (score=${alert.score.toFixed(2)})`);
+    lines.push(
+      `  earlier: ${alert.earlier.provider} | ${alert.earlier.publishedAt ?? "undated"} | ${alert.earlier.valueText}`,
+    );
+    lines.push(
+      `  later: ${alert.later.provider} | ${alert.later.publishedAt ?? "undated"} | ${alert.later.valueText}`,
+    );
+  });
   lines.push("");
   return lines.join("\n");
 };
@@ -573,4 +677,267 @@ export const compareExternalResearchPeers = (params: {
   };
   comparison.markdown = renderPeerComparisonMarkdown(comparison);
   return comparison;
+};
+
+const GUIDANCE_DRIFT_METRICS = new Set([
+  "revenue_growth_pct",
+  "gross_margin_pct",
+  "operating_margin_pct",
+  "capex_amount",
+]);
+
+export const analyzeExternalResearchGuidanceDrift = (params: {
+  ticker: string;
+  dbPath?: string;
+  limit?: number;
+}): ExternalResearchGuidanceDriftReport => {
+  const db = openResearchDb(params.dbPath);
+  const ticker = normalizeTicker(params.ticker);
+  const entity = db
+    .prepare(
+      `SELECT id
+       FROM research_entities
+       WHERE ticker=?
+       ORDER BY updated_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .get(ticker) as { id: number } | undefined;
+  if (!entity) {
+    throw new Error(`research entity not found for ticker=${ticker}`);
+  }
+  const rows = db
+    .prepare(
+      `SELECT
+         rf.metric_key,
+         rf.value_num,
+         rf.value_text,
+         rf.unit,
+         rf.as_of_date,
+         d.id AS document_id,
+         d.provider,
+         d.title,
+         COALESCE(NULLIF(d.canonical_url, ''), d.url) AS url,
+         COALESCE(NULLIF(d.published_at, ''), NULLIF(d.received_at, ''), '') AS published_at
+       FROM research_facts rf
+       JOIN external_documents d
+         ON d.id=rf.source_ref_id
+        AND rf.source_table='external_documents'
+       WHERE rf.entity_id=?
+         AND d.ticker=?
+       ORDER BY COALESCE(NULLIF(rf.as_of_date, ''), NULLIF(d.published_at, ''), NULLIF(d.received_at, ''), '') DESC,
+                d.id DESC`,
+    )
+    .all(entity.id, ticker) as Array<{
+    metric_key: string;
+    value_num: number | null;
+    value_text: string;
+    unit: string;
+    as_of_date?: string;
+    document_id: number;
+    provider: string;
+    title: string;
+    url: string;
+    published_at?: string;
+  }>;
+  const grouped = new Map<string, typeof rows>();
+  rows.forEach((row) => {
+    if (!GUIDANCE_DRIFT_METRICS.has(row.metric_key)) return;
+    const bucket = grouped.get(row.metric_key) ?? [];
+    if (bucket.some((existing) => existing.document_id === row.document_id)) return;
+    bucket.push(row);
+    grouped.set(row.metric_key, bucket);
+  });
+  const items: ExternalResearchGuidanceDriftItem[] = [];
+  for (const [metricKey, metricRows] of grouped) {
+    if (metricRows.length < 2) continue;
+    const latest = metricRows[0]!;
+    const previous = metricRows[1]!;
+    const latestValue =
+      typeof latest.value_num === "number" && Number.isFinite(latest.value_num)
+        ? latest.value_num
+        : undefined;
+    const previousValue =
+      typeof previous.value_num === "number" && Number.isFinite(previous.value_num)
+        ? previous.value_num
+        : undefined;
+    if (typeof latestValue !== "number" || typeof previousValue !== "number") continue;
+    const delta = latestValue - previousValue;
+    const denominator = Math.max(1, Math.abs(previousValue));
+    const normalizedDelta = Math.abs(delta) / denominator;
+    if (normalizedDelta < 0.08 && Math.abs(delta) < (latest.unit === "percent" ? 1.5 : 0.15)) {
+      continue;
+    }
+    const direction = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+    const score = clamp01(
+      Math.max(normalizedDelta, latest.unit === "percent" ? Math.abs(delta) / 10 : normalizedDelta),
+    );
+    items.push({
+      ticker,
+      metricKey,
+      metricLabel: titleCaseMetric(metricKey),
+      score,
+      direction,
+      summary: `${titleCaseMetric(metricKey)} moved ${direction} from ${formatMetricValue(previousValue, previous.value_text, previous.unit)} to ${formatMetricValue(latestValue, latest.value_text, latest.unit)}.`,
+      latest: {
+        documentId: latest.document_id,
+        provider: latest.provider,
+        title: latest.title,
+        url: latest.url,
+        publishedAt: normalizeDate(latest.published_at),
+        asOfDate: normalizeDate(latest.as_of_date),
+        valueNum: latestValue,
+        valueText: formatMetricValue(latestValue, latest.value_text, latest.unit),
+      },
+      previous: {
+        documentId: previous.document_id,
+        provider: previous.provider,
+        title: previous.title,
+        url: previous.url,
+        publishedAt: normalizeDate(previous.published_at),
+        asOfDate: normalizeDate(previous.as_of_date),
+        valueNum: previousValue,
+        valueText: formatMetricValue(previousValue, previous.value_text, previous.unit),
+      },
+    });
+  }
+  const report: ExternalResearchGuidanceDriftReport = {
+    ticker,
+    generatedAt: new Date().toISOString(),
+    items: items
+      .toSorted(compareByScore)
+      .slice(0, Math.max(1, Math.round(params.limit ?? 6))),
+    markdown: "",
+  };
+  report.markdown = renderGuidanceDriftMarkdown(report);
+  return report;
+};
+
+export const analyzeExternalResearchManagementCredibility = (params: {
+  ticker: string;
+  dbPath?: string;
+  maxAlerts?: number;
+}): ExternalResearchManagementCredibilityReport => {
+  const db = openResearchDb(params.dbPath);
+  const ticker = normalizeTicker(params.ticker);
+  const entity = db
+    .prepare(
+      `SELECT id
+       FROM research_entities
+       WHERE ticker=?
+       ORDER BY updated_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .get(ticker) as { id: number } | undefined;
+  if (!entity) {
+    throw new Error(`research entity not found for ticker=${ticker}`);
+  }
+  const rows = db
+    .prepare(
+      `SELECT
+         c.id,
+         c.claim_text,
+         c.confidence,
+         c.valid_from,
+         d.id AS document_id,
+         d.provider,
+         d.title,
+         COALESCE(NULLIF(d.canonical_url, ''), d.url) AS url,
+         COALESCE(NULLIF(d.published_at, ''), NULLIF(d.received_at, ''), '') AS published_at
+       FROM research_claims c
+       JOIN research_claim_evidence e
+         ON e.claim_id=c.id
+        AND e.source_table='external_documents'
+       JOIN external_documents d
+         ON d.id=e.ref_id
+       WHERE c.entity_id=?
+         AND d.ticker=?
+       ORDER BY COALESCE(NULLIF(c.valid_from, ''), NULLIF(d.published_at, ''), NULLIF(d.received_at, ''), '') ASC,
+                c.id ASC`,
+    )
+    .all(entity.id, ticker) as Array<{
+    id: number;
+    claim_text: string;
+    confidence: number;
+    valid_from?: string;
+    document_id: number;
+    provider: string;
+    title: string;
+    url: string;
+    published_at?: string;
+  }>;
+  const tracked = rows.filter((row) =>
+    /\b(management|guidance|outlook|forecast)\b/i.test(row.claim_text),
+  );
+  let reaffirmedClaims = 0;
+  let contradictedClaims = 0;
+  const alerts: ExternalResearchCredibilityAlert[] = [];
+  tracked.forEach((earlier, index) => {
+    const earlierPolarity = classifyClaimPolarity(earlier.claim_text);
+    if (earlierPolarity === "neutral") return;
+    let bestReaffirmationScore = 0;
+    let bestContradiction: ExternalResearchCredibilityAlert | null = null;
+    for (let i = index + 1; i < tracked.length; i += 1) {
+      const later = tracked[i]!;
+      if (later.document_id === earlier.document_id) continue;
+      const laterPolarity = classifyClaimPolarity(later.claim_text);
+      if (laterPolarity === "neutral") continue;
+      const overlap = tokenOverlapScore(earlier.claim_text, later.claim_text);
+      if (overlap.score < 0.34 || overlap.shared.length < 2) continue;
+      const score = clamp01(((earlier.confidence + later.confidence) / 2) * 0.6 + overlap.score * 0.4);
+      if (laterPolarity === earlierPolarity) {
+        bestReaffirmationScore = Math.max(bestReaffirmationScore, score);
+        continue;
+      }
+      if (!bestContradiction || score > bestContradiction.score) {
+        bestContradiction = {
+          topic: overlap.shared.slice(0, 3).join(", "),
+          summary: `${later.provider} later contradicted earlier management/guidance language on ${overlap.shared.slice(0, 3).join(", ")}.`,
+          earlier: {
+            documentId: earlier.document_id,
+            provider: earlier.provider,
+            title: earlier.title,
+            url: earlier.url,
+            publishedAt: normalizeDate(earlier.valid_from) ?? normalizeDate(earlier.published_at),
+            valueText: earlier.claim_text,
+          },
+          later: {
+            documentId: later.document_id,
+            provider: later.provider,
+            title: later.title,
+            url: later.url,
+            publishedAt: normalizeDate(later.valid_from) ?? normalizeDate(later.published_at),
+            valueText: later.claim_text,
+          },
+          score,
+        };
+      }
+    }
+    if (bestContradiction) {
+      contradictedClaims += 1;
+      alerts.push(bestContradiction);
+      return;
+    }
+    if (bestReaffirmationScore > 0) {
+      reaffirmedClaims += 1;
+    }
+  });
+  const trackedClaims = tracked.length;
+  const openClaims = Math.max(0, trackedClaims - reaffirmedClaims - contradictedClaims);
+  const credibilityScore =
+    trackedClaims > 0 ? clamp01((reaffirmedClaims + openClaims * 0.5) / trackedClaims) : 0;
+  const report: ExternalResearchManagementCredibilityReport = {
+    ticker,
+    generatedAt: new Date().toISOString(),
+    trackedClaims,
+    reaffirmedClaims,
+    contradictedClaims,
+    openClaims,
+    credibilityScore,
+    alerts: alerts
+      .toSorted(compareByScore)
+      .slice(0, Math.max(1, Math.round(params.maxAlerts ?? 6))),
+    markdown: "",
+  };
+  report.markdown = renderManagementCredibilityMarkdown(report);
+  return report;
 };

@@ -51,6 +51,8 @@ import {
   type ExecutionTraceStepInput,
 } from "../research/execution-trace.js";
 import {
+  analyzeExternalResearchGuidanceDrift,
+  analyzeExternalResearchManagementCredibility,
   compareExternalResearchPeers,
   detectExternalResearchSourceConflicts,
 } from "../research/external-research-advanced.js";
@@ -951,6 +953,50 @@ export function registerResearchCli(program: Command) {
           return;
         }
         defaultRuntime.log(comparison.markdown);
+      });
+    });
+
+  research
+    .command("guidance-drift")
+    .description("Analyze drift in external-research guidance and key metrics for a ticker")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--limit <n>", "Max drift items to return", "6")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const report = analyzeExternalResearchGuidanceDrift({
+          ticker: opts.ticker as string,
+          dbPath: opts.db as string,
+          limit: parseOptionalNumber(opts.limit) ?? 6,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(report, null, 2)}\n`);
+          return;
+        }
+        defaultRuntime.log(report.markdown);
+      });
+    });
+
+  research
+    .command("management-credibility")
+    .description("Track contradictions in management/guidance language across external research evidence")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--limit <n>", "Max contradiction alerts to return", "6")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const report = analyzeExternalResearchManagementCredibility({
+          ticker: opts.ticker as string,
+          dbPath: opts.db as string,
+          maxAlerts: parseOptionalNumber(opts.limit) ?? 6,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(report, null, 2)}\n`);
+          return;
+        }
+        defaultRuntime.log(report.markdown);
       });
     });
 

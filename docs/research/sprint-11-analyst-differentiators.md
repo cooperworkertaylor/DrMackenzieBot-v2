@@ -17,6 +17,12 @@ This sprint adds two analyst-facing workflows on top of the external research ev
   - CLI: `openclaw research compare-peers --left <symbol> --right <symbol>`
   - compares the latest stored report + thesis for both tickers
   - highlights evidence edge, risk edge, monitoring burden, and next actions
+- Guidance drift:
+  - CLI: `openclaw research guidance-drift --ticker <symbol>`
+  - compares the latest stored fact values against the prior captured values for key guidance metrics
+- Management credibility:
+  - CLI: `openclaw research management-credibility --ticker <symbol>`
+  - tracks later contradictions to earlier management/guidance language within the ingested evidence set
 
 ## Why it matters
 
@@ -24,6 +30,8 @@ The research stack now does more than summarize a single ticker. It can:
 
 - show when sources materially disagree
 - compare two names on evidence quality and thesis drift
+- flag when core guidance metrics are drifting
+- surface when later evidence undercuts earlier management/guidance language
 - keep research-model defaults aligned with the intended OpenAI base model
 
 ## Verification
