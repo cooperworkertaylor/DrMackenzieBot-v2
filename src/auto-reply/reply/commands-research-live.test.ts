@@ -12,6 +12,7 @@ import {
   storeExternalResearchThesis,
 } from "../../research/external-research-thesis.js";
 import { ingestExternalResearchDocument } from "../../research/external-research.js";
+import { QuickrunJobStore } from "../../research/quickrun/job-store.js";
 import { getStoredResearchExecutionProfile } from "../../research/research-model-profile.js";
 import { buildCommandContext, handleCommands } from "./commands.js";
 import { parseInlineDirectives } from "./directive-handling.js";
@@ -238,5 +239,89 @@ describe("live research commands", () => {
     expect(statusResult.shouldContinue).toBe(false);
     expect(statusResult.reply?.text).toContain("Research model profile");
     expect(statusResult.reply?.text).toContain("openai/gpt-5.4");
+  });
+
+  it("exposes quick research operator commands for the current chat", async () => {
+    const dbPath = testDbPath("quickrun-commands");
+    process.env.OPENCLAW_RESEARCH_DB_PATH = dbPath;
+    const store = QuickrunJobStore.open(dbPath);
+    store.enqueue({
+      id: "job-run-1",
+      jobType: "quick_research_pdf_v2",
+      runAfterMs: 0,
+      payload: {
+        jobId: "job-run-1",
+        request: { kind: "company", ticker: "NVDA", minutes: 5 },
+        createdAtMs: Date.UTC(2026, 2, 9, 20, 0),
+        deliverAtMs: Date.UTC(2026, 2, 9, 20, 5),
+        researchProfile: { key: "primary", label: "Primary", modelRef: "openai/gpt-5.4" },
+        route: {
+          channel: "telegram",
+          to: "telegram:123",
+          sessionKey: "agent:main:main",
+        },
+      },
+    });
+    store.claimNext({
+      jobType: "quick_research_pdf_v2",
+      workerId: "worker-a",
+      nowMs: Date.UTC(2026, 2, 9, 20, 1),
+    });
+    store.setProgress({
+      id: "job-run-1",
+      workerId: "worker-a",
+      note: "Draft passed quality gate. Rendering PDF.",
+      nowMs: Date.UTC(2026, 2, 9, 20, 2),
+    });
+    store.enqueue({
+      id: "job-fail-1",
+      jobType: "quick_research_pdf_v2",
+      runAfterMs: 0,
+      maxAttempts: 1,
+      payload: {
+        jobId: "job-fail-1",
+        request: { kind: "company", ticker: "AMD", minutes: 10 },
+        createdAtMs: Date.UTC(2026, 2, 9, 19, 0),
+        deliverAtMs: Date.UTC(2026, 2, 9, 19, 10),
+        researchProfile: { key: "primary", label: "Primary", modelRef: "openai/gpt-5.4" },
+        route: {
+          channel: "telegram",
+          to: "telegram:123",
+          sessionKey: "agent:main:main",
+        },
+      },
+    });
+    store.claimNext({
+      jobType: "quick_research_pdf_v2",
+      workerId: "worker-a",
+      nowMs: Date.UTC(2026, 2, 9, 19, 1),
+    });
+    store.markFailed({
+      id: "job-fail-1",
+      workerId: "worker-a",
+      error: "boom",
+      nowMs: Date.UTC(2026, 2, 9, 19, 2),
+    });
+
+    const cfg = {
+      commands: { text: true },
+      channels: { telegram: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const ctxOverrides = { To: "telegram:123", OriginatingTo: "telegram:123" };
+
+    const statusResult = await handleCommands(buildParams("/qstatus", cfg, ctxOverrides));
+    expect(statusResult.shouldContinue).toBe(false);
+    expect(statusResult.reply?.text).toContain("Quick status:");
+    expect(statusResult.reply?.text).toContain("Draft passed quality gate. Rendering PDF.");
+
+    const lastResult = await handleCommands(buildParams("/qlast", cfg, ctxOverrides));
+    expect(lastResult.shouldContinue).toBe(false);
+    expect(lastResult.reply?.text).toContain("Recent quick research jobs:");
+    expect(lastResult.reply?.text).toContain("job-run-1");
+    expect(lastResult.reply?.text).toContain("job-fail-1");
+
+    const retryResult = await handleCommands(buildParams("/qretry job-fail-1", cfg, ctxOverrides));
+    expect(retryResult.shouldContinue).toBe(false);
+    expect(retryResult.reply?.text).toContain("Requeued quick research job job-fail-1");
   });
 });

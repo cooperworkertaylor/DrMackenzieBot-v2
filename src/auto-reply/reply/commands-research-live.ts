@@ -20,6 +20,13 @@ import {
   type ExternalResearchThesis,
 } from "../../research/external-research-thesis.js";
 import {
+  buildQuickResearchRecentJobsReply,
+  buildQuickResearchStatusReply,
+  listQuickResearchJobsForRoute,
+  retryQuickResearchJob,
+  type QuickResearchJobRoute,
+} from "../../research/quickrun/quick-research-jobs.js";
+import {
   buildResearchExecutionProfile,
   clearStoredResearchExecutionProfile,
   getStoredResearchExecutionProfile,
@@ -87,6 +94,27 @@ const resolvePairArgs = (
     left: args[0],
     right: args[1],
     usage: `Usage: /${command} <left_ticker> <right_ticker>`,
+  };
+};
+
+const resolveCurrentQuickResearchRoute = (params: {
+  ctx: { OriginatingTo?: unknown; To?: unknown; AccountId?: unknown; MessageThreadId?: unknown };
+  sessionKey?: string;
+}): QuickResearchJobRoute | null => {
+  const to = String(params.ctx.OriginatingTo ?? params.ctx.To ?? "").trim();
+  if (!to) return null;
+  return {
+    channel: "telegram",
+    to,
+    accountId:
+      params.ctx.AccountId != null && String(params.ctx.AccountId).trim()
+        ? String(params.ctx.AccountId)
+        : undefined,
+    threadId:
+      params.ctx.MessageThreadId != null && String(params.ctx.MessageThreadId).trim()
+        ? String(params.ctx.MessageThreadId)
+        : undefined,
+    sessionKey: params.sessionKey?.trim() || undefined,
   };
 };
 
@@ -271,6 +299,18 @@ const buildChangedReply = (ticker: string): string => {
   lines.push(`${ticker} what changed`);
   lines.push(`- Confidence: ${formatPct(report.confidence)}`);
   for (const line of uniqueLines(report.whatChanged, 5)) lines.push(`- ${line}`);
+  if (report.diffFromPrevious) {
+    lines.push("Delta vs prior run");
+    lines.push(
+      `- Confidence delta: ${(report.diffFromPrevious.confidenceDelta * 100).toFixed(0)} pts`,
+    );
+    for (const line of uniqueLines(report.diffFromPrevious.newBullCase, 2))
+      lines.push(`- New support: ${line}`);
+    for (const line of uniqueLines(report.diffFromPrevious.newBearCase, 2))
+      lines.push(`- New risk: ${line}`);
+    for (const line of uniqueLines(report.diffFromPrevious.resolvedUnknowns, 2))
+      lines.push(`- Resolved: ${line}`);
+  }
   if (report.nextActions.length) {
     lines.push("Next actions");
     for (const line of uniqueLines(report.nextActions, 3)) lines.push(`- ${line}`);
@@ -331,6 +371,12 @@ export const handleLiveResearchCommands: CommandHandler = async (params, allowTe
     lower.startsWith("/snapshot ") ||
     lower === "/compare" ||
     lower.startsWith("/compare ") ||
+    lower === "/qstatus" ||
+    lower.startsWith("/qstatus ") ||
+    lower === "/qlast" ||
+    lower.startsWith("/qlast ") ||
+    lower === "/qretry" ||
+    lower.startsWith("/qretry ") ||
     lower === "/rprofile" ||
     lower.startsWith("/rprofile ");
   if (!supported) return null;
@@ -398,6 +444,89 @@ export const handleLiveResearchCommands: CommandHandler = async (params, allowTe
       return {
         shouldContinue: false,
         reply: { text: buildCompareReply(left, right) },
+      };
+    }
+
+    if (lower === "/qstatus" || lower.startsWith("/qstatus ")) {
+      const route = resolveCurrentQuickResearchRoute({
+        ctx: params.ctx,
+        sessionKey: params.sessionKey,
+      });
+      if (!route) {
+        return {
+          shouldContinue: false,
+          reply: { text: "No quick research route found.", isError: true },
+        };
+      }
+      const reply = buildQuickResearchStatusReply({
+        route,
+        dbPath: resolveActiveResearchDbPath(),
+      });
+      return {
+        shouldContinue: false,
+        reply: { text: reply ?? "No quick research jobs found for this chat.", isError: !reply },
+      };
+    }
+
+    if (lower === "/qlast" || lower.startsWith("/qlast ")) {
+      const route = resolveCurrentQuickResearchRoute({
+        ctx: params.ctx,
+        sessionKey: params.sessionKey,
+      });
+      if (!route) {
+        return {
+          shouldContinue: false,
+          reply: { text: "No quick research route found.", isError: true },
+        };
+      }
+      const reply = buildQuickResearchRecentJobsReply({
+        route,
+        dbPath: resolveActiveResearchDbPath(),
+        limit: 3,
+      });
+      return {
+        shouldContinue: false,
+        reply: {
+          text: reply ?? "No recent quick research jobs found for this chat.",
+          isError: !reply,
+        },
+      };
+    }
+
+    if (lower === "/qretry" || lower.startsWith("/qretry ")) {
+      const route = resolveCurrentQuickResearchRoute({
+        ctx: params.ctx,
+        sessionKey: params.sessionKey,
+      });
+      if (!route) {
+        return {
+          shouldContinue: false,
+          reply: { text: "No quick research route found.", isError: true },
+        };
+      }
+      const args = parseArgs(normalized, "qretry");
+      const dbPath = resolveActiveResearchDbPath();
+      const targetId =
+        args[0]?.trim() ||
+        listQuickResearchJobsForRoute({ route, dbPath, limit: 10 }).find(
+          (job) => job.status === "failed",
+        )?.id;
+      if (!targetId) {
+        return {
+          shouldContinue: false,
+          reply: { text: "No failed quick research job found to retry.", isError: true },
+        };
+      }
+      const retried = retryQuickResearchJob({ id: targetId, dbPath });
+      if (!retried || retried.status !== "queued") {
+        return {
+          shouldContinue: false,
+          reply: { text: `Retry failed for job ${targetId}.`, isError: true },
+        };
+      }
+      return {
+        shouldContinue: false,
+        reply: { text: `Requeued quick research job ${targetId}. Use /qstatus for live progress.` },
       };
     }
 

@@ -67,13 +67,13 @@ describe("buildQuickResearchTelegramSummary", () => {
     });
 
     expect(text).toContain("Company memo ready: NVDA");
-    expect(text).toContain("Top line");
+    expect(text).toContain("Summary");
     expect(text).toContain("Demand remains strong as enterprise AI budgets expand.");
-    expect(text).toContain("Thesis / variant");
+    expect(text).toContain("Bull case");
     expect(text).toContain("Gross margin could hold near 72% if pricing stays disciplined.");
-    expect(text).toContain("Risks / change-mind triggers");
+    expect(text).toContain("Bear case / change-mind triggers");
     expect(text).toContain("Custom silicon competition could pressure pricing.");
-    expect(text).toContain("Missing / next diligence");
+    expect(text).toContain("Next diligence");
     expect(text).toContain("Need one primary filing to validate the margin bridge.");
   });
 

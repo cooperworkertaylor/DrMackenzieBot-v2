@@ -240,6 +240,12 @@ export const buildQuickResearchTelegramSummary = (params: {
     2,
   );
   const missing = takeDistinctLines(params.report.appendix?.whats_missing ?? [], 2);
+  const whyNow = collectSectionLines(
+    params.report,
+    ["what_it_is_isnt_why_now", "variant_perception", "catalysts", "catalysts_timeline"],
+    ["INTERPRETATION", "FACT"],
+    2,
+  );
 
   const lines: string[] = [];
   lines.push(
@@ -249,32 +255,40 @@ export const buildQuickResearchTelegramSummary = (params: {
   );
   lines.push(`Built: ${params.builtAtEt}`);
   lines.push("");
-  lines.push("Top line");
+  lines.push("Summary");
   for (const line of overview) lines.push(`- ${line}`);
   if (!overview.length) lines.push("- Memo completed; see PDF for the full investment case.");
   lines.push("");
-  lines.push("Thesis / variant");
+  if (whyNow.length) {
+    lines.push("Why now / what changed");
+    for (const line of whyNow) lines.push(`- ${line}`);
+    lines.push("");
+  }
+  lines.push("Bull case");
   for (const line of thesis) lines.push(`- ${line}`);
   if (!thesis.length) lines.push("- See thesis section in the attached PDF.");
   lines.push("");
-  lines.push("Risks / change-mind triggers");
+  lines.push("Bear case / change-mind triggers");
   for (const line of risks) lines.push(`- ${line}`);
   if (!risks.length) lines.push("- No concise risk lines extracted; use the PDF risks section.");
   if (catalysts.length) {
     lines.push("");
-    lines.push("Catalysts");
+    lines.push("Catalysts to watch");
     for (const line of catalysts) lines.push(`- ${line}`);
   }
   if (missing.length) {
     lines.push("");
-    lines.push("Missing / next diligence");
+    lines.push("Next diligence");
     for (const line of missing) lines.push(`- ${line}`);
   }
   lines.push("");
   lines.push(`job_id=${params.jobId}`);
   lines.push(`run_id=${params.runId}`);
-  lines.push(`sha256=${params.sha256}`);
-  lines.push(`bytes=${params.pdfBytes}`);
+  if (params.kind === "company") {
+    lines.push(
+      `Follow-ups: /changed ${params.subject} | /thesis ${params.subject} | /sources ${params.subject}`,
+    );
+  }
   return lines.join("\n");
 };
 
@@ -317,6 +331,20 @@ export const getLatestQuickResearchJobForRoute = (params: {
   return null;
 };
 
+export const listQuickResearchJobsForRoute = (params: {
+  route: QuickResearchJobRoute;
+  dbPath?: string;
+  limit?: number;
+}): QuickrunJobRecord<QuickResearchJobPayload>[] => {
+  const store = QuickrunJobStore.open(params.dbPath);
+  return store
+    .list<QuickResearchJobPayload>({
+      jobType: QUICK_RESEARCH_JOB_TYPE,
+      limit: params.limit ?? 10,
+    })
+    .filter((job) => matchesQuickResearchRoute(job.payload.route, params.route));
+};
+
 export const buildQuickResearchStatusReply = (params: {
   route: QuickResearchJobRoute;
   dbPath?: string;
@@ -347,6 +375,38 @@ export const buildQuickResearchStatusReply = (params: {
   }
   lines.push(`- job_id=${job.id}`);
   return lines.join("\n");
+};
+
+export const buildQuickResearchRecentJobsReply = (params: {
+  route: QuickResearchJobRoute;
+  dbPath?: string;
+  limit?: number;
+  nowMs?: number;
+}): string | null => {
+  const nowMs = params.nowMs ?? Date.now();
+  const jobs = listQuickResearchJobsForRoute({
+    route: params.route,
+    dbPath: params.dbPath,
+    limit: params.limit ?? 3,
+  });
+  if (!jobs.length) return null;
+  const lines = ["Recent quick research jobs:"];
+  for (const job of jobs.slice(0, params.limit ?? 3)) {
+    const request = job.payload.request;
+    const subject = request.kind === "company" ? request.ticker : request.theme;
+    lines.push(
+      `- ${job.id}: ${request.kind} ${subject} (${request.minutes} min) | ${buildQuickResearchStatusLine(job, nowMs)}`,
+    );
+  }
+  return lines.join("\n");
+};
+
+export const retryQuickResearchJob = (params: {
+  id: string;
+  dbPath?: string;
+}): QuickrunJobRecord | null => {
+  const store = QuickrunJobStore.open(params.dbPath);
+  return store.requeueFailed({ id: params.id });
 };
 
 const maybeSendQuickResearchProgress = async (params: {
