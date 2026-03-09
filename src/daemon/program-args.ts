@@ -285,3 +285,26 @@ export async function resolveNodeProgramArguments(params: {
     nodePath: params.nodePath,
   });
 }
+
+export async function resolveResearchProgramArguments(params: {
+  kind: "worker" | "scheduler";
+  dbPath?: string;
+  intervalMs?: number;
+  dev?: boolean;
+  runtime?: GatewayRuntimePreference;
+  nodePath?: string;
+}): Promise<GatewayProgramArgs> {
+  const args =
+    params.kind === "worker"
+      ? ["research", "worker"]
+      : ["research", "scheduler", "--interval-ms", String(params.intervalMs ?? 300_000)];
+  if (params.dbPath?.trim()) {
+    args.push("--db", params.dbPath.trim());
+  }
+  return resolveCliProgramArguments({
+    args,
+    dev: params.dev,
+    runtime: params.runtime,
+    nodePath: params.nodePath,
+  });
+}

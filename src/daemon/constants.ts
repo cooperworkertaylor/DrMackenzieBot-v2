@@ -10,6 +10,16 @@ export const NODE_WINDOWS_TASK_NAME = "OpenClaw Node";
 export const NODE_SERVICE_MARKER = "openclaw";
 export const NODE_SERVICE_KIND = "node";
 export const NODE_WINDOWS_TASK_SCRIPT_NAME = "node.cmd";
+export const RESEARCH_WORKER_LAUNCH_AGENT_LABEL = "ai.openclaw.research-worker";
+export const RESEARCH_WORKER_SYSTEMD_SERVICE_NAME = "openclaw-research-worker";
+export const RESEARCH_WORKER_WINDOWS_TASK_NAME = "OpenClaw Research Worker";
+export const RESEARCH_WORKER_SERVICE_KIND = "research-worker";
+export const RESEARCH_WORKER_WINDOWS_TASK_SCRIPT_NAME = "research-worker.cmd";
+export const RESEARCH_SCHEDULER_LAUNCH_AGENT_LABEL = "ai.openclaw.research-scheduler";
+export const RESEARCH_SCHEDULER_SYSTEMD_SERVICE_NAME = "openclaw-research-scheduler";
+export const RESEARCH_SCHEDULER_WINDOWS_TASK_NAME = "OpenClaw Research Scheduler";
+export const RESEARCH_SCHEDULER_SERVICE_KIND = "research-scheduler";
+export const RESEARCH_SCHEDULER_WINDOWS_TASK_SCRIPT_NAME = "research-scheduler.cmd";
 export const LEGACY_GATEWAY_LAUNCH_AGENT_LABELS: string[] = [];
 export const LEGACY_GATEWAY_SYSTEMD_SERVICE_NAMES: string[] = [];
 export const LEGACY_GATEWAY_WINDOWS_TASK_NAMES: string[] = [];
@@ -93,4 +103,41 @@ export function formatNodeServiceDescription(params?: { version?: string }): str
     return "OpenClaw Node Host";
   }
   return `OpenClaw Node Host (v${version})`;
+}
+
+export function resolveResearchWorkerLaunchAgentLabel(): string {
+  return RESEARCH_WORKER_LAUNCH_AGENT_LABEL;
+}
+
+export function resolveResearchWorkerSystemdServiceName(): string {
+  return RESEARCH_WORKER_SYSTEMD_SERVICE_NAME;
+}
+
+export function resolveResearchWorkerWindowsTaskName(): string {
+  return RESEARCH_WORKER_WINDOWS_TASK_NAME;
+}
+
+export function resolveResearchSchedulerLaunchAgentLabel(): string {
+  return RESEARCH_SCHEDULER_LAUNCH_AGENT_LABEL;
+}
+
+export function resolveResearchSchedulerSystemdServiceName(): string {
+  return RESEARCH_SCHEDULER_SYSTEMD_SERVICE_NAME;
+}
+
+export function resolveResearchSchedulerWindowsTaskName(): string {
+  return RESEARCH_SCHEDULER_WINDOWS_TASK_NAME;
+}
+
+export function formatResearchServiceDescription(params: {
+  kind: "worker" | "scheduler";
+  version?: string;
+}): string {
+  const name =
+    params.kind === "worker" ? "OpenClaw Research Worker" : "OpenClaw Research Scheduler";
+  const version = params.version?.trim();
+  if (!version) {
+    return name;
+  }
+  return `${name} (v${version})`;
 }

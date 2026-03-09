@@ -34,16 +34,16 @@ One-shot scheduler validation:
 openclaw research scheduler-pass
 ```
 
-Run the worker:
+Install the worker service:
 
 ```bash
-openclaw research worker
+openclaw research service install --kind worker
 ```
 
-Run the scheduler:
+Install the scheduler service:
 
 ```bash
-openclaw research scheduler --interval-ms 300000
+openclaw research service install --kind scheduler --interval-ms 300000
 ```
 
 Replay failed quickrun jobs:
@@ -58,6 +58,12 @@ Create a backup:
 openclaw research backup --dest /opt/drmackenziebot/backups
 ```
 
+Restore from a backup:
+
+```bash
+openclaw research restore --src /opt/drmackenziebot/backups/research-backup-YYYY-MM-DDTHH-MM-SS-Z --db /opt/drmackenziebot/state/research/research.db --state-dir /opt/drmackenziebot/state/research
+```
+
 ## launchd shape
 
 Use separate launchd units for:
@@ -65,6 +71,13 @@ Use separate launchd units for:
 - gateway
 - research worker
 - research scheduler
+
+Inspect service state:
+
+```bash
+openclaw research service status --kind worker
+openclaw research service status --kind scheduler
+```
 
 Each should:
 

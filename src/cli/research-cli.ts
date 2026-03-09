@@ -56,10 +56,19 @@ import {
   createResearchBackup,
   getResearchHealthSnapshot,
   replayFailedQuickrunJobs,
+  restoreResearchBackup,
   runResearchSchedulerLoop,
   runResearchSchedulerPass,
   runResearchWorkerLoop,
 } from "../research/ops.js";
+import {
+  runResearchServiceInstall,
+  runResearchServiceRestart,
+  runResearchServiceStart,
+  runResearchServiceStatus,
+  runResearchServiceStop,
+  runResearchServiceUninstall,
+} from "./research-daemon.js";
 import {
   ingestFilings,
   ingestExpectations,
@@ -4314,6 +4323,27 @@ export function registerResearchCli(program: Command) {
     });
 
   research
+    .command("restore")
+    .description("Restore the research runtime from a backup directory")
+    .requiredOption("--src <dir>", "Backup directory to restore from")
+    .option("--db <path>", "Destination database path", resolveResearchDbPath())
+    .option("--state-dir <path>", "Destination research state dir")
+    .option("--force", "Overwrite destination files if they already exist", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const out = restoreResearchBackup({
+          backupDir: opts.src as string,
+          dbPath: opts.db as string,
+          stateDir: opts["stateDir"] as string | undefined,
+          force: Boolean(opts.force),
+        });
+        defaultRuntime.log(`Restored backup: ${out.backupDir}`);
+        defaultRuntime.log(`Database: ${out.restoredDbPath}`);
+        defaultRuntime.log(`State dir: ${out.restoredStateDir}`);
+      });
+    });
+
+  research
     .command("replay-failed")
     .description("Requeue failed quick research jobs")
     .option("--db <path>", "Database path", resolveResearchDbPath())
@@ -4349,6 +4379,84 @@ export function registerResearchCli(program: Command) {
         defaultRuntime.log(
           `processed_refreshes=${result.processedRefreshes} generated_briefs=${result.generatedBriefs} queued_remaining=${result.queuedRefreshesRemaining}`,
         );
+      });
+    });
+
+  const service = research
+    .command("service")
+    .description("Manage research worker/scheduler services (launchd/systemd/schtasks)");
+
+  service
+    .command("status")
+    .requiredOption("--kind <kind>", "worker|scheduler")
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runResearchServiceStatus({
+        kind: opts.kind as "worker" | "scheduler",
+        json: Boolean(opts.json),
+      });
+    });
+
+  service
+    .command("install")
+    .requiredOption("--kind <kind>", "worker|scheduler")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--interval-ms <n>", "Scheduler interval in ms", "300000")
+    .option("--runtime <runtime>", "Service runtime (node|bun). Default: node")
+    .option("--force", "Reinstall/overwrite if already installed", false)
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runResearchServiceInstall({
+        kind: opts.kind as "worker" | "scheduler",
+        db: opts.db as string,
+        intervalMs: opts["intervalMs"] as string,
+        runtime: opts.runtime as string | undefined,
+        force: Boolean(opts.force),
+        json: Boolean(opts.json),
+      });
+    });
+
+  service
+    .command("start")
+    .requiredOption("--kind <kind>", "worker|scheduler")
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runResearchServiceStart({
+        kind: opts.kind as "worker" | "scheduler",
+        json: Boolean(opts.json),
+      });
+    });
+
+  service
+    .command("stop")
+    .requiredOption("--kind <kind>", "worker|scheduler")
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runResearchServiceStop({
+        kind: opts.kind as "worker" | "scheduler",
+        json: Boolean(opts.json),
+      });
+    });
+
+  service
+    .command("restart")
+    .requiredOption("--kind <kind>", "worker|scheduler")
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runResearchServiceRestart({
+        kind: opts.kind as "worker" | "scheduler",
+        json: Boolean(opts.json),
+      });
+    });
+
+  service
+    .command("uninstall")
+    .requiredOption("--kind <kind>", "worker|scheduler")
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runResearchServiceUninstall({
+        kind: opts.kind as "worker" | "scheduler",
+        json: Boolean(opts.json),
       });
     });
 

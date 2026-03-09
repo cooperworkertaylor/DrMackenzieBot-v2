@@ -65,6 +65,13 @@ export type ResearchBackupResult = {
   copiedPaths: string[];
 };
 
+export type ResearchRestoreResult = {
+  backupDir: string;
+  restoredDbPath: string;
+  restoredStateDir: string;
+  restoredPaths: string[];
+};
+
 export type ResearchSchedulerPassResult = {
   processedRefreshes: number;
   generatedBriefs: number;
@@ -282,6 +289,71 @@ export const createResearchBackup = (params: {
     dbPath: dbOut,
     manifestPath,
     copiedPaths,
+  };
+};
+
+export const restoreResearchBackup = (params: {
+  backupDir: string;
+  dbPath?: string;
+  stateDir?: string;
+  force?: boolean;
+}): ResearchRestoreResult => {
+  const backupDir = path.resolve(params.backupDir);
+  if (!fs.existsSync(backupDir)) {
+    throw new Error(`Backup directory not found: ${backupDir}`);
+  }
+  const sourceDbPath = path.join(backupDir, "research.db");
+  if (!fs.existsSync(sourceDbPath)) {
+    throw new Error(`Backup database missing: ${sourceDbPath}`);
+  }
+  const restoredDbPath = resolveResearchDbPath(params.dbPath);
+  const restoredStateDir = path.resolve(params.stateDir ?? resolveResearchStateDir());
+  const restoredPaths: string[] = [];
+
+  if (!params.force && fs.existsSync(restoredDbPath)) {
+    throw new Error(`Destination DB already exists: ${restoredDbPath} (use --force to overwrite)`);
+  }
+  fs.mkdirSync(path.dirname(restoredDbPath), { recursive: true });
+  fs.copyFileSync(sourceDbPath, restoredDbPath);
+  restoredPaths.push(restoredDbPath);
+
+  const rawArtifactsSrc = path.join(backupDir, "raw-artifacts");
+  if (fs.existsSync(rawArtifactsSrc)) {
+    const rawArtifactsDest = path.join(restoredStateDir, "raw-artifacts");
+    if (fs.existsSync(rawArtifactsDest) && !params.force) {
+      throw new Error(
+        `Destination raw-artifacts already exists: ${rawArtifactsDest} (use --force to overwrite)`,
+      );
+    }
+    fs.mkdirSync(restoredStateDir, { recursive: true });
+    fs.cpSync(rawArtifactsSrc, rawArtifactsDest, {
+      recursive: true,
+      force: Boolean(params.force),
+    });
+    restoredPaths.push(rawArtifactsDest);
+  }
+
+  const quickrunSrc = path.join(backupDir, "quickrun");
+  if (fs.existsSync(quickrunSrc)) {
+    const quickrunDest = path.join(restoredStateDir, "quickrun");
+    if (fs.existsSync(quickrunDest) && !params.force) {
+      throw new Error(
+        `Destination quickrun already exists: ${quickrunDest} (use --force to overwrite)`,
+      );
+    }
+    fs.mkdirSync(restoredStateDir, { recursive: true });
+    fs.cpSync(quickrunSrc, quickrunDest, {
+      recursive: true,
+      force: Boolean(params.force),
+    });
+    restoredPaths.push(quickrunDest);
+  }
+
+  return {
+    backupDir,
+    restoredDbPath,
+    restoredStateDir,
+    restoredPaths,
   };
 };
 

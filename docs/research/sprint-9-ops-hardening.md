@@ -10,12 +10,16 @@ Sprint 9 makes the research stack runnable as an unattended Mac mini service ins
   - `openclaw research worker`
 - Dedicated research scheduler entrypoint:
   - `openclaw research scheduler`
+- Managed service lifecycle:
+  - `openclaw research service status|install|start|stop|restart|uninstall --kind worker|scheduler`
 - One-shot scheduler pass for validation:
   - `openclaw research scheduler-pass`
 - Aggregated research health snapshot:
   - `openclaw research health`
 - Research runtime backup:
   - `openclaw research backup`
+- Research runtime restore:
+  - `openclaw research restore`
 - Failed quickrun replay:
   - `openclaw research replay-failed`
 

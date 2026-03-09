@@ -11,6 +11,7 @@ import {
   createResearchBackup,
   getResearchHealthSnapshot,
   replayFailedQuickrunJobs,
+  restoreResearchBackup,
   runResearchSchedulerPass,
 } from "./ops.js";
 import { QuickrunJobStore } from "./quickrun/job-store.js";
@@ -90,6 +91,33 @@ describe("research ops", () => {
     expect(fs.existsSync(path.join(backup.backupDir, "raw-artifacts", "newsletter", "doc.json"))).toBe(
       true,
     );
+  });
+
+  it("restores a research backup into a fresh destination", () => {
+    const dbPath = makeDbPath("research-ops-restore-src-");
+    const stateRoot = makeTempDir("research-restore-state-");
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateRoot);
+    openResearchDb(dbPath);
+
+    const rawDir = path.join(stateRoot, "research", "raw-artifacts", "newsletter");
+    fs.mkdirSync(rawDir, { recursive: true });
+    fs.writeFileSync(path.join(rawDir, "doc.json"), '{"restored":true}\n', "utf8");
+
+    const backupDest = makeTempDir("research-backups-restore-");
+    const backup = createResearchBackup({ dbPath, destDir: backupDest });
+
+    const restoreDbPath = path.join(makeTempDir("research-restore-db-"), "restored.db");
+    const restoreStateDir = path.join(makeTempDir("research-restore-out-"), "research");
+    const restored = restoreResearchBackup({
+      backupDir: backup.backupDir,
+      dbPath: restoreDbPath,
+      stateDir: restoreStateDir,
+    });
+
+    expect(fs.existsSync(restored.restoredDbPath)).toBe(true);
+    expect(
+      fs.existsSync(path.join(restored.restoredStateDir, "raw-artifacts", "newsletter", "doc.json")),
+    ).toBe(true);
   });
 
   it("processes queued refreshes and generates default watchlist briefs", () => {
