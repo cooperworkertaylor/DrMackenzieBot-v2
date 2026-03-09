@@ -126,6 +126,88 @@ export const openResearchDb = (
 };
 
 const migrate = (db: ResearchDb) => {
+  ensureLegacyColumnIfTableExists(db, "filings", "accession_raw", "TEXT");
+  ensureLegacyColumnIfTableExists(db, "filings", "is_amendment", "INTEGER NOT NULL DEFAULT 0");
+  ensureLegacyColumnIfTableExists(db, "filings", "accepted_at", "TEXT");
+  ensureLegacyColumnIfTableExists(db, "filings", "as_of_date", "TEXT");
+  ensureLegacyColumnIfTableExists(db, "filings", "source_url", "TEXT");
+  ensureLegacyColumnIfTableExists(db, "filings", "filing_hash", "TEXT");
+  ensureLegacyColumnIfTableExists(
+    db,
+    "external_documents",
+    "source_key",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  ensureLegacyColumnIfTableExists(
+    db,
+    "external_documents",
+    "canonical_url",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  ensureLegacyColumnIfTableExists(
+    db,
+    "external_documents",
+    "normalized_content",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  ensureLegacyColumnIfTableExists(
+    db,
+    "external_documents",
+    "trust_tier",
+    "INTEGER NOT NULL DEFAULT 4",
+  );
+  ensureLegacyColumnIfTableExists(
+    db,
+    "external_documents",
+    "materiality_score",
+    "REAL NOT NULL DEFAULT 0",
+  );
+  ensureLegacyColumnIfTableExists(
+    db,
+    "external_documents",
+    "raw_artifact_path",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  ensureLegacyColumnIfTableExists(db, "research_vectors", "provider", "TEXT NOT NULL DEFAULT ''");
+  ensureLegacyColumnIfTableExists(db, "research_vectors", "model", "TEXT NOT NULL DEFAULT ''");
+  ensureLegacyColumnIfTableExists(db, "task_outcomes", "policy_name", "TEXT NOT NULL DEFAULT ''");
+  ensureLegacyColumnIfTableExists(
+    db,
+    "task_outcomes",
+    "policy_role",
+    "TEXT NOT NULL DEFAULT 'primary'",
+  );
+  ensureLegacyColumnIfTableExists(
+    db,
+    "task_outcomes",
+    "experiment_group",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  ensureLegacyColumnIfTableExists(
+    db,
+    "benchmark_suites",
+    "reliability_min_completion",
+    "REAL NOT NULL DEFAULT 0.9",
+  );
+  ensureLegacyColumnIfTableExists(
+    db,
+    "benchmark_suites",
+    "reliability_max_timeout_rate",
+    "REAL NOT NULL DEFAULT 0.1",
+  );
+  ensureLegacyColumnIfTableExists(
+    db,
+    "benchmark_suites",
+    "reliability_min_reproducibility",
+    "REAL NOT NULL DEFAULT 0.8",
+  );
+  ensureLegacyColumnIfTableExists(
+    db,
+    "benchmark_suites",
+    "reliability_max_avg_retries",
+    "REAL NOT NULL DEFAULT 1.5",
+  );
+
   db.exec(`
     create table if not exists instruments (
       id integer primary key,
@@ -1160,4 +1242,17 @@ const ensureColumn = (db: ResearchDb, table: string, column: string, definition:
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   if (rows.some((row) => row.name === column)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+};
+
+const ensureLegacyColumnIfTableExists = (
+  db: ResearchDb,
+  table: string,
+  column: string,
+  definition: string,
+) => {
+  const tableRow = db
+    .prepare(`SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`)
+    .get(table) as { present?: number } | undefined;
+  if (!tableRow?.present) return;
+  ensureColumn(db, table, column, definition);
 };
