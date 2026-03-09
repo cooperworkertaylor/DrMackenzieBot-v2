@@ -1,6 +1,7 @@
 import type { CommandHandler } from "./commands-types.js";
 import { listProfilesForProvider, loadAuthProfileStore } from "../../agents/auth-profiles.js";
 import { logVerbose } from "../../globals.js";
+import { explainResearchClaim } from "../../research/claim-provenance.js";
 import { resolveResearchDbPath } from "../../research/db.js";
 import {
   compareExternalResearchPeers,
@@ -82,6 +83,20 @@ const resolveTickerArg = (
   return {
     ticker,
     usage: `Usage: /${command} <ticker>`,
+  };
+};
+
+const resolveTickerTopicArgs = (
+  normalized: string,
+  command: string,
+): { ticker?: string; topic?: string; usage: string } => {
+  const args = parseArgs(normalized, command);
+  const ticker = args[0]?.trim().toUpperCase();
+  const topic = args.slice(1).join(" ").trim();
+  return {
+    ticker,
+    topic,
+    usage: `Usage: /${command} <ticker> <topic>`,
   };
 };
 
@@ -354,6 +369,42 @@ const buildCompareReply = (leftTicker: string, rightTicker: string): string => {
   return lines.join("\n");
 };
 
+const buildWhyReply = (ticker: string, topic: string): string => {
+  const report = explainResearchClaim({
+    ticker,
+    topic,
+    dbPath: resolveActiveResearchDbPath(),
+    maxClaims: 3,
+    maxEvidencePerClaim: 3,
+  });
+  const lines: string[] = [];
+  lines.push(`${ticker} why: ${topic}`);
+  if (!report.matches.length) {
+    lines.push("- No matching stored claims found.");
+    lines.push(`Try: /sources ${ticker} | /snapshot ${ticker}`);
+    return lines.join("\n");
+  }
+  for (const match of report.matches) {
+    lines.push(
+      `- Claim: ${truncateLine(match.claimText, 220)} | type=${match.claimType} | confidence=${formatPct(match.confidence)}`,
+    );
+    if (match.validFrom) {
+      lines.push(`  - As of: ${match.validFrom}`);
+    }
+    if (match.matchedTerms.length) {
+      lines.push(`  - Match: ${match.matchedTerms.join(", ")}`);
+    }
+    lines.push("  - Evidence:");
+    for (const evidence of match.evidence) {
+      lines.push(
+        `    - ${evidence.publishedAt ?? "undated"} | ${evidence.provider} | tier ${evidence.trustTier} | ${truncateLine(evidence.title, 110)}`,
+      );
+    }
+  }
+  lines.push(`Use: /sources ${ticker} | /changed ${ticker} | /thesis ${ticker}`);
+  return lines.join("\n");
+};
+
 export const handleLiveResearchCommands: CommandHandler = async (params, allowTextCommands) => {
   if (!allowTextCommands) return null;
   const normalized = params.command.commandBodyNormalized.trim();
@@ -369,6 +420,8 @@ export const handleLiveResearchCommands: CommandHandler = async (params, allowTe
     lower.startsWith("/changed ") ||
     lower === "/snapshot" ||
     lower.startsWith("/snapshot ") ||
+    lower === "/why" ||
+    lower.startsWith("/why ") ||
     lower === "/compare" ||
     lower.startsWith("/compare ") ||
     lower === "/qstatus" ||
@@ -444,6 +497,17 @@ export const handleLiveResearchCommands: CommandHandler = async (params, allowTe
       return {
         shouldContinue: false,
         reply: { text: buildCompareReply(left, right) },
+      };
+    }
+
+    if (lower === "/why" || lower.startsWith("/why ")) {
+      const { ticker, topic, usage } = resolveTickerTopicArgs(normalized, "why");
+      if (!ticker || !topic) {
+        return { shouldContinue: false, reply: { text: usage, isError: true } };
+      }
+      return {
+        shouldContinue: false,
+        reply: { text: buildWhyReply(ticker, topic) },
       };
     }
 

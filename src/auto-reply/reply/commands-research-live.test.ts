@@ -172,6 +172,33 @@ describe("live research commands", () => {
     expect(result.reply?.text).toContain("tier");
   });
 
+  it("returns claim-level provenance for a ticker topic query", async () => {
+    const dbPath = testDbPath("why");
+    process.env.OPENCLAW_RESEARCH_DB_PATH = dbPath;
+    seedTicker({
+      dbPath,
+      ticker: "NVDA",
+      bullishTitle: "NVDA demand setup",
+      bullishContent:
+        "NVDA demand remains strong because enterprise AI budgets keep expanding and pricing discipline supports revenue growth near 24%.",
+      riskTitle: "NVDA competitive risk",
+      riskContent:
+        "Competition risk is rising because custom silicon programs could pressure pricing and gross margin if supply normalizes.",
+    });
+
+    const cfg = {
+      commands: { text: true },
+      channels: { telegram: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const result = await handleCommands(buildParams("/why NVDA demand", cfg));
+
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("NVDA why: demand");
+    expect(result.reply?.text).toContain("Claim:");
+    expect(result.reply?.text).toContain("Evidence:");
+    expect(result.reply?.text).toContain("NVDA demand setup");
+  });
+
   it("compares two peers from stored research state", async () => {
     const dbPath = testDbPath("compare");
     process.env.OPENCLAW_RESEARCH_DB_PATH = dbPath;
@@ -217,6 +244,17 @@ describe("live research commands", () => {
 
     expect(result.shouldContinue).toBe(false);
     expect(result.reply?.text).toContain("Usage: /thesis <ticker>");
+  });
+
+  it("shows usage when /why is missing a topic", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { telegram: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const result = await handleCommands(buildParams("/why NVDA", cfg));
+
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("Usage: /why <ticker> <topic>");
   });
 
   it("persists and reports the research model profile", async () => {
