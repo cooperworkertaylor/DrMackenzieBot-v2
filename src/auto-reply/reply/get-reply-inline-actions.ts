@@ -13,7 +13,10 @@ import { createOpenClawTools } from "../../agents/openclaw-tools.js";
 import { getChannelDock } from "../../channels/dock.js";
 import { logVerbose } from "../../globals.js";
 import { getLogger } from "../../logging/logger.js";
-import { parseQuickResearchRequest } from "../../research/quick-research-request.js";
+import {
+  parseQuickResearchRequest,
+  type QuickResearchRequest,
+} from "../../research/quick-research-request.js";
 import {
   enqueueQuickResearchJob,
   formatBuiltAtEt,
@@ -105,6 +108,11 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   typing: TypingController;
   agentId: string;
 }): Promise<InlineActionResult | null> {
+  const quickResearchResolution = resolveQuickResearchRequest({
+    ctx: params.ctx,
+    cleanedBody: params.cleanedBody,
+    command: params.command,
+  });
   const explicitQuickResearchCommand = /^\/research(?:[_-]?(?:fast|deep))?\b/i.test(
     (params.command.commandBodyNormalized ?? "").trim(),
   );
@@ -125,11 +133,11 @@ async function maybeHandleQuickResearchPdfRequest(params: {
   // Also hard-intercept explicit /research* commands and parseable quick-research prompts
   // so they never fall through to free-form LLM confirmations.
   const isTelegram = channelResolved === "telegram" || channelRaw.includes("telegram");
-  const req = parseQuickResearchRequest(params.cleanedBody);
+  const req = quickResearchResolution.request;
   if (!isTelegram && !explicitQuickResearchCommand && !req) return null;
 
   if (!req) {
-    if (!looksLikeQuickResearch(params.cleanedBody)) {
+    if (!quickResearchResolution.looksLikeQuickResearch) {
       return null;
     }
     // Fail closed: if it looks like a timeboxed "send PDF" research request but we can't parse it,
@@ -281,6 +289,46 @@ async function maybeHandleQuickResearchPdfRequest(params: {
     reply: {
       text: `Run accepted: ${req.kind} v2 (${req.minutes} min). Will post PDF at/after ${deliverAtEt} if it passes strict quality + strict PDF diagnostics.\njob_id=${jobId}\nagent_commit=${commit}`,
     },
+  };
+}
+
+export function resolveQuickResearchRequest(params: {
+  ctx: MsgContext;
+  cleanedBody: string;
+  command: Parameters<typeof handleCommands>[0]["command"];
+}): {
+  request: QuickResearchRequest | null;
+  source: string | null;
+  looksLikeQuickResearch: boolean;
+} {
+  const candidates = [
+    typeof params.ctx.BodyForCommands === "string" ? params.ctx.BodyForCommands : "",
+    typeof params.ctx.CommandBody === "string" ? params.ctx.CommandBody : "",
+    params.command.commandBodyNormalized ?? "",
+    params.command.rawBodyNormalized ?? "",
+    params.cleanedBody,
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    const request = parseQuickResearchRequest(candidate);
+    if (request) {
+      return {
+        request,
+        source: candidate,
+        looksLikeQuickResearch: true,
+      };
+    }
+  }
+
+  return {
+    request: null,
+    source: null,
+    looksLikeQuickResearch: Array.from(seen).some((candidate) => looksLikeQuickResearch(candidate)),
   };
 }
 
