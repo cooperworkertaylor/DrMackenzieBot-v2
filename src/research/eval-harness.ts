@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { latestEvalReport, persistEvalRun, type EvalCheck, type EvalRunResult } from "./eval.js";
+import { buildExternalResearchStructuredReport } from "./external-research-report.js";
 import { getLatestExternalResearchStructuredReport } from "./external-research-report.js";
 import { buildDailyWatchlistBrief } from "./external-research-watchlists.js";
 import { searchResearch } from "./vector-search.js";
@@ -52,6 +53,20 @@ export type ResearchEvalTaskSet = {
     maxFailedChecks?: number;
   };
   tasks: ResearchEvalTask[];
+};
+
+export type ResearchEvalImprovementProfile = {
+  version: 1;
+  report?: {
+    lookbackDays?: number;
+    maxSources?: number;
+    maxClaims?: number;
+    maxEvents?: number;
+    maxFacts?: number;
+  };
+  watchlistBrief?: {
+    lookbackDays?: number;
+  };
 };
 
 export type ResearchEvalHarnessResult = EvalRunResult & {
@@ -220,8 +235,23 @@ const runRetrievalTask = async (
   return checks;
 };
 
-const runReportTask = (task: ReportEvalTask, dbPath?: string): EvalCheck[] => {
-  const report = getLatestExternalResearchStructuredReport({ ticker: task.ticker, dbPath });
+const runReportTask = (
+  task: ReportEvalTask,
+  dbPath?: string,
+  profile?: ResearchEvalImprovementProfile,
+): EvalCheck[] => {
+  const report =
+    profile?.report && Object.keys(profile.report).length > 0
+      ? buildExternalResearchStructuredReport({
+          ticker: task.ticker,
+          dbPath,
+          lookbackDays: profile.report.lookbackDays,
+          maxSources: profile.report.maxSources,
+          maxClaims: profile.report.maxClaims,
+          maxEvents: profile.report.maxEvents,
+          maxFacts: profile.report.maxFacts,
+        })
+      : getLatestExternalResearchStructuredReport({ ticker: task.ticker, dbPath });
   if (!report) {
     return [
       {
@@ -284,10 +314,14 @@ const runReportTask = (task: ReportEvalTask, dbPath?: string): EvalCheck[] => {
   return checks;
 };
 
-const runWatchlistBriefTask = (task: WatchlistBriefEvalTask, dbPath?: string): EvalCheck[] => {
+const runWatchlistBriefTask = (
+  task: WatchlistBriefEvalTask,
+  dbPath?: string,
+  profile?: ResearchEvalImprovementProfile,
+): EvalCheck[] => {
   const brief = buildDailyWatchlistBrief({
     watchlistId: task.watchlistId,
-    lookbackDays: task.lookbackDays,
+    lookbackDays: task.lookbackDays ?? profile?.watchlistBrief?.lookbackDays,
     dbPath,
   });
   const checks: EvalCheck[] = [];
@@ -325,6 +359,7 @@ const runWatchlistBriefTask = (task: WatchlistBriefEvalTask, dbPath?: string): E
 export const runResearchEvalTaskSet = async (params: {
   taskSet: ResearchEvalTaskSet;
   dbPath?: string;
+  profile?: ResearchEvalImprovementProfile;
 }): Promise<ResearchEvalHarnessResult> => {
   const checks: EvalCheck[] = [];
   for (const task of params.taskSet.tasks) {
@@ -333,10 +368,10 @@ export const runResearchEvalTaskSet = async (params: {
       continue;
     }
     if (task.kind === "report") {
-      checks.push(...runReportTask(task, params.dbPath));
+      checks.push(...runReportTask(task, params.dbPath, params.profile));
       continue;
     }
-    checks.push(...runWatchlistBriefTask(task, params.dbPath));
+    checks.push(...runWatchlistBriefTask(task, params.dbPath, params.profile));
   }
   const result = persistEvalRun(`harness:${params.taskSet.name}`, checks);
   const gate = evaluateResearchEvalThresholds({

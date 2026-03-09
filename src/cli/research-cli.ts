@@ -46,6 +46,10 @@ import {
   runResearchEvalTaskSet,
 } from "../research/eval-harness.js";
 import {
+  loadResearchEvalImprovementProfile,
+  runResearchEvalSelfImproveLoop,
+} from "../research/eval-self-improve.js";
+import {
   executionTraceReport,
   logExecutionTrace,
   type ExecutionTraceStepInput,
@@ -4572,6 +4576,57 @@ export function registerResearchCli(program: Command) {
             `${new Date(row.created_at).toISOString()} ${row.run_type} score=${(row.score * 100).toFixed(1)}% (${row.passed}/${row.total})`,
           );
         });
+      });
+    });
+
+  research
+    .command("eval-self-improve")
+    .description("Run a constrained self-improvement loop over the research eval harness")
+    .requiredOption("--taskset <path>", "Path to eval task set JSON")
+    .requiredOption("--profile <path>", "Path to the mutable improvement profile JSON")
+    .option("--attempts <n>", "Number of candidate mutations to evaluate", "8")
+    .option("--min-improvement <n>", "Minimum score delta required to keep a better candidate", "0.005")
+    .option("--seed <text>", "Deterministic seed")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--out <path>", "Write markdown run report to file")
+    .option("--json", "Emit JSON result", false)
+    .option("--no-write-best", "Do not write the accepted best profile back to disk")
+    .option("--require-pass", "Exit non-zero if the final best candidate fails the eval gate", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const taskSet = loadResearchEvalTaskSet(opts.taskset as string);
+        const result = await runResearchEvalSelfImproveLoop({
+          taskSet,
+          profilePath: opts.profile as string,
+          attempts: parseOptionalNumber(opts.attempts) ?? 8,
+          minImprovement: parseOptionalNumber(opts["minImprovement"]) ?? 0.005,
+          seed: opts.seed as string | undefined,
+          dbPath: opts.db as string,
+          writeBest: opts.writeBest as boolean,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(result, null, 2)}\n`);
+        } else {
+          defaultRuntime.log(
+            `eval_self_improve taskset=${result.taskSetName} baseline=${(result.baseline.score * 100).toFixed(1)}% best=${(result.best.score * 100).toFixed(1)}% applied=${result.appliedImprovement ? "yes" : "no"}`,
+          );
+          result.attempts.forEach((attempt) => {
+            defaultRuntime.log(
+              `- #${attempt.attempt} ${attempt.mutationPath} ${attempt.previousValue}->${attempt.candidateValue} ${attempt.decision} score=${(attempt.result.score * 100).toFixed(1)}% failed=${attempt.result.failedChecks} reason=${attempt.reason}`,
+            );
+          });
+        }
+        if (opts.out) {
+          const outPath = path.resolve(opts.out as string);
+          await fs.mkdir(path.dirname(outPath), { recursive: true });
+          await fs.writeFile(outPath, `${result.markdown}\n`, "utf8");
+          defaultRuntime.log(`Self-improve report written to ${outPath}`);
+        }
+        const profile = loadResearchEvalImprovementProfile(opts.profile as string);
+        defaultRuntime.log(`Profile now at ${path.resolve(opts.profile as string)} -> ${JSON.stringify(profile)}`);
+        if (opts.requirePass && !result.best.passedGate) {
+          defaultRuntime.exit(1);
+        }
       });
     });
 
