@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildMinimalServicePath,
   buildNodeServiceEnvironment,
+  buildResearchServiceEnvironment,
   buildServiceEnvironment,
   getMinimalServicePathParts,
   getMinimalServicePathPartsFromEnv,
@@ -244,6 +245,21 @@ describe("buildServiceEnvironment", () => {
       expect(env.OPENCLAW_LAUNCHD_LABEL).toBe("ai.openclaw.work");
     }
   });
+
+  it("passes through runtime secrets needed by managed services", () => {
+    const env = buildServiceEnvironment({
+      env: {
+        HOME: "/home/user",
+        OPENAI_API_KEY: "sk-openai",
+        TELEGRAM_BOT_TOKEN: "tg-secret",
+        FIRECRAWL_API_KEY: "fc-secret",
+      },
+      port: 18789,
+    });
+    expect(env.OPENAI_API_KEY).toBe("sk-openai");
+    expect(env.TELEGRAM_BOT_TOKEN).toBe("tg-secret");
+    expect(env.FIRECRAWL_API_KEY).toBe("fc-secret");
+  });
 });
 
 describe("buildNodeServiceEnvironment", () => {
@@ -252,5 +268,22 @@ describe("buildNodeServiceEnvironment", () => {
       env: { HOME: "/home/user" },
     });
     expect(env.HOME).toBe("/home/user");
+  });
+});
+
+describe("buildResearchServiceEnvironment", () => {
+  it("passes through research runtime secrets", () => {
+    const env = buildResearchServiceEnvironment({
+      kind: "worker",
+      env: {
+        HOME: "/home/user",
+        OPENAI_API_KEY: "sk-openai",
+        OPENCLAW_RESEARCH_V2_MODEL: "openai/gpt-5.4",
+        TELEGRAM_BOT_TOKEN: "tg-secret",
+      },
+    });
+    expect(env.OPENAI_API_KEY).toBe("sk-openai");
+    expect(env.OPENCLAW_RESEARCH_V2_MODEL).toBe("openai/gpt-5.4");
+    expect(env.TELEGRAM_BOT_TOKEN).toBe("tg-secret");
   });
 });

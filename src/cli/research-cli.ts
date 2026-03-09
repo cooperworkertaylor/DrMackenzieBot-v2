@@ -33,13 +33,6 @@ import {
 } from "../research/catalyst.js";
 import { openResearchDb, resolveResearchDbPath } from "../research/db.js";
 import {
-  latestEvalReport,
-  runCodingEval,
-  runDecisionEval,
-  runFinanceEval,
-  runRetrievalEval,
-} from "../research/eval.js";
-import {
   renderResearchEvalScorecard,
   latestResearchEvalHarnessRuns,
   loadResearchEvalTaskSet,
@@ -49,6 +42,13 @@ import {
   loadResearchEvalImprovementProfile,
   runResearchEvalSelfImproveLoop,
 } from "../research/eval-self-improve.js";
+import {
+  latestEvalReport,
+  runCodingEval,
+  runDecisionEval,
+  runFinanceEval,
+  runRetrievalEval,
+} from "../research/eval.js";
 import {
   executionTraceReport,
   logExecutionTrace,
@@ -68,6 +68,12 @@ import {
   upsertResearchUserPreference,
 } from "../research/external-research-personalization.js";
 import {
+  addTickerToResearchWatchlist,
+  listResearchWatchlists,
+  listResearchWatchlistMembers,
+  upsertResearchWatchlist,
+} from "../research/external-research-watchlists.js";
+import {
   computeWeeklyNewsletterDigest,
   ingestExternalResearchDocument,
   parseNewsletterSourceSpecs,
@@ -75,23 +81,6 @@ import {
   renderWeeklyNewsletterDigestMarkdown,
   syncNewsletterSources,
 } from "../research/external-research.js";
-import {
-  createResearchBackup,
-  getResearchHealthSnapshot,
-  replayFailedQuickrunJobs,
-  restoreResearchBackup,
-  runResearchSchedulerLoop,
-  runResearchSchedulerPass,
-  runResearchWorkerLoop,
-} from "../research/ops.js";
-import {
-  runResearchServiceInstall,
-  runResearchServiceRestart,
-  runResearchServiceStart,
-  runResearchServiceStatus,
-  runResearchServiceStop,
-  runResearchServiceUninstall,
-} from "./research-daemon.js";
 import {
   ingestFilings,
   ingestExpectations,
@@ -112,6 +101,15 @@ import {
 import { generateMemoAsync } from "../research/memo.js";
 import { listEntityClaims, updateClaimStatus } from "../research/memory-graph.js";
 import { monitorTicker, monitorTickers } from "../research/monitor.js";
+import {
+  createResearchBackup,
+  getResearchHealthSnapshot,
+  replayFailedQuickrunJobs,
+  restoreResearchBackup,
+  runResearchSchedulerLoop,
+  runResearchSchedulerPass,
+  runResearchWorkerLoop,
+} from "../research/ops.js";
 import {
   listPolicyVariants,
   policyPerformanceReport,
@@ -159,6 +157,14 @@ import { formatDocsLink } from "../terminal/links.js";
 import { theme } from "../terminal/theme.js";
 import { runCompanyPipelineV2, runThemePipelineV2 } from "../v2/pipeline/v2-pipeline.js";
 import { runCommandWithRuntime } from "./cli-utils.js";
+import {
+  runResearchServiceInstall,
+  runResearchServiceRestart,
+  runResearchServiceStart,
+  runResearchServiceStatus,
+  runResearchServiceStop,
+  runResearchServiceUninstall,
+} from "./research-daemon.js";
 
 type SecXbrlOptions = {
   ticker?: string;
@@ -991,7 +997,9 @@ export function registerResearchCli(program: Command) {
 
   research
     .command("management-credibility")
-    .description("Track contradictions in management/guidance language across external research evidence")
+    .description(
+      "Track contradictions in management/guidance language across external research evidence",
+    )
     .requiredOption("--ticker <symbol>", "Ticker symbol")
     .option("--limit <n>", "Max contradiction alerts to return", "6")
     .option("--db <path>", "Database path", resolveResearchDbPath())
@@ -1123,7 +1131,9 @@ export function registerResearchCli(program: Command) {
 
   research
     .command("personalized")
-    .description("Build a personalized ticker snapshot from preferences, notebook entries, and current thesis state")
+    .description(
+      "Build a personalized ticker snapshot from preferences, notebook entries, and current thesis state",
+    )
     .requiredOption("--ticker <symbol>", "Ticker symbol")
     .option("--db <path>", "Database path", resolveResearchDbPath())
     .option("--json", "Output JSON", false)
@@ -4536,9 +4546,7 @@ export function registerResearchCli(program: Command) {
             `eval_harness name=${result.taskSetName} score=${(result.score * 100).toFixed(1)}% passed=${result.passed}/${result.total} gate=${result.passedGate ? "pass" : "fail"}`,
           );
           result.checks.forEach((check) => {
-            defaultRuntime.log(
-              `- ${check.passed ? "ok" : "fail"} ${check.name}: ${check.detail}`,
-            );
+            defaultRuntime.log(`- ${check.passed ? "ok" : "fail"} ${check.name}: ${check.detail}`);
           });
           if (result.reasons.length) {
             result.reasons.forEach((reason) => defaultRuntime.error(`GATE: ${reason}`));
@@ -4585,13 +4593,21 @@ export function registerResearchCli(program: Command) {
     .requiredOption("--taskset <path>", "Path to eval task set JSON")
     .requiredOption("--profile <path>", "Path to the mutable improvement profile JSON")
     .option("--attempts <n>", "Number of candidate mutations to evaluate", "8")
-    .option("--min-improvement <n>", "Minimum score delta required to keep a better candidate", "0.005")
+    .option(
+      "--min-improvement <n>",
+      "Minimum score delta required to keep a better candidate",
+      "0.005",
+    )
     .option("--seed <text>", "Deterministic seed")
     .option("--db <path>", "Database path", resolveResearchDbPath())
     .option("--out <path>", "Write markdown run report to file")
     .option("--json", "Emit JSON result", false)
     .option("--no-write-best", "Do not write the accepted best profile back to disk")
-    .option("--require-pass", "Exit non-zero if the final best candidate fails the eval gate", false)
+    .option(
+      "--require-pass",
+      "Exit non-zero if the final best candidate fails the eval gate",
+      false,
+    )
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const taskSet = loadResearchEvalTaskSet(opts.taskset as string);
@@ -4623,10 +4639,108 @@ export function registerResearchCli(program: Command) {
           defaultRuntime.log(`Self-improve report written to ${outPath}`);
         }
         const profile = loadResearchEvalImprovementProfile(opts.profile as string);
-        defaultRuntime.log(`Profile now at ${path.resolve(opts.profile as string)} -> ${JSON.stringify(profile)}`);
+        defaultRuntime.log(
+          `Profile now at ${path.resolve(opts.profile as string)} -> ${JSON.stringify(profile)}`,
+        );
         if (opts.requirePass && !result.best.passedGate) {
           defaultRuntime.exit(1);
         }
+      });
+    });
+
+  research
+    .command("watchlist-upsert")
+    .description("Create or update a research watchlist")
+    .requiredOption("--name <text>", "Watchlist name")
+    .option("--description <text>", "Watchlist description")
+    .option("--default", "Mark as the default watchlist", false)
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const row = upsertResearchWatchlist({
+          name: opts.name as string,
+          description: opts.description as string | undefined,
+          isDefault: Boolean(opts.default),
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `watchlist id=${row.id} name="${row.name}" default=${row.isDefault ? "yes" : "no"}`,
+        );
+      });
+    });
+
+  research
+    .command("watchlist-add")
+    .description("Add or update a ticker in a research watchlist")
+    .requiredOption("--watchlist-id <n>", "Watchlist id")
+    .requiredOption("--ticker <symbol>", "Ticker symbol")
+    .option("--priority <n>", "Priority 1-5 (1 is highest)", "3")
+    .option("--tags <csv>", "Comma-separated tags")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const row = addTickerToResearchWatchlist({
+          watchlistId: Number.parseInt(opts["watchlistId"] as string, 10),
+          ticker: opts.ticker as string,
+          priority: parseOptionalNumber(opts.priority) ?? 3,
+          tags: parseCsvListOption((opts.tags as string | undefined) ?? ""),
+          dbPath: opts.db as string,
+        });
+        defaultRuntime.log(
+          `watchlist_member id=${row.id} watchlist_id=${row.watchlistId} ticker=${row.ticker} priority=${row.priority}`,
+        );
+      });
+    });
+
+  research
+    .command("watchlist-list")
+    .description("List research watchlists")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const rows = listResearchWatchlists({ dbPath: opts.db as string });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(rows, null, 2)}\n`);
+          return;
+        }
+        if (!rows.length) {
+          defaultRuntime.log("No watchlists found.");
+          return;
+        }
+        rows.forEach((row) => {
+          defaultRuntime.log(
+            `- id=${row.id} name="${row.name}" default=${row.isDefault ? "yes" : "no"} description="${row.description}"`,
+          );
+        });
+      });
+    });
+
+  research
+    .command("watchlist-members")
+    .description("List members in a research watchlist")
+    .requiredOption("--watchlist-id <n>", "Watchlist id")
+    .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const rows = listResearchWatchlistMembers({
+          watchlistId: Number.parseInt(opts["watchlistId"] as string, 10),
+          dbPath: opts.db as string,
+        });
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(rows, null, 2)}\n`);
+          return;
+        }
+        if (!rows.length) {
+          defaultRuntime.log("No watchlist members found.");
+          return;
+        }
+        rows.forEach((row) => {
+          defaultRuntime.log(
+            `- ticker=${row.ticker} priority=${row.priority}${row.tags.length ? ` tags=${row.tags.join(",")}` : ""}`,
+          );
+        });
       });
     });
 
