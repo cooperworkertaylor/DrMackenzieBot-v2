@@ -230,7 +230,9 @@ export function parseQuickResearchRequest(raw: string): QuickResearchRequest | n
   // Shorthand safety: if we triggered only on a trailing number, require a non-trivial topic.
   if (!actionOk && !mentionsPdf && !hasTPlus && !singleTickerMinuteCandidate) {
     const tokens = subject.split(" ").filter(Boolean);
-    if (tokens.length < 2 && subject.length < 10) return null;
+    const shorthandTicker = normalizeTicker(subject.replaceAll(/^\$/g, ""));
+    const isTickerShorthand = /^[A-Z][A-Z0-9.]{0,7}$/.test(shorthandTicker) && tokens.length === 1;
+    if (!isTickerShorthand && tokens.length < 2 && subject.length < 10) return null;
   }
 
   // Heuristic: if subject is a single ticker-ish token, treat as company.

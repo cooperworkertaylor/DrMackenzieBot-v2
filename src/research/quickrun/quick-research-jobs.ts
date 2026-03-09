@@ -1,5 +1,6 @@
 import fsSync from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { QuickResearchRequest } from "../quick-research-request.js";
 import { resolveStateDir } from "../../config/paths.js";
@@ -90,6 +91,39 @@ const sanitizeThemeLabel = (value: string): string => {
     return (m[2] ?? "").trim();
   }
   return raw;
+};
+
+const resolveQuickResearchSeriesKey = (request: QuickResearchRequest): string =>
+  request.kind === "company"
+    ? `quickrun_company_${slugify(request.ticker)}`
+    : `quickrun_theme_${slugify(sanitizeThemeLabel(request.theme))}`;
+
+const resolveQuickResearchArtifactFromManifest = (
+  request: QuickResearchRequest,
+): { mediaUrl: string; runId?: string } | null => {
+  try {
+    const stateDir = resolveStateDir(process.env, os.homedir);
+    const manifestPath = path.join(
+      stateDir,
+      "research",
+      "quickrun",
+      `${resolveQuickResearchSeriesKey(request)}.artifact.json`,
+    );
+    if (!fsSync.existsSync(manifestPath)) return null;
+    const parsed = JSON.parse(fsSync.readFileSync(manifestPath, "utf8")) as {
+      outPath?: unknown;
+      metrics?: { run_id?: unknown };
+    };
+    const outPath = typeof parsed.outPath === "string" ? parsed.outPath.trim() : "";
+    if (!outPath || !fsSync.existsSync(outPath)) return null;
+    const runId =
+      typeof parsed.metrics?.run_id === "string" && parsed.metrics.run_id.trim()
+        ? parsed.metrics.run_id.trim()
+        : undefined;
+    return { mediaUrl: outPath, ...(runId ? { runId } : {}) };
+  } catch {
+    return null;
+  }
 };
 
 const resolveChromeExecutablePath = (): string | undefined => {
@@ -450,6 +484,21 @@ export const buildQuickResearchPdfFollowupReply = (params: {
   }
 
   if (!job.resultMediaUrl?.trim()) {
+    const recovered = resolveQuickResearchArtifactFromManifest(job.payload.request);
+    if (recovered?.mediaUrl) {
+      return {
+        text:
+          job.resultText?.trim() ||
+          [
+            "Re-sending quick research PDF.",
+            `job_id=${job.id}`,
+            recovered.runId?.trim() ? `run_id=${recovered.runId.trim()}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        mediaUrl: recovered.mediaUrl,
+      };
+    }
     return {
       text: [
         "❌ Quick research run completed, but no PDF artifact is stored for re-delivery.",
@@ -722,7 +771,7 @@ const runCompanyQuickResearch = async (params: {
   await params.onProgress?.("PDF passed diagnostics. Waiting for delivery window.");
 
   const stateDir = resolveStateDir(process.env, os.homedir);
-  const seriesKey = `quickrun_company_${slugify(params.payload.request.ticker)}`;
+  const seriesKey = resolveQuickResearchSeriesKey(params.payload.request);
   const seriesManifestPath = path.join(
     stateDir,
     "research",
@@ -939,7 +988,7 @@ const runThemeQuickResearch = async (params: {
   await params.onProgress?.("PDF passed diagnostics. Waiting for delivery window.");
 
   const stateDir = resolveStateDir(process.env, os.homedir);
-  const seriesKey = `quickrun_theme_${slugify(themeLabel)}`;
+  const seriesKey = resolveQuickResearchSeriesKey(params.payload.request);
   const seriesManifestPath = path.join(
     stateDir,
     "research",

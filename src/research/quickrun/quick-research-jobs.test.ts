@@ -190,4 +190,81 @@ describe("buildQuickResearchTelegramSummary", () => {
     expect(reply?.text).toContain("Company memo ready: NVDA");
     expect(reply?.mediaUrl).toBe("/tmp/nvda.pdf");
   });
+
+  it("recovers the latest PDF artifact from the quickrun manifest for older completed jobs", () => {
+    const dbPath = makeDbPath();
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "quickrun-state-"));
+    tempDirs.push(stateDir);
+    const pdfPath = path.join(stateDir, "nvda-latest.pdf");
+    fs.writeFileSync(pdfPath, "pdf");
+    const manifestDir = path.join(stateDir, "research", "quickrun");
+    fs.mkdirSync(manifestDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(manifestDir, "quickrun_company_nvda.artifact.json"),
+      JSON.stringify(
+        {
+          outPath: pdfPath,
+          metrics: {
+            run_id: "run-manifest",
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const priorStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    try {
+      const store = QuickrunJobStore.open(dbPath);
+      store.enqueue({
+        id: "job-901",
+        jobType: "quick_research_pdf_v2",
+        runAfterMs: 0,
+        payload: {
+          jobId: "job-901",
+          request: {
+            kind: "company",
+            ticker: "NVDA",
+            minutes: 5,
+          },
+          createdAtMs: Date.UTC(2026, 2, 9, 19, 25),
+          deliverAtMs: Date.UTC(2026, 2, 9, 19, 30),
+          route: {
+            channel: "telegram",
+            to: "telegram:123",
+            sessionKey: "agent:main:main",
+          },
+        },
+      });
+      store.claimNext({
+        jobType: "quick_research_pdf_v2",
+        workerId: "worker-a",
+        nowMs: Date.UTC(2026, 2, 9, 19, 26),
+      });
+      store.markCompleted({
+        id: "job-901",
+        workerId: "worker-a",
+        nowMs: Date.UTC(2026, 2, 9, 19, 28),
+      });
+
+      const reply = buildQuickResearchPdfFollowupReply({
+        dbPath,
+        route: {
+          channel: "telegram",
+          to: "telegram:123",
+          sessionKey: "agent:main:main",
+        },
+      });
+
+      expect(reply?.mediaUrl).toBe(pdfPath);
+      expect(reply?.text).toContain("run_id=run-manifest");
+    } finally {
+      if (priorStateDir == null) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = priorStateDir;
+      }
+    }
+  });
 });
