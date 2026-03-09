@@ -15,6 +15,37 @@ const nowIso = (): string => new Date().toISOString();
 
 const firstSourceId = (evidence: EvidenceItem[]): string => evidence[0]?.id ?? "S1";
 
+const normalizeSpaces = (value: string): string => value.replaceAll(/\s+/g, " ").trim();
+
+const toProseSafeFragment = (value: string): string =>
+  normalizeSpaces(
+    value
+      .replaceAll(/\b\d{4}-\d{2}-\d{2}\b/g, "dated event")
+      .replaceAll(/\b\d{4}\/\d{2}\/\d{2}\b/g, "dated event")
+      .replaceAll(/\b10-[KQ]\b/gi, "filing")
+      .replaceAll(/\b20-F\b/gi, "filing")
+      .replaceAll(/\b8-K\b/gi, "filing")
+      .replaceAll(/\bS-1\b/gi, "registration filing")
+      .replaceAll(/\bQ[1-4]\b/gi, "quarter")
+      .replaceAll(/\bH[12]\b/gi, "half")
+      .replaceAll(/\bFY\s*\d{2,4}\b/gi, "fiscal year")
+      .replaceAll(/\b(19|20)\d{2}\b/g, "year")
+      .replaceAll(/\b\d+(?:[./-]\d+)*%?\b/g, "value")
+      .replaceAll(/\s+([,.;:!?])/g, "$1"),
+  );
+
+const joinProseSafeFragments = (values: string[], fallback: string): string => {
+  const cleaned = Array.from(
+    new Set(
+      values
+        .map((value) => toProseSafeFragment(value))
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  );
+  return cleaned.length ? cleaned.join("; ") : fallback;
+};
+
 const companySectionTemplate = (params: {
   evidence: EvidenceItem[];
   numericFacts: NumericFact[];
@@ -32,25 +63,34 @@ const companySectionTemplate = (params: {
   const filingFacts =
     params.filingKeywordSummary && params.filingKeywordSummary.sourceIds.length
       ? {
-          business: params.filingKeywordSummary.business.slice(0, 10).join(", "),
-          risks: params.filingKeywordSummary.risks.slice(0, 10).join(", "),
+          business: joinProseSafeFragments(
+            params.filingKeywordSummary.business.slice(0, 10),
+            "Primary filing disclosures were collected but the business-keyword extract was not prose-safe.",
+          ),
+          risks: joinProseSafeFragments(
+            params.filingKeywordSummary.risks.slice(0, 10),
+            "Primary filing disclosures were collected but the risk-keyword extract was not prose-safe.",
+          ),
           source_ids: params.filingKeywordSummary.sourceIds,
         }
       : null;
   const transcriptFacts =
     params.transcriptKeywordSummary && params.transcriptKeywordSummary.sourceIds.length
       ? {
-          keywords: params.transcriptKeywordSummary.keywords.slice(0, 12).join(", "),
+          keywords: joinProseSafeFragments(
+            params.transcriptKeywordSummary.keywords.slice(0, 12),
+            "Management emphasis areas were collected but the keyword extract was not prose-safe.",
+          ),
           source_ids: params.transcriptKeywordSummary.sourceIds,
         }
       : null;
   const bucketFacts =
     params.filingRiskBuckets && params.filingRiskBuckets.length
       ? {
-          buckets: params.filingRiskBuckets
-            .map((b) => b.bucket)
-            .slice(0, 8)
-            .join("; "),
+          buckets: joinProseSafeFragments(
+            params.filingRiskBuckets.map((b) => b.bucket).slice(0, 8),
+            "Risk buckets were collected but the labels were not prose-safe.",
+          ),
           source_ids: Array.from(
             new Set(params.filingRiskBuckets.flatMap((b) => b.source_ids).filter(Boolean)),
           ),
@@ -59,10 +99,10 @@ const companySectionTemplate = (params: {
   const accountingFacts =
     params.accountingFlags && params.accountingFlags.length
       ? {
-          flags: params.accountingFlags
-            .map((f) => f.flag)
-            .slice(0, 8)
-            .join("; "),
+          flags: joinProseSafeFragments(
+            params.accountingFlags.map((f) => f.flag).slice(0, 8),
+            "Accounting flags were collected but the labels were not prose-safe.",
+          ),
           source_ids: Array.from(
             new Set(params.accountingFlags.flatMap((f) => f.source_ids).filter(Boolean)),
           ),
@@ -71,10 +111,10 @@ const companySectionTemplate = (params: {
   const catalystFacts =
     params.catalystCandidates && params.catalystCandidates.length
       ? {
-          labels: params.catalystCandidates
-            .map((c) => c.label)
-            .slice(0, 6)
-            .join("; "),
+          labels: joinProseSafeFragments(
+            params.catalystCandidates.map((c) => c.label).slice(0, 6),
+            "Primary sources contain dated catalyst candidates; use the catalyst exhibit for event detail.",
+          ),
           source_ids: Array.from(
             new Set(params.catalystCandidates.flatMap((c) => c.source_ids).filter(Boolean)),
           ),
@@ -263,7 +303,10 @@ const companySectionTemplate = (params: {
         },
         {
           tag: "INTERPRETATION",
-          text: `Pre-mortem: ${params.risk.premortem[0] ?? "The failure mode is overconfidence without evidence coverage."}`,
+          text: `Pre-mortem: ${toProseSafeFragment(
+            params.risk.premortem[0] ??
+              "The failure mode is overconfidence without evidence coverage.",
+          )}`,
         },
         {
           tag: "ASSUMPTION",
@@ -446,14 +489,16 @@ const buildCompanyReportV2 = (params: {
         (params.analyzers as any).catalyst_ranked.length
           ? (params.analyzers as any).catalyst_ranked.map((row: any) =>
               [
-                `${String(row.rank)} | ${String(row.date)}: ${String(row.label)}`.trim(),
-                `Why: ${String(row.why_it_matters)}`.trim(),
-                `Changes: ${String(row.what_changes)}`.trim(),
-                `Watch: ${String(row.what_to_watch)}`.trim(),
+                `Event: ${toProseSafeFragment(String(row.label))}`.trim(),
+                `Why: ${toProseSafeFragment(String(row.why_it_matters))}`.trim(),
+                `Changes: ${toProseSafeFragment(String(row.what_changes))}`.trim(),
+                `Watch: ${toProseSafeFragment(String(row.what_to_watch))}`.trim(),
               ].join(" "),
             )
           : catalystCalendar && catalystCalendar.length
-            ? catalystCalendar.map((row: any) => `${String(row.date)}: ${String(row.label)}`.trim())
+            ? catalystCalendar.map((row: any) =>
+                `Event: ${toProseSafeFragment(String(row.label))}`.trim(),
+              )
             : ["N/A in this run (no dated filing/transcript events collected)."],
       takeaway: "Takeaway: A calendar is only as good as its dated sources.",
       source_ids: calendarSourceIdsFinal,

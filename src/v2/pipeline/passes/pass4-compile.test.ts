@@ -290,6 +290,76 @@ describe("normalizeLlmReportCandidateV2", () => {
       delete process.env.OPENCLAW_RESEARCH_V2_LLM_WRITER;
     }
   });
+
+  it("keeps deterministic company reports prose-safe when catalyst labels contain digits", async () => {
+    const result = await pass4CompileReportV2({
+      kind: "company",
+      runId: "run-company-catalysts",
+      subject: { ticker: "NVDA", companyName: "NVIDIA" },
+      plan: buildPlanCompanyV2({
+        runId: "run-company-catalysts",
+        ticker: "NVDA",
+        question: "What matters?",
+        timeboxMinutes: 5,
+      }),
+      evidence: [
+        {
+          id: "S1",
+          title: "Source 1",
+          publisher: "SEC",
+          date_published: "2026-02-11",
+          accessed_at: "2026-02-11T15:00:00Z",
+          url: "https://example.com/s1",
+          reliability_tier: 1,
+          raw_text_ref: "filings/nvda-10k.txt",
+          excerpt_or_key_points: ["k1"],
+          tags: ["company:NVDA", "source:sec", "type:filing"],
+        },
+        {
+          id: "S2",
+          title: "Source 2",
+          publisher: "NVIDIA IR",
+          date_published: "2026-02-12",
+          accessed_at: "2026-02-12T15:00:00Z",
+          url: "https://example.com/s2",
+          reliability_tier: 2,
+          excerpt_or_key_points: ["k2"],
+          tags: ["company:NVDA", "type:official_release"],
+        },
+      ],
+      analyzers: {
+        version: 1,
+        generated_at: "2026-02-11T16:00:00Z",
+        ticker: "NVDA",
+        notes: [],
+        extracts: { filings: [], transcripts: [] },
+        risk_factor_buckets: [],
+        accounting_flags: [],
+        catalyst_candidates: [
+          { label: "Q4 2026 earnings call", source_ids: ["S1", "S2"] },
+          { label: "10-Q filing and H2 product launch", source_ids: ["S1", "S2"] },
+        ],
+        catalyst_calendar: [
+          { date: "2026-11-19", label: "Q4 2026 earnings call", source_ids: ["S1", "S2"] },
+        ],
+        catalyst_ranked: [
+          {
+            rank: 1,
+            date: "2026-11-19",
+            label: "Q4 2026 earnings call",
+            why_it_matters: "Resets FY2027 expectations",
+            what_changes: "Street model confidence",
+            what_to_watch: "Revenue guide and margin cadence",
+          },
+        ],
+        numeric_facts: [],
+        kpi_table: [],
+      },
+      risk: pass3RiskOfficerV2({ kind: "company", subject: "NVDA" }),
+    });
+
+    expect(result.gate.passed).toBe(true);
+  });
 });
 
 afterEach(() => {
