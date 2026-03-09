@@ -47,7 +47,33 @@ export type ResearchEvalTask = RetrievalEvalTask | ReportEvalTask | WatchlistBri
 export type ResearchEvalTaskSet = {
   name: string;
   description?: string;
+  thresholds?: {
+    minScore?: number;
+    maxFailedChecks?: number;
+  };
   tasks: ResearchEvalTask[];
+};
+
+export type ResearchEvalHarnessResult = EvalRunResult & {
+  taskSetName: string;
+  passedGate: boolean;
+  failedChecks: number;
+  thresholds: {
+    minScore: number;
+    maxFailedChecks: number;
+  };
+  reasons: string[];
+  scorecard: {
+    generatedAt: string;
+    taskSetName: string;
+    score: number;
+    passed: number;
+    total: number;
+    failedChecks: number;
+    passedGate: boolean;
+    reasons: string[];
+    checks: EvalCheck[];
+  };
 };
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
@@ -72,6 +98,19 @@ export const loadResearchEvalTaskSet = (taskSetPath: string): ResearchEvalTaskSe
   return {
     name: parsed.name.trim(),
     description: parsed.description?.trim(),
+    thresholds:
+      parsed.thresholds && typeof parsed.thresholds === "object"
+        ? {
+            minScore:
+              typeof parsed.thresholds.minScore === "number"
+                ? clamp01(parsed.thresholds.minScore)
+                : undefined,
+            maxFailedChecks:
+              typeof parsed.thresholds.maxFailedChecks === "number"
+                ? Math.max(0, Math.floor(parsed.thresholds.maxFailedChecks))
+                : undefined,
+          }
+        : undefined,
     tasks: parsed.tasks.map((task) => {
       if (!task || typeof task !== "object" || typeof task.id !== "string" || typeof task.kind !== "string") {
         throw new Error(`Invalid task in eval task set: ${resolvedPath}`);
@@ -79,6 +118,59 @@ export const loadResearchEvalTaskSet = (taskSetPath: string): ResearchEvalTaskSe
       return { ...task, id: normalizeTaskId(task.id) } as ResearchEvalTask;
     }),
   };
+};
+
+export const evaluateResearchEvalThresholds = (params: {
+  taskSet: ResearchEvalTaskSet;
+  result: EvalRunResult;
+}) => {
+  const thresholds = {
+    minScore: clamp01(params.taskSet.thresholds?.minScore ?? 0.8),
+    maxFailedChecks: Math.max(0, Math.floor(params.taskSet.thresholds?.maxFailedChecks ?? 0)),
+  };
+  const failedChecks = params.result.total - params.result.passed;
+  const reasons: string[] = [];
+  if (params.result.score < thresholds.minScore) {
+    reasons.push(
+      `score ${params.result.score.toFixed(2)} below threshold ${thresholds.minScore.toFixed(2)}`,
+    );
+  }
+  if (failedChecks > thresholds.maxFailedChecks) {
+    reasons.push(`failed_checks ${failedChecks} above threshold ${thresholds.maxFailedChecks}`);
+  }
+  return {
+    thresholds,
+    failedChecks,
+    passedGate: reasons.length === 0,
+    reasons,
+  };
+};
+
+export const renderResearchEvalScorecard = (result: ResearchEvalHarnessResult): string => {
+  const lines = [
+    `# Research Eval Scorecard: ${result.taskSetName}`,
+    "",
+    `- Generated at: ${result.scorecard.generatedAt}`,
+    `- Score: ${(result.score * 100).toFixed(1)}%`,
+    `- Checks passed: ${result.passed}/${result.total}`,
+    `- Failed checks: ${result.failedChecks}`,
+    `- Gate: ${result.passedGate ? "PASS" : "FAIL"}`,
+    "",
+    "## Thresholds",
+    "",
+    `- Min score: ${(result.thresholds.minScore * 100).toFixed(1)}%`,
+    `- Max failed checks: ${result.thresholds.maxFailedChecks}`,
+    "",
+    "## Reasons",
+    "",
+    ...(result.reasons.length ? result.reasons.map((reason) => `- ${reason}`) : ["- None."]),
+    "",
+    "## Checks",
+    "",
+    ...result.checks.map((check) => `- ${check.passed ? "PASS" : "FAIL"} ${check.name}: ${check.detail}`),
+    "",
+  ];
+  return lines.join("\n");
 };
 
 const runRetrievalTask = async (
@@ -233,7 +325,7 @@ const runWatchlistBriefTask = (task: WatchlistBriefEvalTask, dbPath?: string): E
 export const runResearchEvalTaskSet = async (params: {
   taskSet: ResearchEvalTaskSet;
   dbPath?: string;
-}): Promise<EvalRunResult & { taskSetName: string }> => {
+}): Promise<ResearchEvalHarnessResult> => {
   const checks: EvalCheck[] = [];
   for (const task of params.taskSet.tasks) {
     if (task.kind === "retrieval") {
@@ -247,7 +339,26 @@ export const runResearchEvalTaskSet = async (params: {
     checks.push(...runWatchlistBriefTask(task, params.dbPath));
   }
   const result = persistEvalRun(`harness:${params.taskSet.name}`, checks);
-  return { ...result, taskSetName: params.taskSet.name };
+  const gate = evaluateResearchEvalThresholds({
+    taskSet: params.taskSet,
+    result,
+  });
+  return {
+    ...result,
+    taskSetName: params.taskSet.name,
+    ...gate,
+    scorecard: {
+      generatedAt: new Date().toISOString(),
+      taskSetName: params.taskSet.name,
+      score: result.score,
+      passed: result.passed,
+      total: result.total,
+      failedChecks: gate.failedChecks,
+      passedGate: gate.passedGate,
+      reasons: gate.reasons,
+      checks: result.checks,
+    },
+  };
 };
 
 export const latestResearchEvalHarnessRuns = (params?: {

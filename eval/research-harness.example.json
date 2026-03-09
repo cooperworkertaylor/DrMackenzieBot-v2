@@ -1,6 +1,10 @@
 {
   "name": "external-research-core",
   "description": "Baseline task set for retrieval, ticker memo quality, and watchlist brief quality.",
+  "thresholds": {
+    "minScore": 0.8,
+    "maxFailedChecks": 1
+  },
   "tasks": [
     {
       "id": "nvda_retrieval_sources",

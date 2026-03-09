@@ -1,27 +1,38 @@
+import fs from "node:fs";
 import path from "node:path";
 import {
-  runCodingEval,
-  runDecisionEval,
-  runFinanceEval,
-  runRetrievalEval,
-} from "../src/research/eval.js";
+  loadResearchEvalTaskSet,
+  renderResearchEvalScorecard,
+  runResearchEvalTaskSet,
+} from "../src/research/eval-harness.js";
+import { resolveResearchDbPath } from "../src/research/db.js";
+
+const taskSetPath = process.env.OPENCLAW_RESEARCH_EVAL_TASKSET?.trim()
+  ? path.resolve(process.env.OPENCLAW_RESEARCH_EVAL_TASKSET.trim())
+  : path.resolve(process.cwd(), "eval", "research-harness.example.json");
+
+const dbPath = resolveResearchDbPath(process.env.OPENCLAW_RESEARCH_DB_PATH);
+const outDir = process.env.OPENCLAW_RESEARCH_EVAL_OUT_DIR?.trim()
+  ? path.resolve(process.env.OPENCLAW_RESEARCH_EVAL_OUT_DIR.trim())
+  : path.resolve(process.cwd(), "data", "research-eval");
 
 const run = async () => {
-  const finance = await runFinanceEval();
-  console.log(`finance score=${(finance.score * 100).toFixed(1)}% (${finance.passed}/${finance.total})`);
-  const repoRoot = process.env.RESEARCH_REPO_ROOT
-    ? path.resolve(process.env.RESEARCH_REPO_ROOT)
-    : process.cwd();
-  const coding = await runCodingEval(repoRoot);
-  console.log(`coding score=${(coding.score * 100).toFixed(1)}% (${coding.passed}/${coding.total})`);
-  const retrieval = await runRetrievalEval();
+  const taskSet = loadResearchEvalTaskSet(taskSetPath);
+  const result = await runResearchEvalTaskSet({ taskSet, dbPath });
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  fs.mkdirSync(outDir, { recursive: true });
+  const scorecardPath = path.join(outDir, `${taskSet.name}-${ts}.md`);
+  const jsonPath = path.join(outDir, `${taskSet.name}-${ts}.json`);
+  fs.writeFileSync(scorecardPath, `${renderResearchEvalScorecard(result)}\n`, "utf8");
+  fs.writeFileSync(jsonPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
+
   console.log(
-    `retrieval score=${(retrieval.score * 100).toFixed(1)}% (${retrieval.passed}/${retrieval.total})`,
+    `research_eval_nightly taskset=${result.taskSetName} score=${(result.score * 100).toFixed(1)}% passed=${result.passed}/${result.total} gate=${result.passedGate ? 1 : 0} scorecard=${scorecardPath} json=${jsonPath}`,
   );
-  const decision = await runDecisionEval();
-  console.log(
-    `decision score=${(decision.score * 100).toFixed(1)}% (${decision.passed}/${decision.total})`,
-  );
+
+  if (!result.passedGate) {
+    throw new Error(`research_eval_gate_failed reasons=${result.reasons.join("; ")}`);
+  }
 };
 
 run().catch((err) => {

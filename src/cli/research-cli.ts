@@ -40,6 +40,7 @@ import {
   runRetrievalEval,
 } from "../research/eval.js";
 import {
+  renderResearchEvalScorecard,
   latestResearchEvalHarnessRuns,
   loadResearchEvalTaskSet,
   runResearchEvalTaskSet,
@@ -4281,6 +4282,9 @@ export function registerResearchCli(program: Command) {
     .description("Run a deterministic research eval task set from JSON")
     .requiredOption("--taskset <path>", "Path to eval task set JSON")
     .option("--db <path>", "Database path", resolveResearchDbPath())
+    .option("--out <path>", "Write markdown scorecard to file")
+    .option("--json", "Emit JSON result", false)
+    .option("--require-pass", "Exit non-zero if the eval gate fails", false)
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const taskSet = loadResearchEvalTaskSet(opts.taskset as string);
@@ -4288,14 +4292,30 @@ export function registerResearchCli(program: Command) {
           taskSet,
           dbPath: opts.db as string,
         });
-        defaultRuntime.log(
-          `eval_harness name=${result.taskSetName} score=${(result.score * 100).toFixed(1)}% passed=${result.passed}/${result.total}`,
-        );
-        result.checks.forEach((check) => {
+        if (opts.json) {
+          defaultRuntime.log(`${JSON.stringify(result, null, 2)}\n`);
+        } else {
           defaultRuntime.log(
-            `- ${check.passed ? "ok" : "fail"} ${check.name}: ${check.detail}`,
+            `eval_harness name=${result.taskSetName} score=${(result.score * 100).toFixed(1)}% passed=${result.passed}/${result.total} gate=${result.passedGate ? "pass" : "fail"}`,
           );
-        });
+          result.checks.forEach((check) => {
+            defaultRuntime.log(
+              `- ${check.passed ? "ok" : "fail"} ${check.name}: ${check.detail}`,
+            );
+          });
+          if (result.reasons.length) {
+            result.reasons.forEach((reason) => defaultRuntime.error(`GATE: ${reason}`));
+          }
+        }
+        if (opts.out) {
+          const outPath = path.resolve(opts.out as string);
+          await fs.mkdir(path.dirname(outPath), { recursive: true });
+          await fs.writeFile(outPath, `${renderResearchEvalScorecard(result)}\n`, "utf8");
+          defaultRuntime.log(`Scorecard written to ${outPath}`);
+        }
+        if (opts.requirePass && !result.passedGate) {
+          defaultRuntime.exit(1);
+        }
       });
     });
 

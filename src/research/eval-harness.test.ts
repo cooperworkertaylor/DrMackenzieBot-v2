@@ -8,8 +8,10 @@ import {
   upsertResearchWatchlist,
 } from "./external-research-watchlists.js";
 import {
+  evaluateResearchEvalThresholds,
   latestResearchEvalHarnessRuns,
   loadResearchEvalTaskSet,
+  renderResearchEvalScorecard,
   runResearchEvalTaskSet,
 } from "./eval-harness.js";
 
@@ -74,6 +76,10 @@ describe("research eval harness", () => {
       JSON.stringify(
         {
           name: "test-harness",
+          thresholds: {
+            minScore: 0.75,
+            maxFailedChecks: 2,
+          },
           tasks: [
             {
               id: "retrieval_nvda",
@@ -115,8 +121,39 @@ describe("research eval harness", () => {
     expect(result.taskSetName).toBe("test-harness");
     expect(result.total).toBeGreaterThan(0);
     expect(result.score).toBeGreaterThanOrEqual(0.75);
+    expect(result.passedGate).toBe(true);
+    expect(result.thresholds.minScore).toBe(0.75);
+    expect(renderResearchEvalScorecard(result)).toContain("Research Eval Scorecard");
 
     const runs = latestResearchEvalHarnessRuns({ taskSetName: "test-harness", limit: 5 });
     expect(runs[0]?.run_type).toBe("harness:test-harness");
+  });
+
+  it("fails the gate when score or failed-check thresholds are missed", () => {
+    const gate = evaluateResearchEvalThresholds({
+      taskSet: {
+        name: "failing",
+        thresholds: {
+          minScore: 0.9,
+          maxFailedChecks: 0,
+        },
+        tasks: [],
+      },
+      result: {
+        runType: "harness:failing",
+        score: 0.5,
+        passed: 2,
+        total: 4,
+        checks: [
+          { name: "a", passed: true, detail: "ok" },
+          { name: "b", passed: true, detail: "ok" },
+          { name: "c", passed: false, detail: "bad" },
+          { name: "d", passed: false, detail: "bad" },
+        ],
+      },
+    });
+    expect(gate.passedGate).toBe(false);
+    expect(gate.failedChecks).toBe(2);
+    expect(gate.reasons.length).toBe(2);
   });
 });
