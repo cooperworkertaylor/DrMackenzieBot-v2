@@ -6,6 +6,7 @@ import type {
 } from "@grammyjs/types";
 import { type ApiClientOptions, Bot, HttpError, InputFile } from "grammy";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import type { RetryConfig } from "../infra/retry.js";
 import { loadConfig } from "../config/config.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
@@ -197,6 +198,18 @@ function toStrictUint8Array(buffer: Uint8Array): Uint8Array {
   return new Uint8Array(
     buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
   );
+}
+
+function createTelegramInputFile(params: {
+  mediaUrl?: string;
+  buffer: Uint8Array;
+  fileName: string;
+}): InputFile {
+  const localPath = params.mediaUrl?.trim();
+  if (localPath?.startsWith("/") && fs.existsSync(localPath)) {
+    return new InputFile(localPath, params.fileName);
+  }
+  return new InputFile(toStrictUint8Array(params.buffer), params.fileName);
 }
 
 export function buildInlineKeyboard(
@@ -439,7 +452,11 @@ export async function sendMessageTelegram(
       }
     }
 
-    const file = new InputFile(toStrictUint8Array(media.buffer), fileName);
+    const file = createTelegramInputFile({
+      mediaUrl,
+      buffer: media.buffer,
+      fileName,
+    });
     const { caption, followUpText } = splitTelegramCaption(text);
     const htmlCaption = caption ? renderHtmlText(caption) : undefined;
     // If text exceeds Telegram's caption limit, send media without caption

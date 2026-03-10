@@ -1,5 +1,6 @@
 import { type Bot, GrammyError, InputFile } from "grammy";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import type { ReplyToMode } from "../../config/config.js";
 import type { MarkdownTableMode } from "../../config/types.base.js";
@@ -55,6 +56,18 @@ function toStrictUint8Array(buffer: Uint8Array): Uint8Array {
   return new Uint8Array(
     buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
   );
+}
+
+function createTelegramInputFile(params: {
+  mediaUrl?: string;
+  buffer: Uint8Array;
+  fileName: string;
+}): InputFile {
+  const localPath = params.mediaUrl?.trim();
+  if (localPath?.startsWith("/") && fs.existsSync(localPath)) {
+    return new InputFile(localPath, params.fileName);
+  }
+  return new InputFile(toStrictUint8Array(params.buffer), params.fileName);
 }
 
 export async function deliverReplies(params: {
@@ -197,7 +210,11 @@ export async function deliverReplies(params: {
         fileName: media.fileName,
       });
       const fileName = media.fileName ?? (isGif ? "animation.gif" : "file");
-      const file = new InputFile(toStrictUint8Array(media.buffer), fileName);
+      const file = createTelegramInputFile({
+        mediaUrl,
+        buffer: media.buffer,
+        fileName,
+      });
       // Caption only on first item; if text exceeds limit, defer to follow-up message.
       const { caption, followUpText } = splitTelegramCaption(
         isFirstMedia ? (reply.text ?? undefined) : undefined,
