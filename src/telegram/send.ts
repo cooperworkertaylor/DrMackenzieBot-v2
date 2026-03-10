@@ -212,6 +212,79 @@ function createTelegramInputFile(params: {
   return new InputFile(toStrictUint8Array(params.buffer), params.fileName);
 }
 
+async function sendTelegramDocumentDirect(params: {
+  token: string;
+  chatId: string;
+  fileName: string;
+  media: { buffer: Uint8Array; contentType?: string | null };
+  account: ResolvedTelegramAccount;
+  caption?: string;
+  parseMode?: "HTML";
+  threadParams?: Record<string, unknown>;
+  replyMarkup?: InlineKeyboardMarkup;
+  silent?: boolean;
+}): Promise<{ message_id: number | string; chat?: { id?: string | number } }> {
+  const proxyUrl = params.account.config.proxy?.trim();
+  const proxyFetch = proxyUrl ? makeProxyFetch(proxyUrl) : undefined;
+  const fetchImpl = resolveTelegramFetch(proxyFetch, {
+    network: params.account.config.network,
+  });
+  if (!fetchImpl) {
+    throw new Error("fetch is not available for Telegram direct document upload");
+  }
+  const form = new FormData();
+  form.append("chat_id", params.chatId);
+  const directBytes = toStrictUint8Array(
+    params.media.buffer,
+  ) as unknown as ArrayBufferView<ArrayBuffer>;
+  form.append(
+    "document",
+    new Blob([directBytes], {
+      type: params.media.contentType?.trim() || "application/octet-stream",
+    }),
+    sanitizeUploadFilename(params.fileName),
+  );
+  if (params.caption?.trim()) {
+    form.append("caption", params.caption);
+  }
+  if (params.parseMode) {
+    form.append("parse_mode", params.parseMode);
+  }
+  if (params.silent === true) {
+    form.append("disable_notification", "true");
+  }
+  const messageThreadId = params.threadParams?.message_thread_id;
+  if (typeof messageThreadId === "number" || typeof messageThreadId === "string") {
+    form.append("message_thread_id", String(messageThreadId));
+  }
+  const replyToMessageId = params.threadParams?.reply_to_message_id;
+  if (typeof replyToMessageId === "number" || typeof replyToMessageId === "string") {
+    form.append("reply_to_message_id", String(replyToMessageId));
+  }
+  if (params.threadParams?.reply_parameters) {
+    form.append("reply_parameters", JSON.stringify(params.threadParams.reply_parameters));
+  }
+  if (params.replyMarkup) {
+    form.append("reply_markup", JSON.stringify(params.replyMarkup));
+  }
+
+  const response = await fetchImpl(`https://api.telegram.org/bot${params.token}/sendDocument`, {
+    method: "POST",
+    body: form,
+  });
+  const json = (await response.json()) as {
+    ok?: boolean;
+    description?: string;
+    result?: { message_id: number | string; chat?: { id?: string | number } };
+  };
+  if (!response.ok || !json.ok || !json.result) {
+    throw new Error(
+      json.description || `Telegram direct sendDocument failed with HTTP ${response.status}`,
+    );
+  }
+  return json.result;
+}
+
 export function buildInlineKeyboard(
   buttons?: TelegramSendOpts["buttons"],
 ): InlineKeyboardMarkup | undefined {
@@ -474,14 +547,8 @@ export async function sendMessageTelegram(
       ...baseMediaParams,
       ...(opts.silent === true ? { disable_notification: true } : {}),
     };
-    let result:
-      | Awaited<ReturnType<typeof api.sendPhoto>>
-      | Awaited<ReturnType<typeof api.sendVideo>>
-      | Awaited<ReturnType<typeof api.sendAudio>>
-      | Awaited<ReturnType<typeof api.sendVoice>>
-      | Awaited<ReturnType<typeof api.sendAnimation>>
-      | Awaited<ReturnType<typeof api.sendDocument>>
-      | undefined = undefined;
+    let result: { message_id?: string | number; chat?: { id?: string | number } } | undefined =
+      undefined;
     if (isGif) {
       result = await requestWithDiag(
         () => api.sendAnimation(chatId, file, mediaParams),
@@ -526,12 +593,33 @@ export async function sendMessageTelegram(
     } else {
       let documentError: unknown;
       try {
-        result = await requestWithDiag(
-          () => api.sendDocument(chatId, file, mediaParams),
-          "document",
-        ).catch((err) => {
-          throw wrapChatNotFound(err);
-        });
+        if (isPdf && mediaUrl?.startsWith("/")) {
+          result = await requestWithDiag(
+            () =>
+              sendTelegramDocumentDirect({
+                token,
+                chatId,
+                fileName,
+                media,
+                account,
+                caption: typeof mediaParams.caption === "string" ? mediaParams.caption : undefined,
+                parseMode: mediaParams.parse_mode,
+                threadParams,
+                replyMarkup: !needsSeparateText ? replyMarkup : undefined,
+                silent: opts.silent === true,
+              }),
+            "document-direct",
+          ).catch((err) => {
+            throw wrapChatNotFound(err);
+          });
+        } else {
+          result = await requestWithDiag(
+            () => api.sendDocument(chatId, file, mediaParams),
+            "document",
+          ).catch((err) => {
+            throw wrapChatNotFound(err);
+          });
+        }
       } catch (err) {
         documentError = err;
         const errText = formatErrorMessage(err);
@@ -587,7 +675,7 @@ export async function sendMessageTelegram(
     }
     const mediaMessageId = String(result?.message_id ?? "unknown");
     const resolvedChatId = String(result?.chat?.id ?? chatId);
-    if (result?.message_id) {
+    if (typeof result?.message_id === "number") {
       recordSentMessage(chatId, result.message_id);
     }
     if (isPdf && pdfSha256 && kind === "document") {

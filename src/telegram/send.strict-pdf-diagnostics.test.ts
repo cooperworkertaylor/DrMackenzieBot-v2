@@ -99,6 +99,11 @@ describe("sendMessageTelegram (strict pdf diagnostics)", () => {
       sendDocument: vi.fn().mockResolvedValue({ message_id: 4, chat: { id: "123" } }),
       sendMessage: vi.fn(),
     } as unknown as NonNullable<Parameters<typeof sendMessageTelegram>[2]>["api"];
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, result: { message_id: 4, chat: { id: "123" } } }),
+    });
 
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-pdf-"));
     const pdfPath = path.join(tempDir, "report.pdf");
@@ -126,6 +131,8 @@ describe("sendMessageTelegram (strict pdf diagnostics)", () => {
     });
 
     try {
+      const previousFetch = globalThis.fetch;
+      vi.stubGlobal("fetch", fetchSpy as typeof fetch);
       const res = await sendMessageTelegram("telegram:123", "caption", {
         token: "tok",
         api,
@@ -134,9 +141,16 @@ describe("sendMessageTelegram (strict pdf diagnostics)", () => {
       });
 
       expect(res).toEqual({ messageId: "4", chatId: "123" });
-      const fileArg = (api.sendDocument as unknown as ReturnType<typeof vi.fn>).mock
-        .calls[0]?.[1] as { fileData?: unknown } | undefined;
-      expect(fileArg?.fileData).toBe(pdfPath);
+      expect(api.sendDocument).not.toHaveBeenCalled();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const body = fetchSpy.mock.calls[0]?.[1]?.body as FormData;
+      expect(body.get("chat_id")).toBe("123");
+      expect(body.get("document")).toBeInstanceOf(Blob);
+      if (previousFetch) {
+        vi.stubGlobal("fetch", previousFetch);
+      } else {
+        vi.unstubAllGlobals();
+      }
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
