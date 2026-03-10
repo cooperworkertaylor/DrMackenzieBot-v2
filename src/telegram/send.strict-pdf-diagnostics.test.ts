@@ -143,9 +143,11 @@ describe("sendMessageTelegram (strict pdf diagnostics)", () => {
       expect(res).toEqual({ messageId: "4", chatId: "123" });
       expect(api.sendDocument).not.toHaveBeenCalled();
       expect(fetchSpy).toHaveBeenCalledTimes(1);
-      const body = fetchSpy.mock.calls[0]?.[1]?.body as FormData;
-      expect(body.get("chat_id")).toBe("123");
-      expect(body.get("document")).toBeInstanceOf(Blob);
+      const init = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect(init?.headers).toMatchObject({
+        "content-type": expect.stringContaining("multipart/form-data; boundary="),
+      });
+      expect(init?.body).toBeInstanceOf(ArrayBuffer);
       if (previousFetch) {
         vi.stubGlobal("fetch", previousFetch);
       } else {

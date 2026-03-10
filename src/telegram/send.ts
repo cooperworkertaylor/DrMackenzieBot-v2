@@ -33,6 +33,8 @@ import { recordSentMessage } from "./sent-message-cache.js";
 import { parseTelegramTarget, stripTelegramInternalPrefixes } from "./targets.js";
 import { resolveTelegramVoiceSend } from "./voice.js";
 
+const textEncoder = new TextEncoder();
+
 type TelegramSendOpts = {
   token?: string;
   accountId?: string;
@@ -200,6 +202,21 @@ function toStrictUint8Array(buffer: Uint8Array): Uint8Array {
   );
 }
 
+function encodeUtf8(value: string): Uint8Array {
+  return textEncoder.encode(value);
+}
+
+function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return merged;
+}
+
 function createTelegramInputFile(params: {
   mediaUrl?: string;
   buffer: Uint8Array;
@@ -232,45 +249,54 @@ async function sendTelegramDocumentDirect(params: {
   if (!fetchImpl) {
     throw new Error("fetch is not available for Telegram direct document upload");
   }
-  const form = new FormData();
-  form.append("chat_id", params.chatId);
-  const directBytes = toStrictUint8Array(
-    params.media.buffer,
-  ) as unknown as ArrayBufferView<ArrayBuffer>;
-  form.append(
-    "document",
-    new Blob([directBytes], {
-      type: params.media.contentType?.trim() || "application/octet-stream",
-    }),
-    sanitizeUploadFilename(params.fileName),
-  );
+  const boundary = `----openclawtelegram${crypto.randomUUID().replaceAll("-", "")}`;
+  const chunks: Uint8Array[] = [];
+  const pushField = (name: string, value: string) => {
+    chunks.push(
+      encodeUtf8(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+      ),
+    );
+  };
+  pushField("chat_id", params.chatId);
   if (params.caption?.trim()) {
-    form.append("caption", params.caption);
+    pushField("caption", params.caption);
   }
   if (params.parseMode) {
-    form.append("parse_mode", params.parseMode);
+    pushField("parse_mode", params.parseMode);
   }
   if (params.silent === true) {
-    form.append("disable_notification", "true");
+    pushField("disable_notification", "true");
   }
   const messageThreadId = params.threadParams?.message_thread_id;
   if (typeof messageThreadId === "number" || typeof messageThreadId === "string") {
-    form.append("message_thread_id", String(messageThreadId));
+    pushField("message_thread_id", String(messageThreadId));
   }
   const replyToMessageId = params.threadParams?.reply_to_message_id;
   if (typeof replyToMessageId === "number" || typeof replyToMessageId === "string") {
-    form.append("reply_to_message_id", String(replyToMessageId));
+    pushField("reply_to_message_id", String(replyToMessageId));
   }
   if (params.threadParams?.reply_parameters) {
-    form.append("reply_parameters", JSON.stringify(params.threadParams.reply_parameters));
+    pushField("reply_parameters", JSON.stringify(params.threadParams.reply_parameters));
   }
   if (params.replyMarkup) {
-    form.append("reply_markup", JSON.stringify(params.replyMarkup));
+    pushField("reply_markup", JSON.stringify(params.replyMarkup));
   }
+  chunks.push(
+    encodeUtf8(
+      `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${sanitizeUploadFilename(params.fileName)}"\r\nContent-Type: ${params.media.contentType?.trim() || "application/octet-stream"}\r\n\r\n`,
+    ),
+  );
+  chunks.push(toStrictUint8Array(params.media.buffer));
+  chunks.push(encodeUtf8(`\r\n--${boundary}--\r\n`));
+  const body = concatUint8Arrays(chunks);
 
   const response = await fetchImpl(`https://api.telegram.org/bot${params.token}/sendDocument`, {
     method: "POST",
-    body: form,
+    headers: {
+      "content-type": `multipart/form-data; boundary=${boundary}`,
+    },
+    body: body as unknown as BodyInit,
   });
   const json = (await response.json()) as {
     ok?: boolean;
@@ -525,11 +551,6 @@ export async function sendMessageTelegram(
       }
     }
 
-    const file = createTelegramInputFile({
-      mediaUrl,
-      buffer: media.buffer,
-      fileName,
-    });
     const { caption, followUpText } = splitTelegramCaption(text);
     const htmlCaption = caption ? renderHtmlText(caption) : undefined;
     // If text exceeds Telegram's caption limit, send media without caption
@@ -550,6 +571,11 @@ export async function sendMessageTelegram(
     let result: { message_id?: string | number; chat?: { id?: string | number } } | undefined =
       undefined;
     if (isGif) {
+      const file = createTelegramInputFile({
+        mediaUrl,
+        buffer: media.buffer,
+        fileName,
+      });
       result = await requestWithDiag(
         () => api.sendAnimation(chatId, file, mediaParams),
         "animation",
@@ -557,18 +583,33 @@ export async function sendMessageTelegram(
         throw wrapChatNotFound(err);
       });
     } else if (kind === "image") {
+      const file = createTelegramInputFile({
+        mediaUrl,
+        buffer: media.buffer,
+        fileName,
+      });
       result = await requestWithDiag(() => api.sendPhoto(chatId, file, mediaParams), "photo").catch(
         (err) => {
           throw wrapChatNotFound(err);
         },
       );
     } else if (kind === "video") {
+      const file = createTelegramInputFile({
+        mediaUrl,
+        buffer: media.buffer,
+        fileName,
+      });
       result = await requestWithDiag(() => api.sendVideo(chatId, file, mediaParams), "video").catch(
         (err) => {
           throw wrapChatNotFound(err);
         },
       );
     } else if (kind === "audio") {
+      const file = createTelegramInputFile({
+        mediaUrl,
+        buffer: media.buffer,
+        fileName,
+      });
       const { useVoice } = resolveTelegramVoiceSend({
         wantsVoice: opts.asVoice === true, // default false (backward compatible)
         contentType: media.contentType,
@@ -613,6 +654,11 @@ export async function sendMessageTelegram(
             throw wrapChatNotFound(err);
           });
         } else {
+          const file = createTelegramInputFile({
+            mediaUrl,
+            buffer: media.buffer,
+            fileName,
+          });
           result = await requestWithDiag(
             () => api.sendDocument(chatId, file, mediaParams),
             "document",
