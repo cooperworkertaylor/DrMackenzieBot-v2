@@ -15,10 +15,6 @@ import {
 import { writeArtifactManifest, writeFileArtifactManifest } from "../research/artifact-manifest.js";
 import { buildArtifactPreflight } from "../research/artifact-preflight.js";
 import {
-  loadResearchAutoresearchProgram,
-  runResearchAutoresearchProgram,
-} from "../research/autoresearch-protocol.js";
-import {
   applyBenchmarkGovernance,
   benchmarkReport,
   listBenchmarkCases,
@@ -4676,56 +4672,6 @@ export function registerResearchCli(program: Command) {
             `${new Date(row.created_at).toISOString()} ${row.run_type} score=${(row.score * 100).toFixed(1)}% (${row.passed}/${row.total})`,
           );
         });
-      });
-    });
-
-  research
-    .command("autoresearch")
-    .description("Run the repo's autoresearch protocol from a program.md file")
-    .option("--program <path>", "Path to the autoresearch program markdown", "program.md")
-    .option("--attempts <n>", "Override mutation attempts from the program")
-    .option("--min-improvement <n>", "Override minimum keep delta from the program")
-    .option("--seed <text>", "Override deterministic seed from the program")
-    .option("--db <path>", "Database path", resolveResearchDbPath())
-    .option("--out <path>", "Override markdown output file path")
-    .option("--json", "Emit JSON result", false)
-    .option("--no-write-best", "Do not write the accepted best profile back to disk")
-    .option(
-      "--require-pass",
-      "Exit non-zero if the final best candidate fails the eval gate",
-      false,
-    )
-    .action(async (opts) => {
-      await runCommandWithRuntime(defaultRuntime, async () => {
-        const program = await loadResearchAutoresearchProgram(opts.program as string);
-        const run = await runResearchAutoresearchProgram({
-          programPath: opts.program as string,
-          dbPath: opts.db as string,
-          attempts: parseOptionalNumber(opts.attempts),
-          minImprovement: parseOptionalNumber(opts["minImprovement"]),
-          seed: opts.seed as string | undefined,
-          outPath: opts.out as string | undefined,
-          writeBest: opts.writeBest as boolean,
-          requirePass: opts.requirePass ? true : undefined,
-        });
-        if (opts.json) {
-          defaultRuntime.log(`${JSON.stringify(run, null, 2)}\n`);
-        } else {
-          defaultRuntime.log(
-            `autoresearch program=${program.name} baseline=${(run.result.baseline.score * 100).toFixed(1)}% best=${(run.result.best.score * 100).toFixed(1)}% applied=${run.result.appliedImprovement ? "yes" : "no"}`,
-          );
-          defaultRuntime.log(
-            `taskset=${run.program.tasksetPath} profile=${run.program.profilePath} attempts=${run.program.attempts} min_improvement=${run.program.minImprovement.toFixed(3)}`,
-          );
-          run.result.attempts.forEach((attempt) => {
-            defaultRuntime.log(
-              `- #${attempt.attempt} ${attempt.mutationPath} ${attempt.previousValue}->${attempt.candidateValue} ${attempt.decision} score=${(attempt.result.score * 100).toFixed(1)}% failed=${attempt.result.failedChecks} reason=${attempt.reason}`,
-            );
-          });
-          if (run.outPath) {
-            defaultRuntime.log(`report=${run.outPath}`);
-          }
-        }
       });
     });
 
